@@ -2558,30 +2558,57 @@ class PlayState extends MusicBeatState
 			Paths.image(uiFolder + 'num' + i + uiPostfix);
 	}
 
-	public var msOffsetTxt:FlxText;
+	var msOffsetGlyphs:Map<String, FlxText> = [];
+	var msOffsetSlots:Array<FlxSprite> = [];
+	var msOffsetTween:FlxTween;
 
-	// "Hit Timing (ms)" option: how early (-) or late (+) the note was hit, the same number it was rated with
+	// "Hit Timing (ms)" option: how early (-) or late (+) the note was hit, the same number it was rated with.
+	// Each character is rendered once and the text is put together from those sprites: an FlxText redraws itself
+	// nine times (outline) and uploads a new texture every time its text changes, which here is every note hit
 	function showMsOffset(ms:Float):Void
 	{
-		if(msOffsetTxt == null)
+		if(msOffsetSlots.length == 0)
 		{
-			msOffsetTxt = new FlxText(0, 0, 200, '', 24);
-			msOffsetTxt.setFormat(Paths.font("vcr.ttf"), 24, FlxColor.WHITE, CENTER, FlxTextBorderStyle.OUTLINE, FlxColor.BLACK);
-			msOffsetTxt.borderSize = 1.25;
-			msOffsetTxt.scrollFactor.set();
-			uiGroup.add(msOffsetTxt);
+			for (char in '0123456789+-.ms'.split(''))
+			{
+				var glyph:FlxText = new FlxText(0, 0, 0, char, 24);
+				glyph.setFormat(Paths.font("vcr.ttf"), 24, FlxColor.WHITE, LEFT, FlxTextBorderStyle.OUTLINE, FlxColor.BLACK);
+				glyph.borderSize = 1.25;
+				glyph.updateHitbox(); // renders it
+				msOffsetGlyphs.set(char, glyph);
+			}
+			for (i in 0...9) // "-123.4 ms"
+			{
+				var slot:FlxSprite = new FlxSprite();
+				slot.scrollFactor.set();
+				msOffsetSlots.push(slot);
+				uiGroup.add(slot);
+			}
 		}
 
-		// Under the combo numbers, and moved with them by the combo offset option
-		msOffsetTxt.x = FlxG.width * 0.35 - 100 + ClientPrefs.data.comboOffset[2];
-		msOffsetTxt.y = FlxG.height / 2 + 140 - ClientPrefs.data.comboOffset[3];
-		msOffsetTxt.text = (ms > 0 ? '+' : '') + FlxMath.roundDecimal(ms, 1) + ' ms';
-		msOffsetTxt.color = (ms < 0) ? 0xFF7FC8FF : 0xFFFF9F7F; // early blue, late orange
-		msOffsetTxt.visible = !ClientPrefs.data.hideHud;
+		var text:String = (ms > 0 ? '+' : '') + FlxMath.roundDecimal(ms, 1) + ' ms';
+		var zero:FlxText = msOffsetGlyphs.get('0');
+		var advance:Float = zero.textField.textWidth; // vcr.ttf is monospaced
+		// Centered under the combo numbers, and moved with them by the combo offset option
+		var textX:Float = FlxG.width * 0.35 + ClientPrefs.data.comboOffset[2] - (text.length * advance + zero.width - advance) / 2;
+		var textY:Float = FlxG.height / 2 + 140 - ClientPrefs.data.comboOffset[3];
+		var tint:FlxColor = (ms < 0) ? 0xFF7FC8FF : 0xFFFF9F7F; // early blue, late orange
+		for (i => slot in msOffsetSlots)
+		{
+			var glyph:FlxText = msOffsetGlyphs.get(text.charAt(i)); // none for the space and past the end
+			slot.visible = glyph != null && !ClientPrefs.data.hideHud;
+			if(glyph == null) continue;
 
-		FlxTween.cancelTweensOf(msOffsetTxt);
-		msOffsetTxt.alpha = 1;
-		FlxTween.tween(msOffsetTxt, {alpha: 0}, 0.2 / playbackRate, {startDelay: 0.5 / playbackRate});
+			if(slot.graphic != glyph.graphic) slot.loadGraphic(glyph.graphic);
+			slot.setPosition(textX + i * advance, textY);
+			slot.color = tint;
+			slot.alpha = 1;
+		}
+
+		if(msOffsetTween != null) msOffsetTween.cancel();
+		msOffsetTween = FlxTween.num(1, 0, 0.2 / playbackRate, {startDelay: 0.5 / playbackRate}, function(alpha:Float) {
+			for (slot in msOffsetSlots) slot.alpha = alpha;
+		});
 	}
 
 	private function popUpScore(note:Note = null):Void
