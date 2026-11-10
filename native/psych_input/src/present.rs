@@ -299,6 +299,9 @@ struct Presenter {
     tearing: bool,
     /// Whether the swap chain holds the display exclusively right now.
     exclusive: bool,
+    /// Set when `exclusive` changed and the buffers have not been resized since. DXGI shows
+    /// nothing until they are, even when the size is the same.
+    stale_buffers: bool,
 }
 
 impl Presenter {
@@ -329,7 +332,7 @@ impl Presenter {
         let mut presenter = Presenter {
             gl, window, window_dc, gl_context: wglGetCurrentContext(), hidden_window: null_mut(), device: null_mut(), context: null_mut(), swap_chain: null_mut(), texture: null_mut(),
             gl_texture: 0, framebuffer: 0, interop_device: null_mut(), interop_texture: null_mut(),
-            width, height, tearing: true, exclusive: false,
+            width, height, tearing: true, exclusive: false, stale_buffers: false,
         };
         if presenter.build() {
             Some(presenter)
@@ -538,7 +541,11 @@ impl Presenter {
         let flags = if self.tearing { DXGI_SWAP_CHAIN_FLAG_ALLOW_TEARING } else { 0 };
         // 0 buffers and format 0 keep the ones the swap chain has.
         let resized = resize_buffers(self.swap_chain, 0, width as u32, height as u32, 0, flags);
-        (resized >= 0 || fail(9, resized)) && self.create_texture()
+        if resized < 0 {
+            return fail(9, resized);
+        }
+        self.stale_buffers = false;
+        self.create_texture()
     }
 
     unsafe fn is_exclusive(&self) -> bool {
@@ -571,20 +578,28 @@ impl Presenter {
     }
 
     unsafe fn present(&mut self, exclusive: bool) -> bool {
-        // Exclusive use ends by itself when another window comes to the front (Alt+Tab)
-        let exclusive = exclusive && GetForegroundWindow() == self.window;
+        let (width, height) = Self::client_size(self.window);
+        let minimized = width <= 0 || height <= 0;
+
+        // Windows ends exclusive use by itself, and minimizes the window, when another window comes
+        // to the front. Only ask for it while the game is the one in front and on screen.
+        let exclusive = exclusive && !minimized && GetForegroundWindow() == self.window;
         if exclusive != self.is_exclusive() {
             self.set_exclusive(exclusive);
         }
-        let was_exclusive = self.exclusive;
-        self.exclusive = self.is_exclusive();
-
-        let (width, height) = Self::client_size(self.window);
-        if width <= 0 || height <= 0 {
-            return true; // minimized: nothing to show
+        // Read back what it really is: it also changes without being asked, and a request can be refused
+        let now_exclusive = self.is_exclusive();
+        if now_exclusive != self.exclusive {
+            self.exclusive = now_exclusive;
+            self.stale_buffers = true;
         }
-        // The buffers must also be resized after every change between exclusive and not
-        if ((width, height) != (self.width, self.height) || was_exclusive != self.exclusive) && !self.resize(width, height) {
+
+        // The change above can resize the window
+        let (width, height) = Self::client_size(self.window);
+        if minimized || width <= 0 || height <= 0 {
+            return true; // nothing to show; stale_buffers keeps the resize owed for when there is
+        }
+        if ((width, height) != (self.width, self.height) || self.stale_buffers) && !self.resize(width, height) {
             return false;
         }
         if !self.copy_back_buffer() {
