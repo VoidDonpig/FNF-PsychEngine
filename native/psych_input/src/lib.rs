@@ -10,7 +10,7 @@
 //! - `psych_rawinput_next() -> int`      next event as `code | down << 16`, or -1 when empty
 //! - `psych_rawinput_age_ms() -> double` age of the event `next` returned last
 //! - `psych_rawinput_covers(code) -> int` 1 when this key code is delivered by `next`
-#![cfg_attr(not(test), no_std)]
+#![cfg_attr(not(any(test, feature = "std")), no_std)]
 
 use core::sync::atomic::{AtomicI64, AtomicU32, AtomicUsize, Ordering};
 
@@ -307,6 +307,10 @@ mod win {
     }
 }
 
+// Rust callers reach these by path; C callers through the exported symbols.
+#[cfg(windows)]
+pub use win::{psych_rawinput_age_ms, psych_rawinput_start};
+
 #[cfg(windows)]
 mod present;
 #[cfg(windows)]
@@ -325,7 +329,7 @@ pub extern "C" fn psych_rawinput_age_ms() -> f64 {
     0.0
 }
 
-#[cfg(not(test))]
+#[cfg(not(any(test, feature = "std")))]
 #[panic_handler]
 fn panic(_: &core::panic::PanicInfo) -> ! {
     loop {}

@@ -5,7 +5,14 @@ edition = "2021"
 description = "Raw Input keyboard capture, DXGI flip-model presentation and window setup for Psych Engine (Windows)"
 
 [lib]
-crate-type = ["staticlib"]
+# staticlib: linked into the Haxe (hxcpp) build. rlib: used as a normal dependency by the Rust engine (engine-rs).
+crate-type = ["staticlib", "rlib"]
+# The plain library cannot be built for a test run (no_std with the unwinding test profile), and it has no doc tests.
+doctest = false
+
+[features]
+# For Rust programs that link the standard library: they bring their own panic handler.
+std = []
 
 # no_std + abort: nothing but kernel32/user32 to link into the hxcpp executable.
 [profile.dev]

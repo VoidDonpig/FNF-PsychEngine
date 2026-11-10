@@ -47,6 +47,8 @@ pub struct Play {
     pub state: Vec<NoteState>,
     pub held: [bool; 4],
     pub botplay: bool,
+    /// Off: a press with nothing to hit counts as a miss.
+    pub ghost_tapping: bool,
     pub score: i64,
     pub misses: u32,
     pub combo: u32,
@@ -61,7 +63,7 @@ pub struct Play {
 impl Play {
     pub fn new(chart: Chart, botplay: bool) -> Play {
         let state = vec![NoteState::Pending; chart.notes.len()];
-        Play { chart, state, held: [false; 4], botplay, score: 0, misses: 0, combo: 0, health: 1.0, rated: 0, weight: 0.0, first_open: 0 }
+        Play { chart, state, held: [false; 4], botplay, ghost_tapping: true, score: 0, misses: 0, combo: 0, health: 1.0, rated: 0, weight: 0.0, first_open: 0 }
     }
 
     /// Accuracy from 0 to 1, once anything was rated.
@@ -83,15 +85,23 @@ impl Play {
         self.first_open = self.state.iter().position(|s| *s != NoteState::Done).unwrap_or(self.state.len());
     }
 
-    /// A key went down at song position `pos` (ms). Pressing with nothing to hit costs nothing.
+    /// A key went down at song position `pos` (ms).
     pub fn press(&mut self, lane: usize, pos: f64) -> Option<Event> {
         self.held[lane] = true;
-        let index = (self.first_open..self.chart.notes.len())
+        let found = (self.first_open..self.chart.notes.len())
             .take_while(|&i| self.chart.notes[i].time <= pos + SAFE_MS)
             .find(|&i| {
                 let note = &self.chart.notes[i];
                 note.player && note.lane == lane && self.state[i] == NoteState::Pending && (note.time - pos).abs() <= SAFE_MS
-            })?;
+            });
+        let Some(index) = found else {
+            if self.ghost_tapping || self.botplay {
+                return None;
+            }
+            self.score -= 10;
+            self.health += MISS_HEALTH / 2.0; // a stray press costs half of what a missed note does
+            return Some(self.miss(lane));
+        };
         let (time, sustain, hurt) = { let n = &self.chart.notes[index]; (n.time, n.sustain, n.hurt) };
         if hurt {
             self.state[index] = NoteState::Done;
@@ -228,6 +238,16 @@ mod tests {
         assert!(!p.finished());
         p.update(500.0);
         assert!(p.finished() && p.accuracy() == Some(1.0) && p.score == 350);
+    }
+
+    #[test]
+    fn stray_presses_cost_only_without_ghost_tapping() {
+        let mut p = play(&[(5000.0, 0, true, 0.0)], false);
+        assert_eq!(p.press(0, 100.0), None);
+        p.ghost_tapping = false;
+        assert_eq!(p.press(0, 100.0), Some(Event::Miss { lane: 0 }));
+        assert_eq!((p.misses, p.score), (1, -10));
+        assert!((p.health - 0.95).abs() < 1e-9);
     }
 
     #[test]

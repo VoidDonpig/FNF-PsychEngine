@@ -14,3 +14,5 @@ funkin_core = { path = "../core" }
 macroquad = { version = "0.4", default-features = false }
 cpal = { version = "0.15", optional = true }
 lewton = { version = "0.10", optional = true }
+serde_json = "1"
+psych_input = { path = "../../native/psych_input", features = ["std"] }
