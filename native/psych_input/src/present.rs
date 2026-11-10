@@ -11,9 +11,12 @@
 //! C ABI (called from source/backend/FlipPresent.hx on the render thread, GL context current):
 //! - `psych_present() -> int`  1 when the frame was presented here (the caller must skip SwapBuffers),
 //!   0 when this path is unavailable and the caller must present as usual.
+//! - `psych_present_error() -> int`  which step failed last (see `fail`), 0 for none
+//! - `psych_present_hresult() -> int`  the Windows error code of that step, 0 when it has none
 
 use core::ffi::c_void;
 use core::ptr::{addr_of_mut, null, null_mut};
+use core::sync::atomic::{AtomicI32, Ordering};
 
 type Handle = *mut c_void;
 type ComPtr = *mut c_void;
@@ -30,6 +33,8 @@ pub(crate) const IID_ID3D11_TEXTURE2D: Guid = Guid(0x6f15aaf2, 0xd208, 0x4e89, [
 // The tests at the bottom check every one against the `windows` crate.
 pub(crate) const UNKNOWN_QUERY_INTERFACE: usize = 0;
 pub(crate) const UNKNOWN_RELEASE: usize = 2;
+pub(crate) const OBJECT_GET_PARENT: usize = 6;
+pub(crate) const DXGI_DEVICE_GET_ADAPTER: usize = 7;
 pub(crate) const FACTORY_MAKE_WINDOW_ASSOCIATION: usize = 8;
 pub(crate) const FACTORY2_CREATE_SWAP_CHAIN_FOR_HWND: usize = 15;
 pub(crate) const SWAP_CHAIN_PRESENT: usize = 8;
@@ -128,9 +133,27 @@ extern "system" {
         feature_level: *mut u32, context: *mut ComPtr) -> i32;
 }
 
-#[link(name = "dxgi")]
-extern "system" {
-    fn CreateDXGIFactory1(iid: *const Guid, factory: *mut ComPtr) -> i32;
+static ERROR_STEP: AtomicI32 = AtomicI32::new(0);
+static ERROR_HRESULT: AtomicI32 = AtomicI32::new(0);
+
+/// Remembers which step failed, for the log the game writes. Always answers false.
+/// Steps: 1 driver lacks a function, 2 no window or multisampled, 3 Direct3D device, 4 sharing with
+/// OpenGL, 5 shared texture, 6 copy of the back buffer, 7 DXGI factory, 8 swap chain, 9 resize,
+/// 10 back buffer of the swap chain, 11 present.
+fn fail(step: i32, hresult: i32) -> bool {
+    ERROR_STEP.store(step, Ordering::Relaxed);
+    ERROR_HRESULT.store(hresult, Ordering::Relaxed);
+    false
+}
+
+#[no_mangle]
+pub extern "C" fn psych_present_error() -> i32 {
+    ERROR_STEP.load(Ordering::Relaxed)
+}
+
+#[no_mangle]
+pub extern "C" fn psych_present_hresult() -> i32 {
+    ERROR_HRESULT.load(Ordering::Relaxed)
 }
 
 /// OpenGL and WGL functions that opengl32.dll does not export: the driver hands them out.
@@ -218,13 +241,17 @@ impl Presenter {
     /// Everything that can fail fails here, before the first frame is presented: after it, the
     /// window belongs to the swap chain and SwapBuffers no longer reaches the screen.
     unsafe fn create() -> Option<Presenter> {
-        let gl = Gl::load()?;
+        let Some(gl) = Gl::load() else {
+            fail(1, 0);
+            return None;
+        };
         let window = WindowFromDC(wglGetCurrentDC());
         let (width, height) = Self::client_size(window);
         // A multisampled back buffer cannot be copied upside down in one blit.
         let mut multisampled = 0;
         glGetIntegerv(GL_SAMPLE_BUFFERS, &mut multisampled);
         if window.is_null() || width <= 0 || height <= 0 || multisampled != 0 {
+            fail(2, 0);
             return None;
         }
 
@@ -242,16 +269,16 @@ impl Presenter {
     }
 
     unsafe fn build(&mut self) -> bool {
-        if D3D11CreateDevice(null_mut(), D3D_DRIVER_TYPE_HARDWARE, null_mut(), 0, null(), 0, D3D11_SDK_VERSION,
-            &mut self.device, null_mut(), &mut self.context) < 0
-        {
-            return false;
+        let created = D3D11CreateDevice(null_mut(), D3D_DRIVER_TYPE_HARDWARE, null_mut(), 0, null(), 0,
+            D3D11_SDK_VERSION, &mut self.device, null_mut(), &mut self.context);
+        if created < 0 {
+            return fail(3, created);
         }
 
         // Fails when OpenGL and Direct3D run on different graphics cards (some laptops).
         self.interop_device = (self.gl.dx_open_device)(self.device);
         if self.interop_device.is_null() {
-            return false;
+            return fail(4, 0);
         }
 
         // Prove the shared texture works before the swap chain exists: the swap chain is the step
@@ -262,9 +289,30 @@ impl Presenter {
             return false;
         }
 
+        // The swap chain must come from the factory the device belongs to. On any other factory,
+        // MakeWindowAssociation below has no effect and DXGI answers Alt+Enter with its own
+        // exclusive fullscreen, on top of lime's.
+        let query: unsafe extern "system" fn(ComPtr, *const Guid, *mut ComPtr) -> i32 = method(self.device, UNKNOWN_QUERY_INTERFACE);
+        let mut dxgi_device: ComPtr = null_mut();
+        let mut adapter: ComPtr = null_mut();
         let mut factory: ComPtr = null_mut();
-        if CreateDXGIFactory1(&IID_IDXGI_FACTORY2, &mut factory) < 0 {
-            return false;
+        let mut found = query(self.device, &IID_IDXGI_DEVICE1, &mut dxgi_device);
+        if found >= 0 {
+            // Never queue more than one frame: a queued frame is a frame of latency.
+            let set_latency: unsafe extern "system" fn(ComPtr, u32) -> i32 = method(dxgi_device, DXGI_DEVICE1_SET_MAXIMUM_FRAME_LATENCY);
+            set_latency(dxgi_device, 1);
+
+            let get_adapter: unsafe extern "system" fn(ComPtr, *mut ComPtr) -> i32 = method(dxgi_device, DXGI_DEVICE_GET_ADAPTER);
+            found = get_adapter(dxgi_device, &mut adapter);
+        }
+        if found >= 0 {
+            let get_parent: unsafe extern "system" fn(ComPtr, *const Guid, *mut ComPtr) -> i32 = method(adapter, OBJECT_GET_PARENT);
+            found = get_parent(adapter, &IID_IDXGI_FACTORY2, &mut factory);
+        }
+        release(adapter);
+        release(dxgi_device);
+        if found < 0 {
+            return fail(7, found);
         }
         let create_swap_chain: unsafe extern "system" fn(ComPtr, ComPtr, Handle, *const SwapChainDesc1,
             *const c_void, ComPtr, *mut ComPtr) -> i32 = method(factory, FACTORY2_CREATE_SWAP_CHAIN_FOR_HWND);
@@ -296,16 +344,7 @@ impl Presenter {
         }
         release(factory);
         if result < 0 {
-            return false;
-        }
-
-        // Never queue more than one frame: a queued frame is a frame of latency.
-        let query: unsafe extern "system" fn(ComPtr, *const Guid, *mut ComPtr) -> i32 = method(self.device, UNKNOWN_QUERY_INTERFACE);
-        let mut dxgi_device: ComPtr = null_mut();
-        if query(self.device, &IID_IDXGI_DEVICE1, &mut dxgi_device) >= 0 {
-            let set_latency: unsafe extern "system" fn(ComPtr, u32) -> i32 = method(dxgi_device, DXGI_DEVICE1_SET_MAXIMUM_FRAME_LATENCY);
-            set_latency(dxgi_device, 1);
-            release(dxgi_device);
+            return fail(8, result);
         }
         true
     }
@@ -327,12 +366,13 @@ impl Presenter {
         };
         let create_texture: unsafe extern "system" fn(ComPtr, *const Texture2DDesc, *const c_void, *mut ComPtr) -> i32 =
             method(self.device, DEVICE_CREATE_TEXTURE2D);
-        if create_texture(self.device, &desc, null(), &mut self.texture) < 0 {
-            return false;
+        let created = create_texture(self.device, &desc, null(), &mut self.texture);
+        if created < 0 {
+            return fail(5, created);
         }
         self.interop_texture = (self.gl.dx_register_object)(self.interop_device, self.texture, self.gl_texture,
             GL_TEXTURE_2D, WGL_ACCESS_WRITE_DISCARD_NV);
-        !self.interop_texture.is_null()
+        !self.interop_texture.is_null() || fail(5, 0)
     }
 
     unsafe fn destroy_texture(&mut self) {
@@ -347,7 +387,7 @@ impl Presenter {
     /// Copies OpenGL's back buffer into the shared texture, leaving OpenGL's state as it was.
     unsafe fn copy_back_buffer(&mut self) -> bool {
         if (self.gl.dx_lock_objects)(self.interop_device, 1, &mut self.interop_texture) == 0 {
-            return false;
+            return fail(6, 0);
         }
         let (mut read, mut draw) = (0, 0);
         glGetIntegerv(GL_READ_FRAMEBUFFER_BINDING, &mut read);
@@ -372,7 +412,7 @@ impl Presenter {
         if scissor {
             glEnable(GL_SCISSOR_TEST);
         }
-        (self.gl.dx_unlock_objects)(self.interop_device, 1, &mut self.interop_texture) != 0 && complete
+        ((self.gl.dx_unlock_objects)(self.interop_device, 1, &mut self.interop_texture) != 0 && complete) || fail(6, 0)
     }
 
     unsafe fn resize(&mut self, width: i32, height: i32) -> bool {
@@ -383,7 +423,8 @@ impl Presenter {
             method(self.swap_chain, SWAP_CHAIN_RESIZE_BUFFERS);
         let flags = if self.tearing { DXGI_SWAP_CHAIN_FLAG_ALLOW_TEARING } else { 0 };
         // 0 buffers and format 0 keep the ones the swap chain has.
-        resize_buffers(self.swap_chain, 0, width as u32, height as u32, 0, flags) >= 0 && self.create_texture()
+        let resized = resize_buffers(self.swap_chain, 0, width as u32, height as u32, 0, flags);
+        (resized >= 0 || fail(9, resized)) && self.create_texture()
     }
 
     unsafe fn present(&mut self) -> bool {
@@ -401,15 +442,17 @@ impl Presenter {
         let get_buffer: unsafe extern "system" fn(ComPtr, u32, *const Guid, *mut ComPtr) -> i32 =
             method(self.swap_chain, SWAP_CHAIN_GET_BUFFER);
         let mut back_buffer: ComPtr = null_mut();
-        if get_buffer(self.swap_chain, 0, &IID_ID3D11_TEXTURE2D, &mut back_buffer) < 0 {
-            return false;
+        let got = get_buffer(self.swap_chain, 0, &IID_ID3D11_TEXTURE2D, &mut back_buffer);
+        if got < 0 {
+            return fail(10, got);
         }
         let copy_resource: unsafe extern "system" fn(ComPtr, ComPtr, ComPtr) = method(self.context, CONTEXT_COPY_RESOURCE);
         copy_resource(self.context, back_buffer, self.texture);
         release(back_buffer);
 
         let present: unsafe extern "system" fn(ComPtr, u32, u32) -> i32 = method(self.swap_chain, SWAP_CHAIN_PRESENT);
-        present(self.swap_chain, 0, if self.tearing { DXGI_PRESENT_ALLOW_TEARING } else { 0 }) >= 0
+        let presented = present(self.swap_chain, 0, if self.tearing { DXGI_PRESENT_ALLOW_TEARING } else { 0 });
+        presented >= 0 || fail(11, presented)
     }
 
     unsafe fn destroy(&mut self) {
@@ -451,8 +494,17 @@ pub unsafe extern "C" fn psych_present() -> i32 {
         if presenter.present() {
             return 1;
         }
+        // The window shows nothing but the swap chain once it has presented, so giving up here
+        // would leave a frozen picture. Start over once (lost device, failed resize) before that.
         presenter.destroy();
         *state = State::Unavailable;
+        if let Some(mut rebuilt) = Presenter::create() {
+            if rebuilt.present() {
+                *state = State::Ready(rebuilt);
+                return 1;
+            }
+            rebuilt.destroy();
+        }
     }
     0
 }
@@ -484,6 +536,8 @@ mod layout {
     const _: () = {
         assert!(offset_of!(windows::core::IUnknown_Vtbl, QueryInterface) / POINTER == UNKNOWN_QUERY_INTERFACE);
         assert!(offset_of!(windows::core::IUnknown_Vtbl, Release) / POINTER == UNKNOWN_RELEASE);
+        assert!(offset_of!(dxgi::IDXGIObject_Vtbl, GetParent) / POINTER == OBJECT_GET_PARENT);
+        assert!(offset_of!(dxgi::IDXGIDevice_Vtbl, GetAdapter) / POINTER == DXGI_DEVICE_GET_ADAPTER);
         assert!(offset_of!(dxgi::IDXGIFactory_Vtbl, MakeWindowAssociation) / POINTER == FACTORY_MAKE_WINDOW_ASSOCIATION);
         assert!(offset_of!(dxgi::IDXGIFactory2_Vtbl, CreateSwapChainForHwnd) / POINTER == FACTORY2_CREATE_SWAP_CHAIN_FOR_HWND);
         assert!(offset_of!(dxgi::IDXGISwapChain_Vtbl, Present) / POINTER == SWAP_CHAIN_PRESENT);

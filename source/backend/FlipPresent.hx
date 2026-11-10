@@ -9,7 +9,7 @@ package backend;
  * graphics driver cannot do it, present() answers false.
  */
 #if RUST_INPUT
-@:cppFileCode('extern "C" int psych_present();')
+@:cppFileCode('extern "C" { int psych_present(); int psych_present_error(); int psych_present_hresult(); }')
 #end
 class FlipPresent
 {
@@ -20,6 +20,18 @@ class FlipPresent
 		return untyped __cpp__('psych_present() != 0');
 		#else
 		return false;
+		#end
+	}
+
+	/** Why present() answered false: the step that failed (listed in present.rs) and its Windows error code. **/
+	public static function error():String
+	{
+		#if RUST_INPUT
+		var step:Int = untyped __cpp__('psych_present_error()');
+		var hresult:Int = untyped __cpp__('psych_present_hresult()');
+		return 'step $step, error 0x' + StringTools.hex(hresult, 8);
+		#else
+		return 'not in this build';
 		#end
 	}
 }

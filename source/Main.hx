@@ -207,8 +207,17 @@ class Main extends Sprite
 			// so the newest frame is the one shown. The FPS cap is untouched: it is lime's frame timer.
 			context.webgl.finish();
 
+			if (!flipPresent) return;
+
 			// When the frame went out through DXGI, lime must not swap the OpenGL buffers as well
-			if (flipPresent && backend.FlipPresent.present()) Lib.current.stage.window.onRender.cancel();
+			if (backend.FlipPresent.present())
+				Lib.current.stage.window.onRender.cancel();
+			else
+			{
+				// It does not come back once it is off: say why, where a player can find it
+				flipPresent = false;
+				try sys.io.File.saveContent('FlipPresent.log', 'DXGI presentation is off: ' + backend.FlipPresent.error()) catch (e:Dynamic) {}
+			}
 		}, false, -1000);
 		#end
 

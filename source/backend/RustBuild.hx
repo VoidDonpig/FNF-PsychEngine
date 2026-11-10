@@ -38,7 +38,7 @@ class RustBuild
 		}
 
 		Compiler.define('RUST_INPUT');
-		Compiler.addGlobalMetadata('backend.RawInput', '@:buildXml("<target id=\'haxe\'><lib name=\'$lib\'/><lib name=\'user32.lib\'/><lib name=\'opengl32.lib\'/><lib name=\'d3d11.lib\'/><lib name=\'dxgi.lib\'/></target>")');
+		Compiler.addGlobalMetadata('backend.RawInput', '@:buildXml("<target id=\'haxe\'><lib name=\'$lib\'/><lib name=\'user32.lib\'/><lib name=\'opengl32.lib\'/><lib name=\'d3d11.lib\'/></target>")');
 	}
 }
 #end
