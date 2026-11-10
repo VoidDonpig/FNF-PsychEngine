@@ -225,6 +225,11 @@ class Main extends Sprite
 		}, false, -1000);
 		#end
 
+		// F11 switches fullscreen in every menu and during songs, like Alt+Enter
+		FlxG.signals.preUpdate.add(function() {
+			if (FlxG.keys.justPressed.F11) FlxG.fullscreen = !FlxG.fullscreen;
+		});
+
 		FlxG.game.focusLostFramerate = 60;
 		FlxG.keys.preventDefaultKeys = [TAB];
 		
