@@ -160,6 +160,12 @@ class VisualsSettingsSubState extends BaseOptionsMenu
 			BOOL);
 		addOption(option);
 
+		var option:Option = new Option('Hit Timing (ms)',
+			"If checked, shows how many milliseconds early (-) or late (+)\nyou hit each note.",
+			'showMsOffset',
+			BOOL);
+		addOption(option);
+
 		super();
 		add(notes);
 		add(splashes);

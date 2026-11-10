@@ -2558,6 +2558,32 @@ class PlayState extends MusicBeatState
 			Paths.image(uiFolder + 'num' + i + uiPostfix);
 	}
 
+	public var msOffsetTxt:FlxText;
+
+	// "Hit Timing (ms)" option: how early (-) or late (+) the note was hit, the same number it was rated with
+	function showMsOffset(ms:Float):Void
+	{
+		if(msOffsetTxt == null)
+		{
+			msOffsetTxt = new FlxText(0, 0, 200, '', 24);
+			msOffsetTxt.setFormat(Paths.font("vcr.ttf"), 24, FlxColor.WHITE, CENTER, FlxTextBorderStyle.OUTLINE, FlxColor.BLACK);
+			msOffsetTxt.borderSize = 1.25;
+			msOffsetTxt.scrollFactor.set();
+			uiGroup.add(msOffsetTxt);
+		}
+
+		// Under the combo numbers, and moved with them by the combo offset option
+		msOffsetTxt.x = FlxG.width * 0.35 - 100 + ClientPrefs.data.comboOffset[2];
+		msOffsetTxt.y = FlxG.height / 2 + 140 - ClientPrefs.data.comboOffset[3];
+		msOffsetTxt.text = (ms > 0 ? '+' : '') + FlxMath.roundDecimal(ms, 1) + ' ms';
+		msOffsetTxt.color = (ms < 0) ? 0xFF7FC8FF : 0xFFFF9F7F; // early blue, late orange
+		msOffsetTxt.visible = !ClientPrefs.data.hideHud;
+
+		FlxTween.cancelTweensOf(msOffsetTxt);
+		msOffsetTxt.alpha = 1;
+		FlxTween.tween(msOffsetTxt, {alpha: 0}, 0.2 / playbackRate, {startDelay: 0.5 / playbackRate});
+	}
+
 	private function popUpScore(note:Note = null):Void
 	{
 		// Botplay hits a note on the first frame after its time: rate it at its time, not at however late that frame came
@@ -2590,6 +2616,9 @@ class PlayState extends MusicBeatState
 
 		if(daRating.noteSplash && !note.noteSplashData.disabled)
 			spawnNoteSplashOnNote(note);
+
+		if(ClientPrefs.data.showMsOffset && !cpuControlled)
+			showMsOffset((Conductor.songPosition - note.strumTime - ClientPrefs.data.ratingOffset) / playbackRate);
 
 		if(!cpuControlled) {
 			songScore += score;
