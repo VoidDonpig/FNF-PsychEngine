@@ -192,6 +192,16 @@ class Main extends Sprite
 		FlxG.signals.preUpdate.add(function() {
 			if (cappedFrames > 0 && --cappedFrames == 0) FlxG.maxElapsed = 1;
 		});
+
+		#if sys
+		// The driver lets the game queue a few frames ahead of the GPU. When the GPU is the slow part, the
+		// frame on screen is that many frames old. Wait for the GPU to finish each frame before the flip,
+		// so the newest frame is the one shown. The FPS cap is untouched: it is lime's frame timer.
+		Lib.current.stage.window.onRender.add(function(context:lime.graphics.RenderContext) {
+			if (context != null && context.webgl != null) context.webgl.finish();
+		}, false, -1000);
+		#end
+
 		FlxG.game.focusLostFramerate = 60;
 		FlxG.keys.preventDefaultKeys = [TAB];
 		
