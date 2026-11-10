@@ -78,6 +78,12 @@ jobs:
         with:
           name: windowsBuild
           path: export/release/windows/bin
+      # Small download for testing code changes: drop it into an existing build
+      - name: Publish Executable Only
+        uses: actions/upload-artifact@v4.3.4
+        with:
+          name: windowsExe
+          path: export/release/windows/bin/PsychEngine.exe
   buildMac:
     runs-on: macos-15
 
