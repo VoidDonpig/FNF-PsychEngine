@@ -177,6 +177,9 @@ class Main extends Sprite
 		#end
 
 		FlxG.fixedTimestep = false;
+		// FlxG.resetGame() (restart from the mods menu) puts Flixel's defaults back. With its fixed timestep
+		// the game ran in slow motion whenever the FPS was below the cap.
+		FlxG.signals.postGameReset.add(function() FlxG.fixedTimestep = false);
 
 		// Flixel caps the time one frame may advance the game at FlxG.maxElapsed, 0.1s by default: below
 		// 10 FPS everything but the music ran in slow motion. Keep that cap only for the frames right after
