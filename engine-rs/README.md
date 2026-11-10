@@ -29,6 +29,8 @@ Done:
 - **Stage**: characters from their `characters/*.json` (Sparrow sheets, idle on the beat, sing and miss
   poses), the week 1 backdrop, the camera following the singer and bumping on the beat, health icons and
   bar colours, pause menu, results.
+- **HUD**: countdown with its sounds, rating and combo pictures, note splashes, hold end caps, time bar,
+  miss sounds, the game over scene (fall, music, retry).
 - **Sound**: instrumental and vocals as separate tracks (the player's voice drops out on a miss), song
   position from the sound card's sample count.
 - **Options**: key binds (two per lane), downscroll, middlescroll, ghost tapping, note offset, botplay.
@@ -36,10 +38,9 @@ Done:
 
 Not there yet:
 
-- **Play screen**: countdown, rating and combo pictures, note splashes, hold end caps, time bar, the game
-  over scene, chart events, note types other than Hurt Note, gameplay changers (speed, playback rate,
-  health gain/loss, instakill, practice), the backdrops and mechanics of the other ten stages, pixel
-  stages, characters made of several sheets or of Animate atlases.
+- **Play screen**: chart events, note types other than Hurt Note, gameplay changers (speed, playback
+  rate, health gain/loss, instakill, practice), the backdrops and mechanics of the other ten stages,
+  pixel stages, characters made of several sheets or of Animate atlases, other note and splash skins.
 - **Menus**: title, main menu, story mode, freeplay as in the Haxe engine (scores, previews), credits,
   mods (enable, order, settings), achievements, the rest of the options (graphics, visuals, note colours,
   gamepad, languages), transitions, loading screen.

@@ -173,7 +173,10 @@ impl Play {
         self.misses += 1;
         self.combo = 0;
         self.rated += 1;
-        self.health = (self.health - MISS_HEALTH).max(0.0);
+        self.health -= MISS_HEALTH;
+        if self.health < 1e-9 {
+            self.health = 0.0; // ten misses from full must empty the bar, whatever the rounding says
+        }
         Event::Miss { lane }
     }
 }
@@ -248,6 +251,14 @@ mod tests {
         assert_eq!(p.press(0, 100.0), Some(Event::Miss { lane: 0 }));
         assert_eq!((p.misses, p.score), (1, -10));
         assert!((p.health - 0.95).abs() < 1e-9);
+    }
+
+    #[test]
+    fn ten_misses_from_full_health_empty_it() {
+        let notes: Vec<(f64, usize, bool, f64)> = (0..10).map(|i| (i as f64 * 10.0, 0, true, 0.0)).collect();
+        let mut p = play(&notes, false);
+        assert_eq!(p.update(1000.0).len(), 10);
+        assert_eq!(p.health, 0.0);
     }
 
     #[test]

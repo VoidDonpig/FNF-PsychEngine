@@ -3,15 +3,15 @@
 //! Run it from a folder that has the game's `assets` (and optionally `mods`), or pass `--base <folder>`.
 //! `--bot` lets the game play itself, `--play <text>` starts the first song whose name contains the text.
 //! For checking a build without a screen: `--at <seconds>` starts at that point of the song, `--options`
-//! opens the options, and `--shot <file.png>` saves the picture after a few frames and quits.
+//! opens the options, and `--shot <file.png>` saves the picture after a few frames (or `--after <seconds>`) and quits.
 mod atlas;
 mod audio;
 mod input;
 mod scene;
 mod settings;
 
-use funkin_core::content::{discover, SongEntry};
-use funkin_core::play::{Event, NoteState, Play};
+use funkin_core::content::{discover, Paths, SongEntry};
+use funkin_core::play::{Event, NoteState, Play, Rating};
 use input::{KeyEvent, Keyboard};
 use macroquad::miniquad::{BlendFactor, BlendState, BlendValue, Equation, PipelineParams};
 use macroquad::prelude::*;
@@ -25,8 +25,6 @@ const NOTE_SCALE: f32 = 0.7;
 const LANE_WIDTH: f32 = 160.0 * NOTE_SCALE;
 /// Pixels a note travels per millisecond at scroll speed 1.
 const PIXELS_PER_MS: f32 = 0.45;
-/// The song starts this long after the play screen opens.
-const LEAD_IN_MS: f64 = 2000.0;
 
 const DIRECTIONS: [&str; 4] = ["left", "down", "up", "right"];
 const NOTE_NAMES: [&str; 4] = ["purple", "blue", "green", "red"];
@@ -65,6 +63,26 @@ struct Skin {
     /// One recolouring material per lane.
     lanes: Vec<Material>,
     font: Option<Font>,
+    /// Pictures for sick, good, bad, shit.
+    ratings: Vec<Texture2D>,
+    /// Pictures of the digits 0 to 9.
+    digits: Vec<Texture2D>,
+    /// Pictures for ready, set, go.
+    countdown: Vec<Texture2D>,
+    splashes: Option<atlas::Sheet>,
+}
+
+/// A picture that pops up, jumps and fades: a rating, a combo digit, a countdown step.
+struct Popup {
+    texture: Texture2D,
+    /// Top left corner when it appears.
+    at: Vec2,
+    scale: f32,
+    /// Upward kick (px/s) and gravity (px/s2).
+    motion: (f32, f32),
+    /// Song position (ms) it appeared at, and how long it stays before fading out.
+    born: f64,
+    stays: f64,
 }
 
 impl Skin {
@@ -87,7 +105,15 @@ impl Skin {
             lanes.push(material);
         }
         let font = std::fs::read(base.join("assets/fonts/vcr.ttf")).ok().and_then(|bytes| load_ttf_font_from_bytes(&bytes).ok());
-        Ok(Skin { sheet, frames, lanes, font })
+        let images = base.join("assets/shared/images");
+        // missing pictures only cost their effect
+        let pictures = |names: &[&str]| -> Vec<Texture2D> {
+            let found: Vec<Texture2D> = names.iter().filter_map(|name| std::fs::read(images.join(format!("{name}.png"))).ok()).map(|bytes| Texture2D::from_file_with_format(&bytes, None)).collect();
+            if found.len() == names.len() { found } else { Vec::new() }
+        };
+        let digits = pictures(&["num0", "num1", "num2", "num3", "num4", "num5", "num6", "num7", "num8", "num9"]);
+        let splashes = atlas::Sheet::load(&images.join("noteSplashes/noteSplashes.png")).ok();
+        Ok(Skin { sheet, frames, lanes, font, ratings: pictures(&["sick", "good", "bad", "shit"]), digits, countdown: pictures(&["ready", "set", "go"]), splashes })
     }
 
     /// Draws a sheet frame centred on (x, y), stretched to `size` if given. `lane` recolours it.
@@ -149,6 +175,17 @@ struct Playing {
     flash_until: [[f64; 4]; 2],
     /// Last judgement to show, and when it happened.
     judgement: Option<(String, Color, f64)>,
+    /// Where sounds and other shared files are found for this song.
+    paths: Paths,
+    /// Ms between opening the play screen and the song's first beat: the countdown.
+    lead_in: f64,
+    /// The last beat the countdown announced.
+    counted: i64,
+    popups: Vec<Popup>,
+    /// Lanes that just got a "sick" hit, and when.
+    splashes: Vec<(usize, f64)>,
+    /// Seconds since the player lost, and since they confirmed the retry.
+    dead: Option<(f32, Option<f32>)>,
 }
 
 impl Playing {
@@ -162,10 +199,13 @@ impl Playing {
         let scene = scene::Scene::load(base, &entry.source, &chart).map_err(|e| eprintln!("Stage: {e}")).ok();
         // shortcut: --at only moves the silent clock (it exists for screenshots); seek the audio too to make it a practice feature.
         let song = audio::Song::load(if start_at > 0.0 { &[] } else { &tracks });
+        // five beats of countdown, as the Haxe engine does
+        let lead_in = if start_at > 0.0 { 0.0 } else { 5.0 * 60000.0 / chart.bpm };
         let mut play = Play::new(chart, settings.botplay);
         play.ghost_tapping = settings.ghost_tapping;
         play.skip_to(start_at);
-        Ok(Playing { entry: entry.clone(), play, song, player_voice, scene, waited: 0.0, started: false, paused: None, start_at, position: -LEAD_IN_MS, settings: settings.clone(), held_keys: Vec::new(), flash_until: [[0.0; 4]; 2], judgement: None })
+        Ok(Playing { entry: entry.clone(), play, song, player_voice, scene, waited: 0.0, started: false, paused: None, start_at, position: -lead_in, settings: settings.clone(), held_keys: Vec::new(), flash_until: [[f64::MIN; 4]; 2], judgement: None,
+            paths: Paths::new(base, &entry.source, ""), lead_in, counted: i64::MIN, popups: Vec::new(), splashes: Vec::new(), dead: None })
     }
 
     /// Song position the notes are judged and drawn at.
@@ -173,8 +213,43 @@ impl Playing {
         self.position - self.settings.offset_ms
     }
 
+    fn sound(&self, name: &str, volume: f32, looped: bool) {
+        let folder = if looped { "music" } else { "sounds" };
+        if let Some(path) = self.paths.find(&format!("{folder}/{name}.ogg")) {
+            self.song.play_sound(&path, volume, looped);
+        }
+    }
+
+    /// The game over scene: the fall, then waiting for retry (Enter) or giving up (Esc).
+    fn update_dead(&mut self, since: f32, confirmed: Option<f32>) -> Flow {
+        let dt = get_frame_time().min(0.1);
+        let confirm = confirmed.is_none() && is_key_pressed(KeyCode::Enter);
+        let fell = self.scene.as_mut().is_some_and(|scene| scene.update_dead(dt, confirm));
+        // without a scene to play the fall, the music starts after a moment
+        if (fell || (self.scene.is_none() && since < 1.0 && since + dt >= 1.0)) && confirmed.is_none() {
+            self.sound("gameOver", 1.0, true);
+        }
+        if confirm {
+            self.song.stop_sounds();
+            self.sound("gameOverEnd", 1.0, false);
+        }
+        let confirmed = if confirm { Some(0.0) } else { confirmed.map(|t| t + dt) };
+        self.dead = Some((since + dt, confirmed));
+        if is_key_pressed(KeyCode::Escape) {
+            self.song.stop_sounds();
+            Flow::Quit
+        } else if confirmed.is_some_and(|t| t > 2.5) {
+            Flow::Restart
+        } else {
+            Flow::Continue
+        }
+    }
+
     /// Runs one frame of the song with the key changes since the last one.
-    fn update(&mut self, keys: &[KeyEvent]) -> Flow {
+    fn update(&mut self, keys: &[KeyEvent], skin: &Skin) -> Flow {
+        if let Some((since, confirmed)) = self.dead {
+            return self.update_dead(since, confirmed);
+        }
         if let Some(row) = self.paused {
             let row = (row + is_key_pressed(KeyCode::Down) as usize + 2 * is_key_pressed(KeyCode::Up) as usize) % 3;
             self.paused = Some(row);
@@ -198,8 +273,9 @@ impl Playing {
             return Flow::Continue;
         }
 
-        let dt = get_frame_time();
-        let lead_in = if self.start_at > 0.0 { 0.0 } else { LEAD_IN_MS };
+        // a frame that took long (loading) does not eat the countdown; the Haxe engine caps frames the same way
+        let dt = get_frame_time().min(0.1);
+        let lead_in = self.lead_in;
         self.waited += dt as f64 * 1000.0;
         if !self.started && self.waited >= lead_in {
             self.song.start();
@@ -208,6 +284,18 @@ impl Playing {
         // The sound card's clock wobbles by a buffer between callbacks; the song never runs backwards.
         let now = if self.started { self.start_at + self.song.position_ms() } else { self.waited - lead_in };
         self.position = self.position.max(now);
+
+        // the countdown: a sound on each of the four beats before the song, a picture on the last three
+        let crochet = 60000.0 / self.play.chart.bpm;
+        let beat = self.play.chart.beat_at(self.position).floor() as i64;
+        if beat != self.counted && (-4..0).contains(&beat) {
+            self.counted = beat;
+            self.sound(["intro3", "intro2", "intro1", "introGo"][(beat + 4) as usize], 0.6, false);
+            if let Some(picture) = skin.countdown.get((beat + 3) as usize) {
+                let at = (vec2(WIDTH, HEIGHT) - picture.size()) / 2.0;
+                self.popups.push(Popup { texture: picture.clone(), at, scale: 1.0, motion: (0.0, 0.0), born: self.position, stays: crochet * 0.6 });
+            }
+        }
 
         let judged = self.judged();
         let mut events = Vec::new();
@@ -232,12 +320,29 @@ impl Playing {
                 Event::Hit { lane, rating, diff_ms } => {
                     self.flash_until[1][lane] = judged + 120.0;
                     let color = if diff_ms < 0.0 { Color::from_hex(0x7FC8FF) } else { Color::from_hex(0xFF9F7F) };
-                    self.judgement = Some((format!("{}  {:+.1} ms", rating.name(), diff_ms), color, judged));
+                    self.judgement = Some((format!("{:+.1} ms", diff_ms), color, judged));
                     self.player_voice.iter().for_each(|&track| self.song.set_volume(track, 1.0));
+                    if rating == Rating::Sick {
+                        self.splashes.push((lane, judged));
+                    }
+                    // the rating jumps up left of the player's lanes, the combo count under it
+                    let left = if self.settings.middlescroll { 60.0 } else { WIDTH * 0.35 - 40.0 };
+                    if let Some(picture) = skin.ratings.get(rating as usize) {
+                        let at = vec2(left, (HEIGHT - picture.height() * 0.7) / 2.0 - 60.0);
+                        self.popups.push(Popup { texture: picture.clone(), at, scale: 0.7, motion: (160.0, 550.0), born: judged, stays: crochet });
+                    }
+                    if self.play.combo >= 10 && !skin.digits.is_empty() {
+                        for (place, digit) in format!("{:03}", self.play.combo).bytes().enumerate() {
+                            let picture = &skin.digits[(digit - b'0') as usize];
+                            let at = vec2(left - 50.0 + 43.0 * place as f32, (HEIGHT - picture.height() * 0.5) / 2.0 + 80.0);
+                            self.popups.push(Popup { texture: picture.clone(), at, scale: 0.5, motion: (150.0, 250.0), born: judged, stays: crochet * 2.0 });
+                        }
+                    }
                 }
                 Event::Miss { .. } => {
                     self.judgement = Some(("Miss".to_owned(), Color::from_hex(0xFF4040), judged));
                     self.player_voice.iter().for_each(|&track| self.song.set_volume(track, 0.0));
+                    self.sound(["missnote1", "missnote2", "missnote3"][self.play.misses as usize % 3], 0.15, false);
                 }
                 Event::OpponentHit { lane } => self.flash_until[0][lane] = judged + 120.0,
             }
@@ -251,9 +356,23 @@ impl Playing {
             scene.update(dt, judged, &self.play.chart, &events, held);
         }
 
+        self.splashes.retain(|&(_, at)| judged - at < 300.0);
+        self.popups.retain(|popup| self.position.max(judged) - popup.born < popup.stays + 200.0);
+
+        if self.play.health <= 0.0 {
+            self.dead = Some((0.0, None));
+            self.song.pause();
+            self.sound("fnf_loss_sfx", 1.0, false);
+            self.scene.iter_mut().for_each(|scene| scene.die());
+            return Flow::Continue;
+        }
+        if self.position < self.length() { Flow::Continue } else { Flow::Finished }
+    }
+
+    /// Length of the song in ms.
+    fn length(&self) -> f64 {
         let last_note = self.play.chart.notes.last().map_or(0.0, |n| n.time + n.sustain);
-        let end = self.song.length_ms().unwrap_or(last_note + 1500.0);
-        if self.play.health > 0.0 && self.position < end { Flow::Continue } else { Flow::Finished }
+        self.song.length_ms().unwrap_or(last_note + 1500.0)
     }
 
     fn lane_held(&self, lane: usize) -> bool {
@@ -268,6 +387,10 @@ impl Playing {
             scene.hud_zoom
         });
         set_camera(&Camera2D { target: vec2(WIDTH / 2.0, HEIGHT / 2.0), zoom: vec2(2.0 / WIDTH, 2.0 / HEIGHT) * hud_zoom, ..Default::default() });
+        if self.dead.is_some() {
+            skin.centered("Enter: retry    Esc: back to the song list", HEIGHT - 30.0, 18, GRAY);
+            return;
+        }
         let speed = self.play.chart.speed as f32;
         let strum_y = strum_y(settings);
         // notes come up from below, or with downscroll down from above
@@ -304,8 +427,12 @@ impl Playing {
                     let (top, bottom) = (head.min(tail), head.max(tail));
                     // a held hold ends at the strum: nothing left once its tail has passed it
                     if (tail - head) * direction > 0.0 && bottom > 0.0 && top < HEIGHT {
-                        let size = vec2(50.0 * NOTE_SCALE, bottom - top);
-                        skin.frame(&format!("{} hold piece0000", NOTE_NAMES[note.lane]), x, (top + bottom) / 2.0, Some(size), Some(note.lane), 0.6 * alpha);
+                        // the last stretch is the rounded end cap (turned over when notes come from above)
+                        let cap = (64.0 * NOTE_SCALE).min(bottom - top);
+                        let cap_y = tail - direction * cap / 2.0;
+                        let size = vec2(50.0 * NOTE_SCALE, bottom - top - cap);
+                        skin.frame(&format!("{} hold piece0000", NOTE_NAMES[note.lane]), x, (head + tail - direction * cap) / 2.0, Some(size), Some(note.lane), 0.6 * alpha);
+                        skin.frame(&format!("{} hold end0000", NOTE_NAMES[note.lane]), x, cap_y, Some(vec2(50.0 * NOTE_SCALE, cap * direction)), Some(note.lane), 0.6 * alpha);
                     }
                 }
                 if pass == 1 && matches!(state, NoteState::Pending | NoteState::Missed) && on_screen(y_at(note.time)) {
@@ -314,6 +441,31 @@ impl Playing {
                 }
             }
         }
+
+        // a burst on the strum for every "sick" hit
+        if let Some(sheet) = &skin.splashes {
+            for &(lane, at) in &self.splashes {
+                let frames = sheet.animation(&format!("note splash {} 1", NOTE_NAMES[lane]), &[]);
+                if let Some(&frame) = frames.get(((position - at) * 0.024) as usize) {
+                    gl_use_material(&skin.lanes[lane]);
+                    sheet.draw(frame, lane_x(settings, true, lane) - frame.size.x / 2.0, strum_y - frame.size.y / 2.0, 1.0, false, Color::new(1.0, 1.0, 1.0, 0.6));
+                    gl_use_default_material();
+                }
+            }
+        }
+        for popup in &self.popups {
+            let age = ((self.position.max(position) - popup.born) / 1000.0) as f32;
+            let fade = 1.0 - ((age * 1000.0 - popup.stays as f32) / 200.0).clamp(0.0, 1.0);
+            let y = popup.at.y - popup.motion.0 * age + popup.motion.1 * age * age / 2.0;
+            draw_texture_ex(&popup.texture, popup.at.x, y, Color::new(1.0, 1.0, 1.0, fade), DrawTextureParams { dest_size: Some(popup.texture.size() * popup.scale), ..Default::default() });
+        }
+
+        // time left, over a bar that fills as the song goes
+        let (length, time_y) = (self.length(), if settings.downscroll { HEIGHT - 44.0 } else { 19.0 });
+        let left_s = ((length - self.position.clamp(0.0, length)) / 1000.0) as u32;
+        draw_rectangle(WIDTH / 2.0 - 204.0, time_y - 4.0, 408.0, 27.0, BLACK);
+        draw_rectangle(WIDTH / 2.0 - 200.0, time_y, 400.0 * (self.position / length).clamp(0.0, 1.0) as f32, 19.0, WHITE);
+        skin.centered(&format!("{}:{:02}", left_s / 60, left_s % 60), time_y + 17.0, 22, WHITE);
 
         // health: the player's share grows from the right
         let (bar_x, bar_y, bar_w) = (WIDTH / 2.0 - 300.0, HEIGHT * if settings.downscroll { 0.11 } else { 0.89 }, 600.0);
@@ -339,14 +491,11 @@ impl Playing {
 
         let rating = self.play.accuracy().map_or("?".to_owned(), |a| format!("{:.2}%", a * 100.0));
         skin.centered(&format!("Score: {} | Misses: {} | Rating: {}", self.play.score, self.play.misses, rating), bar_y + 52.0, 20, WHITE);
-        if self.play.combo > 1 {
-            skin.text(&format!("{} combo", self.play.combo), side_x, HEIGHT / 2.0 + 60.0, 28, WHITE);
-        }
         if let Some((text, color, at)) = &self.judgement {
             let age = (position - at) as f32;
             if age < 700.0 {
                 let fade = Color { a: (1.0 - (age - 500.0).max(0.0) / 200.0), ..*color };
-                skin.text(text, side_x, HEIGHT / 2.0 + 20.0, 32, fade);
+                skin.text(text, side_x, HEIGHT / 2.0 + 160.0, 24, fade);
             }
         }
         if self.play.botplay {
@@ -393,6 +542,7 @@ async fn main() {
     let flag = |name: &str| args.iter().any(|a| a == name);
     let value = |name: &str| args.iter().position(|a| a == name).and_then(|i| args.get(i + 1)).cloned();
     let shot = value("--shot");
+    let shot_after = value("--after").and_then(|s| s.parse::<f64>().ok()).unwrap_or(0.0);
     let start_at = value("--at").and_then(|s| s.parse::<f64>().ok()).unwrap_or(0.0) * 1000.0;
 
     // the game's files: where asked, else here, else next to the program
@@ -529,10 +679,15 @@ async fn main() {
                 }
             }
             Screen::Playing(mut playing) => {
-                let flow = playing.update(&key_events);
-                if let Some(skin) = &skin {
-                    playing.draw(skin);
-                }
+                // a song is only ever opened with the skin loaded
+                let flow = match &skin {
+                    Some(skin) => {
+                        let flow = playing.update(&key_events, skin);
+                        playing.draw(skin);
+                        flow
+                    }
+                    None => Flow::Quit,
+                };
                 match flow {
                     Flow::Continue => Screen::Playing(playing),
                     Flow::Finished => {
@@ -563,7 +718,7 @@ async fn main() {
         };
 
         frames += 1;
-        if let (Some(path), true) = (&shot, frames == 5) {
+        if let (Some(path), true) = (&shot, frames >= 5 && get_time() >= shot_after) {
             // the frame is only drawn for real when it ends; push it out now to read it back
             unsafe { get_internal_gl() }.flush();
             get_screen_data().export_png(path);

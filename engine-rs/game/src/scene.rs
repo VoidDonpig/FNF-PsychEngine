@@ -119,6 +119,11 @@ impl Character {
         }
     }
 
+    /// A one-shot animation has reached its last frame.
+    fn finished(&self) -> bool {
+        self.animations.get(&self.current).is_none_or(|a| !a.looped && self.time * a.fps >= a.frames.len() as f32)
+    }
+
     fn singing(&self) -> bool {
         self.current.starts_with("sing")
     }
@@ -152,6 +157,11 @@ impl Character {
 }
 
 pub struct Scene {
+    paths: Paths,
+    /// Where the stage puts the player's character.
+    player_spot: Vec2,
+    /// The player lost: only the fallen character is shown.
+    dead: bool,
     backdrop: Vec<(Texture2D, Vec2, f32, f32, bool)>,
     pub opponent: Option<Character>,
     gf: Option<Character>,
@@ -185,7 +195,11 @@ impl Scene {
         let gf = if opponent_is_gf || stage["hide_girlfriend"].as_bool().unwrap_or(false) { None } else { character(&chart.gf, "girlfriend", false) };
         let player = character(&chart.player, "boyfriend", true);
         let default_zoom = stage["defaultZoom"].as_f64().unwrap_or(1.05) as f32;
+        let player_spot = pair(&stage["boyfriend"]);
         let mut scene = Scene {
+            paths,
+            player_spot,
+            dead: false,
             backdrop,
             opponent,
             gf,
@@ -271,8 +285,39 @@ impl Scene {
         self.icon_scale += (1.0 - self.icon_scale) * ease(9.0);
     }
 
+    /// The player lost: swaps in the fallen character and turns the camera to it.
+    pub fn die(&mut self) {
+        self.dead = true;
+        // shortcut: always "bf-dead"; charts and scripts can name another game over character (gameOverChar). Read it from the chart when one needs it.
+        if let Ok(mut fallen) = Character::load(&self.paths, "bf-dead", self.player_spot, true) {
+            fallen.play("firstDeath");
+            self.target = fallen.middle();
+            self.player = Some(fallen);
+        }
+    }
+
+    /// Runs the game over scene. Returns true at the moment the fall ends and the waiting loop begins.
+    pub fn update_dead(&mut self, dt: f32, confirm: bool) -> bool {
+        let ease = 1.0 - (-dt * 2.4).exp();
+        self.camera += (self.target - self.camera) * ease;
+        self.zoom += (self.default_zoom - self.zoom) * ease;
+        let Some(fallen) = &mut self.player else { return confirm };
+        fallen.time += dt;
+        if confirm {
+            fallen.play("deathConfirm");
+        } else if fallen.current == "firstDeath" && fallen.finished() {
+            fallen.play("deathLoop");
+            return true;
+        }
+        false
+    }
+
     pub fn draw(&self) {
         set_camera(&Camera2D { target: self.camera, zoom: vec2(2.0 / SCREEN.x, 2.0 / SCREEN.y) * self.zoom, ..Default::default() });
+        if self.dead {
+            self.player.iter().for_each(|fallen| fallen.draw());
+            return;
+        }
         let scroll = self.camera - SCREEN / 2.0;
         for (texture, position, factor, scale, flip_x) in &self.backdrop {
             // a scroll factor below 1 makes a layer follow the camera partly, so it looks further away
