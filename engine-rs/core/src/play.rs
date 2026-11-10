@@ -185,7 +185,7 @@ mod tests {
 
     fn play(notes: &[(f64, usize, bool, f64)], botplay: bool) -> Play {
         let notes = notes.iter().map(|&(time, lane, player, sustain)| Note { time, lane, player, sustain, hurt: false }).collect();
-        Play::new(Chart { song: String::new(), bpm: 120.0, speed: 1.0, notes }, botplay)
+        Play::new(Chart { bpm: 120.0, speed: 1.0, notes, ..Default::default() }, botplay)
     }
 
     #[test]
@@ -264,7 +264,7 @@ mod tests {
     #[test]
     fn hurt_notes_hurt_only_when_hit() {
         let hurt = |time| Note { time, lane: 0, player: true, sustain: 0.0, hurt: true };
-        let mut p = Play::new(Chart { song: String::new(), bpm: 120.0, speed: 1.0, notes: vec![hurt(0.0), hurt(1000.0)] }, false);
+        let mut p = Play::new(Chart { bpm: 120.0, speed: 1.0, notes: vec![hurt(0.0), hurt(1000.0)], ..Default::default() }, false);
         assert_eq!(p.press(0, 10.0), Some(Event::Miss { lane: 0 }));
         assert_eq!(p.update(2000.0), vec![]);
         assert!(p.finished() && p.misses == 1);

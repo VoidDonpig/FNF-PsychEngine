@@ -19,12 +19,33 @@ options and B switches botplay. The options are kept in `funkin-rs-settings.json
 
 Without ALSA headers (Linux): add `--no-default-features` to build without sound.
 
-## What it does so far
+## Where it stands against the Haxe engine
 
-Song list from the week files of the base game and of mods, the play screen (both strum lines, notes and
-holds in the stock note skin, timing windows, score, accuracy, misses, health, botplay), results.
-Options: key binds (two per lane), downscroll, middlescroll, ghost tapping, note offset. On Windows key
-presses are timed by the raw input thread of `native/psych_input`, not by the frame that sees them.
+Done:
 
-Not there yet: characters, stages and cameras, menus, vocals split per side, events, note types other than
-Hurt Note, scripts (Lua/HScript), the rest of the options, editors, videos, tempo-dependent animation.
+- **Songs**: found through the week files of the base game and of mods, custom difficulties included.
+- **Play**: `psych_v1` and older charts, the stock timing windows, score, accuracy, misses, health, holds,
+  Hurt Notes, botplay, tempo changes, sections.
+- **Stage**: characters from their `characters/*.json` (Sparrow sheets, idle on the beat, sing and miss
+  poses), the week 1 backdrop, the camera following the singer and bumping on the beat, health icons and
+  bar colours, pause menu, results.
+- **Sound**: instrumental and vocals as separate tracks (the player's voice drops out on a miss), song
+  position from the sound card's sample count.
+- **Options**: key binds (two per lane), downscroll, middlescroll, ghost tapping, note offset, botplay.
+- **Input**: on Windows key presses are timed by the raw input thread of `native/psych_input`.
+
+Not there yet:
+
+- **Play screen**: countdown, rating and combo pictures, note splashes, hold end caps, time bar, the game
+  over scene, chart events, note types other than Hurt Note, gameplay changers (speed, playback rate,
+  health gain/loss, instakill, practice), the backdrops and mechanics of the other ten stages, pixel
+  stages, characters made of several sheets or of Animate atlases.
+- **Menus**: title, main menu, story mode, freeplay as in the Haxe engine (scores, previews), credits,
+  mods (enable, order, settings), achievements, the rest of the options (graphics, visuals, note colours,
+  gamepad, languages), transitions, loading screen.
+- **Saved data**: high scores, week progress, achievements, mod order (`modsList.txt`), translations.
+- **Cutscenes**: dialogue, videos.
+- **Scripts**: Lua. HScript is Haxe code run against the Haxe engine's own classes, so mods that use it
+  cannot run here as they are.
+- **Editors**: chart, character, stage, week, menu character, dialogue, note splash.
+- **Other**: gamepads, Discord presence, exclusive fullscreen and the flip-model presenter, FPS counter.

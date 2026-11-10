@@ -10,8 +10,35 @@ pub struct SongEntry {
     pub source: String,
     pub chart: PathBuf,
     pub inst: PathBuf,
-    /// Present when the song has a vocal track.
-    pub voices: Option<PathBuf>,
+    /// The player's vocals; a song with one vocal file for both singers has it here.
+    pub voices_player: Option<PathBuf>,
+    pub voices_opponent: Option<PathBuf>,
+}
+
+/// Where a song's files are looked for: its mod first, then files shared by all mods, then the game.
+pub struct Paths {
+    roots: Vec<PathBuf>,
+}
+
+impl Paths {
+    /// `directory` is the stage's own asset folder ("week1"), or "".
+    pub fn new(base: &Path, source: &str, directory: &str) -> Paths {
+        let assets = base.join("assets");
+        let mut roots = Vec::new();
+        if !source.is_empty() {
+            roots.push(base.join("mods").join(source));
+        }
+        roots.extend([base.join("mods"), assets.join("shared"), assets.join("base_game/shared")]);
+        if !directory.is_empty() {
+            roots.extend([assets.join(directory), assets.join("base_game").join(directory)]);
+        }
+        Paths { roots }
+    }
+
+    /// First existing file for a path such as "images/characters/BOYFRIEND.png".
+    pub fn find(&self, relative: &str) -> Option<PathBuf> {
+        self.roots.iter().map(|root| root.join(relative)).find(|path| path.is_file())
+    }
 }
 
 /// Folder and file name a song title maps to.
@@ -55,8 +82,9 @@ pub fn discover(base: &Path) -> Vec<SongEntry> {
                     let suffix = match song_path(difficulty).as_str() { "normal" => String::new(), d => format!("-{d}") };
                     let chart = data.join(&folder).join(format!("{folder}{suffix}.json"));
                     if chart.is_file() && inst.is_file() {
-                        let voices = Some(songs.join(&folder).join("Voices.ogg")).filter(|p| p.is_file());
-                        found.push(SongEntry { title: title.to_owned(), difficulty: difficulty.clone(), source: source.clone(), chart, inst: inst.clone(), voices });
+                        let track = |name: &str| Some(songs.join(&folder).join(name)).filter(|p| p.is_file());
+                        let voices_player = track("Voices-Player.ogg").or_else(|| track("Voices.ogg"));
+                        found.push(SongEntry { title: title.to_owned(), difficulty: difficulty.clone(), source: source.clone(), chart, inst: inst.clone(), voices_player, voices_opponent: track("Voices-Opponent.ogg") });
                     }
                 }
             }
@@ -84,6 +112,16 @@ mod tests {
     }
 
     #[test]
+    fn paths_prefer_the_mod_and_reach_the_stage_folder() {
+        let repo = Path::new(concat!(env!("CARGO_MANIFEST_DIR"), "/../.."));
+        let paths = Paths::new(repo, "", "week1");
+        assert!(paths.find("images/characters/BOYFRIEND.png").unwrap().ends_with("assets/shared/images/characters/BOYFRIEND.png"));
+        assert!(paths.find("images/stageback.png").unwrap().ends_with("assets/base_game/week1/images/stageback.png"));
+        assert!(paths.find("characters/dad.json").is_some() && paths.find("images/nothing.png").is_none());
+        assert!(Paths::new(repo, "", "").find("images/stageback.png").is_none());
+    }
+
+    #[test]
     fn finds_base_game_and_mod_songs() {
         let repo = Path::new(concat!(env!("CARGO_MANIFEST_DIR"), "/../.."));
         let songs = discover(repo);
@@ -101,6 +139,6 @@ mod tests {
         let found = discover(&dir);
         std::fs::remove_dir_all(&dir).unwrap();
         assert_eq!(found.len(), 1);
-        assert_eq!((found[0].title.as_str(), found[0].difficulty.as_str(), found[0].source.as_str(), &found[0].voices), ("My Song", "Practice", "My Mod", &None));
+        assert_eq!((found[0].title.as_str(), found[0].difficulty.as_str(), found[0].source.as_str(), &found[0].voices_player), ("My Song", "Practice", "My Mod", &None));
     }
 }

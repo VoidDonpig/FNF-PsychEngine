@@ -15,7 +15,16 @@ pub struct Note {
     pub hurt: bool,
 }
 
-#[derive(Clone, Debug)]
+/// A stretch of the chart (normally one bar) and who the camera looks at during it.
+#[derive(Clone, Debug, PartialEq)]
+pub struct Section {
+    /// Milliseconds from the start of the song.
+    pub start: f64,
+    pub must_hit: bool,
+    pub gf: bool,
+}
+
+#[derive(Clone, Debug, Default)]
 pub struct Chart {
     pub song: String,
     pub bpm: f64,
@@ -23,6 +32,31 @@ pub struct Chart {
     pub speed: f64,
     /// Sorted by time.
     pub notes: Vec<Note>,
+    pub sections: Vec<Section>,
+    /// Tempo changes as (time in ms, beat number there, BPM from there on); the first is at 0.
+    pub tempo: Vec<(f64, f64, f64)>,
+    pub player: String,
+    pub opponent: String,
+    pub gf: String,
+    pub stage: String,
+}
+
+impl Chart {
+    /// Beat number (fractional) at a song position; negative before the song starts.
+    pub fn beat_at(&self, ms: f64) -> f64 {
+        let &(start, beat, bpm) = self.tempo.iter().rev().find(|t| t.0 <= ms).or(self.tempo.first()).unwrap_or(&(0.0, 0.0, self.bpm.max(1.0)));
+        beat + (ms - start) * bpm / 60000.0
+    }
+
+    /// Length of a 16th note at a song position, in ms.
+    pub fn step_ms(&self, ms: f64) -> f64 {
+        let bpm = self.tempo.iter().rev().find(|t| t.0 <= ms).or(self.tempo.first()).map_or(self.bpm, |t| t.2);
+        15000.0 / bpm.max(1.0)
+    }
+
+    pub fn section_at(&self, ms: f64) -> Option<&Section> {
+        self.sections.iter().rev().find(|s| s.start <= ms).or(self.sections.first())
+    }
 }
 
 /// Note types that old charts store as a number.
@@ -34,9 +68,23 @@ pub fn parse(text: &str) -> Result<Chart, String> {
     let root = if json["song"].is_object() { &json["song"] } else { &json };
     let v1 = root["format"].as_str().is_some_and(|f| f.starts_with("psych_v1"));
 
+    let mut bpm = root["bpm"].as_f64().filter(|b| *b > 0.0).unwrap_or(100.0);
+    let (mut time, mut beat) = (0.0, 0.0);
+    let mut tempo = vec![(0.0, 0.0, bpm)];
+    let mut sections = Vec::new();
     let mut notes = Vec::new();
     for section in root["notes"].as_array().ok_or("chart has no \"notes\" list")? {
         let must_hit = section["mustHitSection"].as_bool().unwrap_or(false);
+        if let (Some(true), Some(new)) = (section["changeBPM"].as_bool(), section["bpm"].as_f64().filter(|b| *b > 0.0)) {
+            if new != bpm {
+                bpm = new;
+                tempo.push((time, beat, bpm));
+            }
+        }
+        sections.push(Section { start: time, must_hit, gf: section["gfSection"].as_bool().unwrap_or(false) });
+        let beats = section["sectionBeats"].as_f64().filter(|b| *b > 0.0).unwrap_or(4.0);
+        time += beats * 60000.0 / bpm;
+        beat += beats;
         for raw in section["sectionNotes"].as_array().into_iter().flatten() {
             let (Some(time), Some(column)) = (raw[0].as_f64(), raw[1].as_f64()) else { continue };
             if column < 0.0 {
@@ -63,11 +111,18 @@ pub fn parse(text: &str) -> Result<Chart, String> {
     // Charts sometimes stack two notes on the same spot; the game plays one.
     notes.dedup_by(|b, a| a.lane == b.lane && a.player == b.player && (a.time - b.time).abs() < 1e-3);
 
+    let name = |keys: &[&str], default: &str| keys.iter().find_map(|k| root[*k].as_str()).filter(|s| !s.is_empty()).unwrap_or(default).to_owned();
     Ok(Chart {
         song: root["song"].as_str().unwrap_or("").to_owned(),
-        bpm: root["bpm"].as_f64().unwrap_or(100.0),
+        bpm: tempo[0].2,
         speed: root["speed"].as_f64().unwrap_or(1.0),
         notes,
+        sections,
+        tempo,
+        player: name(&["player1"], "bf"),
+        opponent: name(&["player2"], "dad"),
+        gf: name(&["gfVersion", "player3"], "gf"),
+        stage: name(&["stage"], "stage"),
     })
 }
 
@@ -93,6 +148,20 @@ mod tests {
             {"mustHitSection":false,"sectionNotes":[[300,0,0],[400,7,0,3]]}]}}"#).unwrap();
         let sides: Vec<(bool, usize, bool)> = chart.notes.iter().map(|n| (n.player, n.lane, n.hurt)).collect();
         assert_eq!(sides, vec![(true, 0, false), (false, 0, false), (false, 0, false), (true, 3, true)]);
+    }
+
+    #[test]
+    fn sections_and_tempo_changes() {
+        let chart = parse(r#"{"song":"T","bpm":120,"player2":"mom","format":"psych_v1","notes":[
+            {"mustHitSection":true,"sectionNotes":[]},
+            {"mustHitSection":false,"changeBPM":true,"bpm":240,"sectionBeats":2,"sectionNotes":[]},
+            {"mustHitSection":true,"gfSection":true,"sectionNotes":[]}]}"#).unwrap();
+        assert_eq!(chart.sections.iter().map(|s| s.start).collect::<Vec<_>>(), [0.0, 2000.0, 2500.0]);
+        assert_eq!((chart.beat_at(1000.0), chart.beat_at(2250.0), chart.beat_at(-500.0)), (2.0, 5.0, -1.0));
+        assert_eq!((chart.step_ms(0.0), chart.step_ms(2100.0)), (125.0, 62.5));
+        assert_eq!(chart.section_at(2499.0).map(|s| s.must_hit), Some(false));
+        assert!(chart.section_at(9999.0).unwrap().gf);
+        assert_eq!((chart.opponent.as_str(), chart.player.as_str(), chart.gf.as_str(), chart.stage.as_str()), ("mom", "bf", "gf", "stage"));
     }
 
     #[test]
