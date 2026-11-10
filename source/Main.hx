@@ -213,7 +213,8 @@ class Main extends Sprite
 			if (!flipPresent) return;
 
 			// When the frame went out through DXGI, lime must not swap the OpenGL buffers as well
-			if (backend.FlipPresent.present())
+			var window = Lib.current.stage.window;
+			if (backend.FlipPresent.present(ClientPrefs.data.exclusiveFullscreen && window.fullscreen))
 				Lib.current.stage.window.onRender.cancel();
 			else
 			{

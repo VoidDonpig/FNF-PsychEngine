@@ -23,6 +23,7 @@ import states.TitleState;
 	public var cacheOnGPU:Bool = #if !switch false #else true #end; // GPU Caching made by Raltyro
 	public var framerate:Int = 60;
 	public var graphicsAPI:String = 'DirectX'; // how frames are presented on Windows, see Main.hx
+	public var exclusiveFullscreen:Bool = false; // only with the DirectX graphics API
 	public var camZooms:Bool = true;
 	public var hideHud:Bool = false;
 	public var noteOffset:Int = 0;

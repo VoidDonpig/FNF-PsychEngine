@@ -13,8 +13,9 @@
 //! put its own (never swapped, so black) buffers on screen, over the swap chain.
 //!
 //! C ABI (called from source/backend/FlipPresent.hx on the render thread, GL context current):
-//! - `psych_present() -> int`  1 when the frame was presented here (the caller must skip SwapBuffers),
-//!   0 when this path is unavailable and the caller must present as usual.
+//! - `psych_present(exclusive) -> int`  1 when the frame was presented here (the caller must skip
+//!   SwapBuffers), 0 when this path is unavailable and the caller must present as usual.
+//!   `exclusive` is 1 while the game is fullscreen and wants the display for itself.
 //! - `psych_present_error() -> int`  which step failed last (see `fail`), 0 for none
 //! - `psych_present_hresult() -> int`  the Windows error code of that step, 0 when it has none
 
@@ -43,6 +44,8 @@ pub(crate) const FACTORY_MAKE_WINDOW_ASSOCIATION: usize = 8;
 pub(crate) const FACTORY2_CREATE_SWAP_CHAIN_FOR_HWND: usize = 15;
 pub(crate) const SWAP_CHAIN_PRESENT: usize = 8;
 pub(crate) const SWAP_CHAIN_GET_BUFFER: usize = 9;
+pub(crate) const SWAP_CHAIN_SET_FULLSCREEN_STATE: usize = 10;
+pub(crate) const SWAP_CHAIN_GET_FULLSCREEN_STATE: usize = 11;
 pub(crate) const SWAP_CHAIN_RESIZE_BUFFERS: usize = 13;
 pub(crate) const DEVICE_CREATE_TEXTURE2D: usize = 5;
 pub(crate) const CONTEXT_COPY_RESOURCE: usize = 47;
@@ -111,6 +114,9 @@ pub(crate) const WS_POPUP: u32 = 0x8000_0000;
 pub(crate) const SWP_NOMOVE: u32 = 2;
 pub(crate) const SWP_NOZORDER: u32 = 4;
 pub(crate) const SWP_NOACTIVATE: u32 = 0x10;
+pub(crate) const SWP_FRAMECHANGED: u32 = 0x20;
+pub(crate) const GWL_STYLE: i32 = -16;
+pub(crate) const GWL_EXSTYLE: i32 = -20;
 
 pub(crate) const DXGI_FORMAT_B8G8R8A8_UNORM: u32 = 87;
 pub(crate) const DXGI_USAGE_RENDER_TARGET_OUTPUT: u32 = 0x20;
@@ -162,6 +168,10 @@ extern "system" {
     fn DefWindowProcW(window: Handle, message: u32, wparam: usize, lparam: isize) -> isize;
     fn SetWindowPos(window: Handle, after: Handle, x: i32, y: i32, width: i32, height: i32, flags: u32) -> i32;
     fn GetDC(window: Handle) -> Handle;
+    fn GetForegroundWindow() -> Handle;
+    fn GetWindowRect(window: Handle, rect: *mut Rect) -> i32;
+    fn GetWindowLongW(window: Handle, index: i32) -> i32;
+    fn SetWindowLongW(window: Handle, index: i32, value: i32) -> i32;
 }
 
 #[link(name = "gdi32")]
@@ -287,6 +297,8 @@ struct Presenter {
     width: i32,
     height: i32,
     tearing: bool,
+    /// Whether the swap chain holds the display exclusively right now.
+    exclusive: bool,
 }
 
 impl Presenter {
@@ -317,7 +329,7 @@ impl Presenter {
         let mut presenter = Presenter {
             gl, window, window_dc, gl_context: wglGetCurrentContext(), hidden_window: null_mut(), device: null_mut(), context: null_mut(), swap_chain: null_mut(), texture: null_mut(),
             gl_texture: 0, framebuffer: 0, interop_device: null_mut(), interop_texture: null_mut(),
-            width, height, tearing: true,
+            width, height, tearing: true, exclusive: false,
         };
         if presenter.build() {
             Some(presenter)
@@ -529,12 +541,50 @@ impl Presenter {
         (resized >= 0 || fail(9, resized)) && self.create_texture()
     }
 
-    unsafe fn present(&mut self) -> bool {
+    unsafe fn is_exclusive(&self) -> bool {
+        let get_state: unsafe extern "system" fn(ComPtr, *mut i32, *mut ComPtr) -> i32 =
+            method(self.swap_chain, SWAP_CHAIN_GET_FULLSCREEN_STATE);
+        let mut exclusive = 0;
+        get_state(self.swap_chain, &mut exclusive, null_mut()) >= 0 && exclusive != 0
+    }
+
+    /// Takes or gives back exclusive use of the display. Windows refuses while another window is in
+    /// front or a mode change is running; the next frame asks again.
+    unsafe fn set_exclusive(&mut self, exclusive: bool) {
+        let set_state: unsafe extern "system" fn(ComPtr, i32, ComPtr) -> i32 =
+            method(self.swap_chain, SWAP_CHAIN_SET_FULLSCREEN_STATE);
+        if exclusive {
+            set_state(self.swap_chain, 1, null_mut());
+            return;
+        }
+        // On the way out DXGI puts the window back the way it found it, which is lime's borderless
+        // fullscreen. By now lime has made it a normal window again: keep what lime set.
+        let style = GetWindowLongW(self.window, GWL_STYLE);
+        let ex_style = GetWindowLongW(self.window, GWL_EXSTYLE);
+        let mut rect = Rect { left: 0, top: 0, right: 0, bottom: 0 };
+        GetWindowRect(self.window, &mut rect);
+        set_state(self.swap_chain, 0, null_mut());
+        SetWindowLongW(self.window, GWL_STYLE, style);
+        SetWindowLongW(self.window, GWL_EXSTYLE, ex_style);
+        SetWindowPos(self.window, null_mut(), rect.left, rect.top, rect.right - rect.left, rect.bottom - rect.top,
+            SWP_NOZORDER | SWP_NOACTIVATE | SWP_FRAMECHANGED);
+    }
+
+    unsafe fn present(&mut self, exclusive: bool) -> bool {
+        // Exclusive use ends by itself when another window comes to the front (Alt+Tab)
+        let exclusive = exclusive && GetForegroundWindow() == self.window;
+        if exclusive != self.is_exclusive() {
+            self.set_exclusive(exclusive);
+        }
+        let was_exclusive = self.exclusive;
+        self.exclusive = self.is_exclusive();
+
         let (width, height) = Self::client_size(self.window);
         if width <= 0 || height <= 0 {
             return true; // minimized: nothing to show
         }
-        if (width, height) != (self.width, self.height) && !self.resize(width, height) {
+        // The buffers must also be resized after every change between exclusive and not
+        if ((width, height) != (self.width, self.height) || was_exclusive != self.exclusive) && !self.resize(width, height) {
             return false;
         }
         if !self.copy_back_buffer() {
@@ -553,7 +603,9 @@ impl Presenter {
         release(back_buffer);
 
         let present: unsafe extern "system" fn(ComPtr, u32, u32) -> i32 = method(self.swap_chain, SWAP_CHAIN_PRESENT);
-        let presented = present(self.swap_chain, 0, if self.tearing { DXGI_PRESENT_ALLOW_TEARING } else { 0 });
+        // The tearing flag is only valid in a window; with exclusive use, interval 0 tears by itself.
+        let flags = if self.tearing && !self.exclusive { DXGI_PRESENT_ALLOW_TEARING } else { 0 };
+        let presented = present(self.swap_chain, 0, flags);
         presented >= 0 || fail(11, presented)
     }
 
@@ -573,6 +625,9 @@ impl Presenter {
         if !self.interop_device.is_null() {
             (self.gl.dx_close_device)(self.interop_device);
         }
+        if !self.swap_chain.is_null() && self.is_exclusive() {
+            self.set_exclusive(false); // a swap chain must not be released while it holds the display
+        }
         release(self.swap_chain);
         release(self.context);
         release(self.device);
@@ -585,12 +640,16 @@ enum State {
     Unavailable,
 }
 
-// Only the render thread touches this.
+// Only the render thread touches these.
 static mut STATE: State = State::Untried;
+/// Set when a frame failed while exclusive: exclusive use is then left alone, or the swap chain
+/// would be rebuilt on every frame.
+static mut EXCLUSIVE_FAILED: bool = false;
 
 #[no_mangle]
-pub unsafe extern "C" fn psych_present() -> i32 {
+pub unsafe extern "C" fn psych_present(exclusive: i32) -> i32 {
     let state = &mut *addr_of_mut!(STATE);
+    let exclusive = exclusive != 0 && !EXCLUSIVE_FAILED;
     if let State::Untried = state {
         *state = match Presenter::create() {
             Some(presenter) => State::Ready(presenter),
@@ -598,7 +657,7 @@ pub unsafe extern "C" fn psych_present() -> i32 {
         };
     }
     if let State::Ready(presenter) = state {
-        if presenter.present() {
+        if presenter.present(exclusive) {
             // After the first frame: that one was rendered into the game window's back buffer.
             if presenter.hidden_window.is_null() {
                 presenter.hide_gl_context();
@@ -607,10 +666,13 @@ pub unsafe extern "C" fn psych_present() -> i32 {
         }
         // The window shows nothing but the swap chain once it has presented, so giving up here
         // would leave a frozen picture. Start over once (lost device, failed resize) before that.
+        if exclusive || presenter.exclusive {
+            EXCLUSIVE_FAILED = true;
+        }
         presenter.destroy();
         *state = State::Unavailable;
         if let Some(mut rebuilt) = Presenter::create() {
-            if rebuilt.present() {
+            if rebuilt.present(false) {
                 *state = State::Ready(rebuilt);
                 return 1;
             }
@@ -654,6 +716,8 @@ mod layout {
         assert!(offset_of!(dxgi::IDXGIFactory2_Vtbl, CreateSwapChainForHwnd) / POINTER == FACTORY2_CREATE_SWAP_CHAIN_FOR_HWND);
         assert!(offset_of!(dxgi::IDXGISwapChain_Vtbl, Present) / POINTER == SWAP_CHAIN_PRESENT);
         assert!(offset_of!(dxgi::IDXGISwapChain_Vtbl, GetBuffer) / POINTER == SWAP_CHAIN_GET_BUFFER);
+        assert!(offset_of!(dxgi::IDXGISwapChain_Vtbl, SetFullscreenState) / POINTER == SWAP_CHAIN_SET_FULLSCREEN_STATE);
+        assert!(offset_of!(dxgi::IDXGISwapChain_Vtbl, GetFullscreenState) / POINTER == SWAP_CHAIN_GET_FULLSCREEN_STATE);
         assert!(offset_of!(dxgi::IDXGISwapChain_Vtbl, ResizeBuffers) / POINTER == SWAP_CHAIN_RESIZE_BUFFERS);
         assert!(offset_of!(d3d11::ID3D11Device_Vtbl, CreateTexture2D) / POINTER == DEVICE_CREATE_TEXTURE2D);
         assert!(offset_of!(d3d11::ID3D11DeviceContext_Vtbl, CopyResource) / POINTER == CONTEXT_COPY_RESOURCE);
@@ -669,6 +733,8 @@ mod layout {
         assert!(CS_OWNDC == wm::CS_OWNDC.0);
         assert!(WS_POPUP == wm::WS_POPUP.0);
         assert!(SWP_NOMOVE == wm::SWP_NOMOVE.0 && SWP_NOZORDER == wm::SWP_NOZORDER.0 && SWP_NOACTIVATE == wm::SWP_NOACTIVATE.0);
+        assert!(SWP_FRAMECHANGED == wm::SWP_FRAMECHANGED.0);
+        assert!(GWL_STYLE == wm::GWL_STYLE.0 && GWL_EXSTYLE == wm::GWL_EXSTYLE.0);
         assert!(offset_of!(Texture2DDesc, bind_flags) == offset_of!(d3d11::D3D11_TEXTURE2D_DESC, BindFlags));
 
         assert!(same(IID_IDXGI_FACTORY2, dxgi::IDXGIFactory2::IID));

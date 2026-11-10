@@ -9,15 +9,18 @@ package backend;
  * graphics driver cannot do it, present() answers false.
  */
 #if RUST_INPUT
-@:cppFileCode('extern "C" { int psych_present(); int psych_present_error(); int psych_present_hresult(); }')
+@:cppFileCode('extern "C" { int psych_present(int exclusive); int psych_present_error(); int psych_present_hresult(); }')
 #end
 class FlipPresent
 {
-	/** Presents the frame OpenGL just rendered. False when the caller has to swap the OpenGL buffers itself. **/
-	public static function present():Bool
+	/**
+	 * Presents the frame OpenGL just rendered. False when the caller has to swap the OpenGL buffers itself.
+	 * `exclusive`: take the display for the game alone (exclusive fullscreen) while its window is in front.
+	 **/
+	public static function present(exclusive:Bool):Bool
 	{
 		#if RUST_INPUT
-		return untyped __cpp__('psych_present() != 0');
+		return untyped __cpp__('psych_present({0}) != 0', exclusive ? 1 : 0);
 		#else
 		return false;
 		#end

@@ -68,6 +68,12 @@ class GraphicsSettingsSubState extends BaseOptionsMenu
 			STRING,
 			['DirectX', 'OpenGL']);
 		addOption(option);
+
+		var option:Option = new Option('Exclusive Fullscreen',
+			"If checked, fullscreen takes the whole display for the game alone (DirectX only).\nIf unchecked, fullscreen is a borderless window.",
+			'exclusiveFullscreen',
+			BOOL);
+		addOption(option);
 		#end
 
 		super();
