@@ -23,6 +23,7 @@ import js.html.*;
 
 import backend.Paths;
 import backend.Controls;
+import backend.RawInput;
 import backend.CoolUtil;
 import backend.MusicBeatState;
 import backend.MusicBeatSubstate;
