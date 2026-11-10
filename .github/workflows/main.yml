@@ -51,8 +51,21 @@ jobs:
           path: 'export/release/linux/bin'
   buildWindows:
     runs-on: windows-latest
+    env:
+      # hxcpp reuses the object file of every C++ file that did not change since an earlier run
+      HXCPP_COMPILE_CACHE: C:/hxcpp_cache
 
     steps:
+      # The key is new on every run so the cache is saved again; the newest earlier one is restored
+      - name: Restore C++ Compile Cache
+        uses: actions/cache@v4
+        with:
+          path: C:/hxcpp_cache
+          key: hxcpp-windows-${{ github.run_id }}
+          restore-keys: hxcpp-windows-
+      - name: Create C++ Compile Cache Folder
+        run: if not exist C:\hxcpp_cache mkdir C:\hxcpp_cache
+        shell: cmd
       # Checks-out your repository under $GITHUB_WORKSPACE, so your job can access it
       - uses: actions/checkout@v4.1.7
 
