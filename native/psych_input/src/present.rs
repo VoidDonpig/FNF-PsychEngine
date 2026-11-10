@@ -8,6 +8,10 @@
 //! texture shared through WGL_NV_DX_interop2 (every current NVIDIA, AMD and Intel driver has it),
 //! and that texture is presented by DXGI with tearing allowed, so there is still no vsync.
 //!
+//! The OpenGL context is also moved off the game window, onto a hidden window of the same size.
+//! Graphics drivers treat an OpenGL window that covers the screen as exclusive fullscreen and
+//! put its own (never swapped, so black) buffers on screen, over the swap chain.
+//!
 //! C ABI (called from source/backend/FlipPresent.hx on the render thread, GL context current):
 //! - `psych_present() -> int`  1 when the frame was presented here (the caller must skip SwapBuffers),
 //!   0 when this path is unavailable and the caller must present as usual.
@@ -83,6 +87,31 @@ struct Rect {
     bottom: i32,
 }
 
+#[repr(C)]
+pub(crate) struct WindowClass {
+    size: u32,
+    style: u32,
+    procedure: unsafe extern "system" fn(Handle, u32, usize, isize) -> isize,
+    class_extra: i32,
+    window_extra: i32,
+    instance: Handle,
+    icon: Handle,
+    cursor: Handle,
+    background: Handle,
+    menu_name: *const u16,
+    class_name: *const u16,
+    small_icon: Handle,
+}
+
+/// PIXELFORMATDESCRIPTOR, only ever filled in by Windows and handed back to it.
+pub(crate) type PixelFormat = [u8; 40];
+
+pub(crate) const CS_OWNDC: u32 = 0x20;
+pub(crate) const WS_POPUP: u32 = 0x8000_0000;
+pub(crate) const SWP_NOMOVE: u32 = 2;
+pub(crate) const SWP_NOZORDER: u32 = 4;
+pub(crate) const SWP_NOACTIVATE: u32 = 0x10;
+
 pub(crate) const DXGI_FORMAT_B8G8R8A8_UNORM: u32 = 87;
 pub(crate) const DXGI_USAGE_RENDER_TARGET_OUTPUT: u32 = 0x20;
 pub(crate) const DXGI_SWAP_EFFECT_FLIP_DISCARD: u32 = 4;
@@ -111,6 +140,8 @@ const GL_COLOR_ATTACHMENT0: u32 = 0x8CE0;
 #[link(name = "opengl32")]
 extern "system" {
     fn wglGetCurrentDC() -> Handle;
+    fn wglGetCurrentContext() -> Handle;
+    fn wglMakeCurrent(dc: Handle, context: Handle) -> i32;
     fn wglGetProcAddress(name: *const u8) -> *const c_void;
     fn glGetIntegerv(name: u32, value: *mut i32);
     fn glIsEnabled(capability: u32) -> u8;
@@ -124,7 +155,29 @@ extern "system" {
 extern "system" {
     fn WindowFromDC(dc: Handle) -> Handle;
     fn GetClientRect(window: Handle, rect: *mut Rect) -> i32;
+    fn RegisterClassExW(class: *const WindowClass) -> u16;
+    fn CreateWindowExW(ex_style: u32, class: *const u16, name: *const u16, style: u32, x: i32, y: i32,
+        width: i32, height: i32, parent: Handle, menu: Handle, instance: Handle, param: *mut c_void) -> Handle;
+    fn DestroyWindow(window: Handle) -> i32;
+    fn DefWindowProcW(window: Handle, message: u32, wparam: usize, lparam: isize) -> isize;
+    fn SetWindowPos(window: Handle, after: Handle, x: i32, y: i32, width: i32, height: i32, flags: u32) -> i32;
+    fn GetDC(window: Handle) -> Handle;
 }
+
+#[link(name = "gdi32")]
+extern "system" {
+    fn GetPixelFormat(dc: Handle) -> i32;
+    fn DescribePixelFormat(dc: Handle, format: i32, size: u32, descriptor: *mut PixelFormat) -> i32;
+    fn SetPixelFormat(dc: Handle, format: i32, descriptor: *const PixelFormat) -> i32;
+}
+
+#[link(name = "kernel32")]
+extern "system" {
+    fn GetModuleHandleW(name: *const u16) -> Handle;
+}
+
+/// "PsychGL" as a wide string: the class of the hidden window OpenGL renders to.
+const HIDDEN_CLASS: [u16; 8] = [0x50, 0x73, 0x79, 0x63, 0x68, 0x47, 0x4C, 0];
 
 #[link(name = "d3d11")]
 extern "system" {
@@ -217,6 +270,11 @@ unsafe fn release(object: ComPtr) {
 struct Presenter {
     gl: Gl,
     window: Handle,
+    /// The game window's device context and the OpenGL context lime made current on it.
+    window_dc: Handle,
+    gl_context: Handle,
+    /// Hidden window the OpenGL context is moved to, null while it is still on the game window.
+    hidden_window: Handle,
     device: ComPtr,
     context: ComPtr,
     swap_chain: ComPtr,
@@ -245,7 +303,8 @@ impl Presenter {
             fail(1, 0);
             return None;
         };
-        let window = WindowFromDC(wglGetCurrentDC());
+        let window_dc = wglGetCurrentDC();
+        let window = WindowFromDC(window_dc);
         let (width, height) = Self::client_size(window);
         // A multisampled back buffer cannot be copied upside down in one blit.
         let mut multisampled = 0;
@@ -256,7 +315,7 @@ impl Presenter {
         }
 
         let mut presenter = Presenter {
-            gl, window, device: null_mut(), context: null_mut(), swap_chain: null_mut(), texture: null_mut(),
+            gl, window, window_dc, gl_context: wglGetCurrentContext(), hidden_window: null_mut(), device: null_mut(), context: null_mut(), swap_chain: null_mut(), texture: null_mut(),
             gl_texture: 0, framebuffer: 0, interop_device: null_mut(), interop_texture: null_mut(),
             width, height, tearing: true,
         };
@@ -415,10 +474,53 @@ impl Presenter {
         ((self.gl.dx_unlock_objects)(self.interop_device, 1, &mut self.interop_texture) != 0 && complete) || fail(6, 0)
     }
 
+    /// Moves the OpenGL context to a hidden window with the game window's size and pixel format.
+    /// From then on OpenGL's back buffer is that window's, and the game window is only DXGI's.
+    /// Without it everything still works, except fullscreen on drivers that take the screen over.
+    unsafe fn hide_gl_context(&mut self) {
+        let instance = GetModuleHandleW(null());
+        let class = WindowClass {
+            size: core::mem::size_of::<WindowClass>() as u32,
+            style: CS_OWNDC, // OpenGL keeps the device context for as long as the window lives
+            procedure: DefWindowProcW,
+            class_extra: 0,
+            window_extra: 0,
+            instance,
+            icon: null_mut(),
+            cursor: null_mut(),
+            background: null_mut(),
+            menu_name: null(),
+            class_name: HIDDEN_CLASS.as_ptr(),
+            small_icon: null_mut(),
+        };
+        RegisterClassExW(&class); // fails harmlessly when a rebuilt presenter registers it again
+
+        let hidden = CreateWindowExW(0, HIDDEN_CLASS.as_ptr(), null(), WS_POPUP, 0, 0, self.width, self.height,
+            null_mut(), null_mut(), instance, null_mut());
+        if hidden.is_null() {
+            return;
+        }
+        let hidden_dc = GetDC(hidden);
+        let format = GetPixelFormat(self.window_dc);
+        let mut descriptor: PixelFormat = [0; 40];
+        if DescribePixelFormat(self.window_dc, format, 40, &mut descriptor) != 0
+            && SetPixelFormat(hidden_dc, format, &descriptor) != 0
+            && wglMakeCurrent(hidden_dc, self.gl_context) != 0
+        {
+            self.hidden_window = hidden;
+        } else {
+            wglMakeCurrent(self.window_dc, self.gl_context);
+            DestroyWindow(hidden);
+        }
+    }
+
     unsafe fn resize(&mut self, width: i32, height: i32) -> bool {
         self.destroy_texture();
         self.width = width;
         self.height = height;
+        if !self.hidden_window.is_null() {
+            SetWindowPos(self.hidden_window, null_mut(), 0, 0, width, height, SWP_NOMOVE | SWP_NOZORDER | SWP_NOACTIVATE);
+        }
         let resize_buffers: unsafe extern "system" fn(ComPtr, u32, u32, u32, u32, u32) -> i32 =
             method(self.swap_chain, SWAP_CHAIN_RESIZE_BUFFERS);
         let flags = if self.tearing { DXGI_SWAP_CHAIN_FLAG_ALLOW_TEARING } else { 0 };
@@ -456,6 +558,11 @@ impl Presenter {
     }
 
     unsafe fn destroy(&mut self) {
+        if !self.hidden_window.is_null() {
+            wglMakeCurrent(self.window_dc, self.gl_context);
+            DestroyWindow(self.hidden_window);
+            self.hidden_window = null_mut();
+        }
         self.destroy_texture();
         if self.framebuffer != 0 {
             (self.gl.delete_framebuffers)(1, &self.framebuffer);
@@ -492,6 +599,10 @@ pub unsafe extern "C" fn psych_present() -> i32 {
     }
     if let State::Ready(presenter) = state {
         if presenter.present() {
+            // After the first frame: that one was rendered into the game window's back buffer.
+            if presenter.hidden_window.is_null() {
+                presenter.hide_gl_context();
+            }
             return 1;
         }
         // The window shows nothing but the swap chain once it has presented, so giving up here
@@ -519,6 +630,7 @@ mod layout {
     use windows::Win32::Graphics::Direct3D::D3D_DRIVER_TYPE_HARDWARE as DRIVER_TYPE_HARDWARE;
     use windows::Win32::Graphics::Direct3D11 as d3d11;
     use windows::Win32::Graphics::Dxgi as dxgi;
+    use windows::Win32::UI::WindowsAndMessaging as wm;
 
     const POINTER: usize = size_of::<usize>();
 
@@ -551,6 +663,12 @@ mod layout {
         assert!(offset_of!(SwapChainDesc1, swap_effect) == offset_of!(dxgi::DXGI_SWAP_CHAIN_DESC1, SwapEffect));
         assert!(offset_of!(SwapChainDesc1, flags) == offset_of!(dxgi::DXGI_SWAP_CHAIN_DESC1, Flags));
         assert!(size_of::<Texture2DDesc>() == size_of::<d3d11::D3D11_TEXTURE2D_DESC>());
+        assert!(size_of::<WindowClass>() == size_of::<wm::WNDCLASSEXW>());
+        assert!(offset_of!(WindowClass, class_name) == offset_of!(wm::WNDCLASSEXW, lpszClassName));
+        assert!(size_of::<PixelFormat>() == size_of::<windows::Win32::Graphics::OpenGL::PIXELFORMATDESCRIPTOR>());
+        assert!(CS_OWNDC == wm::CS_OWNDC.0);
+        assert!(WS_POPUP == wm::WS_POPUP.0);
+        assert!(SWP_NOMOVE == wm::SWP_NOMOVE.0 && SWP_NOZORDER == wm::SWP_NOZORDER.0 && SWP_NOACTIVATE == wm::SWP_NOACTIVATE.0);
         assert!(offset_of!(Texture2DDesc, bind_flags) == offset_of!(d3d11::D3D11_TEXTURE2D_DESC, BindFlags));
 
         assert!(same(IID_IDXGI_FACTORY2, dxgi::IDXGIFactory2::IID));
