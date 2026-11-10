@@ -116,6 +116,14 @@ class GameplaySettingsSubState extends BaseOptionsMenu
 		option.changeValue = 0.1;
 		addOption(option);
 
+		#if RUST_INPUT
+		var option:Option = new Option('Display Lag Correction',
+			'If checked, your timing is judged against the picture on screen:\nthe time each frame takes to be drawn and shown is taken off it.',
+			'displayLagCorrection',
+			BOOL);
+		addOption(option);
+		#end
+
 		super();
 	}
 

@@ -210,18 +210,22 @@ class Main extends Sprite
 			context.webgl.finish();
 
 			if (flipPresent == null) flipPresent = ClientPrefs.data.graphicsAPI == 'DirectX' && !Sys.args().contains('-nodxgi');
-			if (!flipPresent) return;
-
-			// When the frame went out through DXGI, lime must not swap the OpenGL buffers as well
-			var window = Lib.current.stage.window;
-			if (backend.FlipPresent.present(ClientPrefs.data.exclusiveFullscreen && window.fullscreen))
-				Lib.current.stage.window.onRender.cancel();
-			else
+			if (flipPresent)
 			{
-				// It does not come back once it is off: say why, where a player can find it
-				flipPresent = false;
-				try sys.io.File.saveContent('FlipPresent.log', 'DXGI presentation is off: ' + backend.FlipPresent.error()) catch (e:Dynamic) {}
+				// When the frame went out through DXGI, lime must not swap the OpenGL buffers as well
+				var window = Lib.current.stage.window;
+				if (backend.FlipPresent.present(ClientPrefs.data.exclusiveFullscreen && window.fullscreen))
+					window.onRender.cancel();
+				else
+				{
+					// It does not come back once it is off: say why, where a player can find it
+					flipPresent = false;
+					try sys.io.File.saveContent('FlipPresent.log', 'DXGI presentation is off: ' + backend.FlipPresent.error()) catch (e:Dynamic) {}
+				}
 			}
+
+			// The frame is on screen now (with OpenGL, right after this returns)
+			RawInput.framePresented();
 		}, false, -1000);
 		#end
 

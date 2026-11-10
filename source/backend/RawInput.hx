@@ -27,6 +27,15 @@ class RawInput
 	static var synced:Bool = false;
 	static var started:Bool = false;
 
+	/**
+	 * How far behind the song the picture on screen is on average, in ms: the time from the start of
+	 * a frame until it is shown, plus half the time it then stays up. Smoothed over the last frames.
+	 * With the "Display Lag Correction" option, eventTime() judges keys against that picture.
+	 **/
+	public static var displayLag(default, null):Float = 0;
+	static var lastPresent:Float = 0;
+	static var frameOpen:Bool = false;
+
 	/** Starts the capture thread (safe to call again) and forgets keys pressed before gameplay. **/
 	public static function start():Void
 	{
@@ -70,6 +79,23 @@ class RawInput
 		// Nobody called sync() last frame (paused): song time stood still, only the clock moved
 		if (!synced) clockTime = frameClock;
 		synced = false;
+		frameOpen = true;
+		#end
+	}
+
+	/** Call when a frame has just been put on screen. **/
+	public static function framePresented():Void
+	{
+		#if RUST_INPUT
+		var now:Float = haxe.Timer.stamp() * 1000;
+		// Only frames that started with frameStart(): outside gameplay there is nothing to measure against
+		if (frameOpen)
+		{
+			var lag:Float = (now - frameClock) + (now - lastPresent) * 0.5;
+			if (lag < 500) displayLag += (lag - displayLag) * 0.2; // a longer one is a loading stall, not a frame
+		}
+		frameOpen = false;
+		lastPresent = now;
 		#end
 	}
 
@@ -88,7 +114,10 @@ class RawInput
 	{
 		#if RUST_INPUT
 		var age:Float = untyped __cpp__('psych_rawinput_age_ms()');
-		return songTime + (haxe.Timer.stamp() * 1000 - age - clockTime) * playbackRate;
+		var time:Float = songTime + (haxe.Timer.stamp() * 1000 - age - clockTime) * playbackRate;
+		// The player answers to the picture, and the picture is displayLag behind the song
+		if (ClientPrefs.data.displayLagCorrection) time -= displayLag * playbackRate;
+		return time;
 		#else
 		return songTime;
 		#end
