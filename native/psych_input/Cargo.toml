@@ -2,7 +2,7 @@
 name = "psych_input"
 version = "0.1.0"
 edition = "2021"
-description = "Raw Input keyboard capture and DXGI flip-model presentation for Psych Engine (Windows)"
+description = "Raw Input keyboard capture, DXGI flip-model presentation and window setup for Psych Engine (Windows)"
 
 [lib]
 crate-type = ["staticlib"]

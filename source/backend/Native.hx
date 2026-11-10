@@ -6,7 +6,11 @@ import lime.system.System;
 
 import flixel.util.FlxColor;
 
-#if (cpp && windows)
+// With the Rust library (see RustBuild) this is done in native/psych_input/src/window.rs.
+// The C++ below is the same thing for Windows builds without it.
+#if RUST_INPUT
+@:cppFileCode('extern "C" { void psych_set_dpi_aware(); void psych_fill_window_black(); }')
+#elseif (cpp && windows)
 @:buildXml('
 <target id="haxe">
 	<lib name="dwmapi.lib" if="windows"/>
@@ -64,7 +68,9 @@ class Native
 
 	public static function registerDPIAware():Void
 	{
-		#if (cpp && windows)
+		#if RUST_INPUT
+		untyped __cpp__('psych_set_dpi_aware()');
+		#elseif (cpp && windows)
 		// DPI Scaling fix for windows 
 		// this shouldn't be needed for other systems
 		// Credit to YoshiCrafter29 for finding this function
@@ -101,6 +107,9 @@ class Native
 			Application.current.window.y = Std.int((Application.current.window.display.bounds.height - Application.current.window.height) / 2);
 		}
 
+		#if RUST_INPUT
+		untyped __cpp__('psych_fill_window_black()');
+		#else
 		untyped __cpp__('
 			getHandle();
 			if (curHandle != (HWND)0) {
@@ -111,6 +120,7 @@ class Native
 				ReleaseDC(curHandle, curHDC);
 			}
 		');
+		#end
 		#end
 	}
 }

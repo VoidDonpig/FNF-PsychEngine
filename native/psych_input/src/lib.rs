@@ -309,6 +309,8 @@ mod win {
 
 #[cfg(windows)]
 mod present;
+#[cfg(windows)]
+mod window;
 
 // Other systems have no capture thread: the game keeps using OpenFL key events.
 #[cfg(not(windows))]
