@@ -584,14 +584,17 @@ impl Presenter {
         // Windows ends exclusive use by itself, and minimizes the window, when another window comes
         // to the front. Only ask for it while the game is the one in front and on screen.
         let exclusive = exclusive && !minimized && GetForegroundWindow() == self.window;
-        if exclusive != self.is_exclusive() {
-            self.set_exclusive(exclusive);
-        }
-        // Read back what it really is: it also changes without being asked, and a request can be refused
-        let now_exclusive = self.is_exclusive();
-        if now_exclusive != self.exclusive {
-            self.exclusive = now_exclusive;
-            self.stale_buffers = true;
+        // Nothing to ask DXGI while exclusive use is neither wanted nor held: the usual case
+        if exclusive || self.exclusive {
+            if exclusive != self.is_exclusive() {
+                self.set_exclusive(exclusive);
+            }
+            // Read back what it really is: it also changes without being asked, and a request can be refused
+            let now_exclusive = self.is_exclusive();
+            if now_exclusive != self.exclusive {
+                self.exclusive = now_exclusive;
+                self.stale_buffers = true;
+            }
         }
 
         // The change above can resize the window

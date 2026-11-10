@@ -2932,7 +2932,8 @@ class PlayState extends MusicBeatState
 				playerDance();
 
 			#if ACHIEVEMENTS_ALLOWED
-			else checkForAchievement(['oversinging']);
+			// Only once it can unlock: this ran, and built its strings, on every frame a key was held
+			else if(boyfriend.holdTimer >= 10) checkForAchievement(['oversinging']);
 			#end
 		}
 
@@ -3426,8 +3427,16 @@ class PlayState extends MusicBeatState
 	}
 	#end
 
+	// Whether any Lua or HScript script is loaded. Without one, calling or setting something on scripts
+	// does nothing, and the checks below skip the arrays it would create several times per frame.
+	inline function hasScripts():Bool
+	{
+		return #if LUA_ALLOWED luaArray.length > 0 || #end #if HSCRIPT_ALLOWED hscriptArray.length > 0 || #end false;
+	}
+
 	public function callOnScripts(funcToCall:String, args:Array<Dynamic> = null, ignoreStops = false, exclusions:Array<String> = null, excludeValues:Array<Dynamic> = null):Dynamic {
 		var returnVal:Dynamic = LuaUtils.Function_Continue;
+		if(!hasScripts()) return returnVal;
 		if(args == null) args = [];
 		if(exclusions == null) exclusions = [];
 		if(excludeValues == null) excludeValues = [LuaUtils.Function_Continue];
@@ -3440,6 +3449,7 @@ class PlayState extends MusicBeatState
 	public function callOnLuas(funcToCall:String, args:Array<Dynamic> = null, ignoreStops = false, exclusions:Array<String> = null, excludeValues:Array<Dynamic> = null):Dynamic {
 		var returnVal:Dynamic = LuaUtils.Function_Continue;
 		#if LUA_ALLOWED
+		if(luaArray.length < 1) return returnVal;
 		if(args == null) args = [];
 		if(exclusions == null) exclusions = [];
 		if(excludeValues == null) excludeValues = [LuaUtils.Function_Continue];
@@ -3515,6 +3525,7 @@ class PlayState extends MusicBeatState
 	}
 
 	public function setOnScripts(variable:String, arg:Dynamic, exclusions:Array<String> = null) {
+		if(!hasScripts()) return;
 		if(exclusions == null) exclusions = [];
 		setOnLuas(variable, arg, exclusions);
 		setOnHScript(variable, arg, exclusions);
@@ -3522,6 +3533,7 @@ class PlayState extends MusicBeatState
 
 	public function setOnLuas(variable:String, arg:Dynamic, exclusions:Array<String> = null) {
 		#if LUA_ALLOWED
+		if(luaArray.length < 1) return;
 		if(exclusions == null) exclusions = [];
 		for (script in luaArray) {
 			if(exclusions.contains(script.scriptName))
@@ -3534,6 +3546,7 @@ class PlayState extends MusicBeatState
 
 	public function setOnHScript(variable:String, arg:Dynamic, exclusions:Array<String> = null) {
 		#if HSCRIPT_ALLOWED
+		if(hscriptArray.length < 1) return;
 		if(exclusions == null) exclusions = [];
 		for (script in hscriptArray) {
 			if(exclusions.contains(script.origin))

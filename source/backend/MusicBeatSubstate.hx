@@ -92,11 +92,23 @@ class MusicBeatSubstate extends FlxSubState
 
 	private function updateCurStep():Void
 	{
-		var lastChange = Conductor.getBPMFromSeconds(Conductor.songPosition);
+		// Conductor.getBPMFromSeconds() without the object it creates, as this runs every frame
+		var stepTime:Int = 0;
+		var songTime:Float = 0;
+		var stepCrochet:Float = Conductor.stepCrochet;
+		for (change in Conductor.bpmChangeMap)
+		{
+			if (Conductor.songPosition >= change.songTime)
+			{
+				stepTime = change.stepTime;
+				songTime = change.songTime;
+				stepCrochet = change.stepCrochet;
+			}
+		}
 
-		var shit = ((Conductor.songPosition - ClientPrefs.data.noteOffset) - lastChange.songTime) / lastChange.stepCrochet;
-		curDecStep = lastChange.stepTime + shit;
-		curStep = lastChange.stepTime + Math.floor(shit);
+		var shit = ((Conductor.songPosition - ClientPrefs.data.noteOffset) - songTime) / stepCrochet;
+		curDecStep = stepTime + shit;
+		curStep = stepTime + Math.floor(shit);
 	}
 
 	public function stepHit():Void
