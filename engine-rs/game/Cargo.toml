@@ -1,0 +1,16 @@
+[package]
+name = "funkin"
+version = "0.1.0"
+edition = "2021"
+description = "The game: window, drawing, audio and input around funkin_core."
+
+[features]
+default = ["audio"]
+# Sound output. Off, songs run silently on the system clock (machines without an audio stack).
+audio = ["dep:cpal", "dep:lewton"]
+
+[dependencies]
+funkin_core = { path = "../core" }
+macroquad = { version = "0.4", default-features = false }
+cpal = { version = "0.15", optional = true }
+lewton = { version = "0.10", optional = true }

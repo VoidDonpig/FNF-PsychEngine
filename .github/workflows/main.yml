@@ -49,6 +49,22 @@ jobs:
         with:
           name: linuxBuild
           path: 'export/release/linux/bin'
+  # The Rust engine (engine-rs): its tests, then the game for Windows
+  buildRust:
+    runs-on: windows-latest
+
+    steps:
+      - uses: actions/checkout@v4.1.7
+      - name: Test
+        run: cargo test --manifest-path engine-rs/Cargo.toml
+      - name: Compile
+        run: cargo build --release --manifest-path engine-rs/Cargo.toml
+      # Drop it into a game folder (next to assets and mods) and run it
+      - name: Publish Executable
+        uses: actions/upload-artifact@v4.3.4
+        with:
+          name: rustEngineWindows
+          path: engine-rs/target/release/funkin.exe
   buildWindows:
     runs-on: windows-latest
     env:

@@ -1,0 +1,8 @@
+[package]
+name = "funkin_core"
+version = "0.1.0"
+edition = "2021"
+description = "Gameplay rules of the engine: charts, judgement, scoring, content lookup. No window, no audio."
+
+[dependencies]
+serde_json = "1"
