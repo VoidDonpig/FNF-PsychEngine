@@ -197,8 +197,10 @@ class Main extends Sprite
 		});
 
 		#if sys
-		// "-nodxgi" on the command line keeps OpenGL's own presentation (needed by tools that hook it)
-		var flipPresent:Bool = !Sys.args().contains('-nodxgi');
+		// Decided on the first frame, once the saved options are loaded. The "Graphics API" option only
+		// applies after a restart: a window DXGI has presented to cannot go back to OpenGL's presentation.
+		// "-nodxgi" on the command line forces OpenGL, for when the option cannot be reached.
+		var flipPresent:Null<Bool> = null;
 		Lib.current.stage.window.onRender.add(function(context:lime.graphics.RenderContext) {
 			if (context == null || context.webgl == null) return;
 
@@ -207,6 +209,7 @@ class Main extends Sprite
 			// so the newest frame is the one shown. The FPS cap is untouched: it is lime's frame timer.
 			context.webgl.finish();
 
+			if (flipPresent == null) flipPresent = ClientPrefs.data.graphicsAPI == 'DirectX' && !Sys.args().contains('-nodxgi');
 			if (!flipPresent) return;
 
 			// When the frame went out through DXGI, lime must not swap the OpenGL buffers as well

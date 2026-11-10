@@ -60,6 +60,16 @@ class GraphicsSettingsSubState extends BaseOptionsMenu
 		option.onChange = onChangeFramerate;
 		#end
 
+		#if RUST_INPUT
+		// The game is drawn with OpenGL either way: this picks who puts the finished frame on screen
+		var option:Option = new Option('Graphics API',
+			"How frames reach the screen. DirectX (DXGI flip model) has less display latency,\nOpenGL is the classic way. Restart the game to apply.",
+			'graphicsAPI',
+			STRING,
+			['DirectX', 'OpenGL']);
+		addOption(option);
+		#end
+
 		super();
 		insert(1, boyfriend);
 	}
