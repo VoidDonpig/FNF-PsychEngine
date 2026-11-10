@@ -225,8 +225,9 @@ class Main extends Sprite
 		}, false, -1000);
 		#end
 
-		// F11 switches fullscreen in every menu and during songs, like Alt+Enter
-		FlxG.signals.preUpdate.add(function() {
+		// F11 switches fullscreen in every menu and during songs, like Alt+Enter.
+		// After the update: before it, a key still reads as just pressed on the second frame as well.
+		FlxG.signals.postUpdate.add(function() {
 			if (FlxG.keys.justPressed.F11) FlxG.fullscreen = !FlxG.fullscreen;
 		});
 
