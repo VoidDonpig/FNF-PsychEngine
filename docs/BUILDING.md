@@ -11,6 +11,7 @@
 - (Windows only) Microsoft Visual Studio Community 2022
 - (Linux only) VLC
 - Haxe (4.3.4 or greater)
+- (Windows only, optional) [Rust](https://rustup.rs), for timestamped raw keyboard input (`native/psych_input`). Without it the game still builds and reads the keyboard once per frame
 
 ---
 

@@ -63,6 +63,9 @@
 
 	<classpath name="source" />
 
+	<!-- Builds native/psych_input (Rust) for timestamped raw keyboard input. Skipped by itself when cargo is not installed -->
+	<haxeflag name="--macro" value="backend.RustBuild.run()" if="windows" />
+
 	<!-- __________________________ Game Assets & Etc. __________________________ -->
 	
 	<!-- Turn on Crash Handler -->

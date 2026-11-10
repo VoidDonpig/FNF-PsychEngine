@@ -65,6 +65,14 @@ class EditorPlayState extends MusicBeatSubstate
 	var dataTxt:FlxText;
 	var guitarHeroSustains:Bool = false;
 
+	// Song time of the key press being handled, NaN when it is unknown (OpenFL events, gamepads)
+	var keyEventTime:Float = Math.NaN;
+	// Song time each key was last released at (only known for raw input events)
+	var keyReleaseTime:Array<Float> = [Math.NaN, Math.NaN, Math.NaN, Math.NaN];
+	var holdArray:Array<Bool> = [];
+	var pressArray:Array<Bool> = [];
+	var releaseArray:Array<Bool> = [];
+
 	var _noteList:Array<Note>;
 	public function new(noteList:Array<Note>, allVocals:Array<FlxSound>)
 	{
@@ -145,6 +153,8 @@ class EditorPlayState extends MusicBeatSubstate
 
 		FlxG.stage.addEventListener(KeyboardEvent.KEY_DOWN, onKeyPress);
 		FlxG.stage.addEventListener(KeyboardEvent.KEY_UP, onKeyRelease);
+		RawInput.start();
+		FlxG.signals.preUpdate.add(pollRawInput);
 		
 		#if DISCORD_ALLOWED
 		// Updating Discord Rich Presence (with Time Left)
@@ -184,6 +194,7 @@ class EditorPlayState extends MusicBeatSubstate
 					Conductor.songPosition = Conductor.songPosition + 1000 * FlxMath.signOf(timeDiff);
 			}
 		}
+		RawInput.sync(inputSongTime());
 
 		if (unspawnNotes[0] != null)
 		{
@@ -267,6 +278,7 @@ class EditorPlayState extends MusicBeatSubstate
 	{
 		FlxG.stage.removeEventListener(KeyboardEvent.KEY_DOWN, onKeyPress);
 		FlxG.stage.removeEventListener(KeyboardEvent.KEY_UP, onKeyRelease);
+		FlxG.signals.preUpdate.remove(pollRawInput);
 		FlxG.mouse.visible = true;
 		NoteSplash.configs.clear();
 		FlxG.sound.list.remove(inst);
@@ -664,43 +676,93 @@ class EditorPlayState extends MusicBeatSubstate
 			@:privateAccess if (!FlxG.keys._keyListMap.exists(eventKey)) return;
 			#end
 	
-			if(FlxG.keys.checkStatus(eventKey, JUST_PRESSED)) keyPressed(key);
+			if(!RawInput.covers(eventKey) && FlxG.keys.checkStatus(eventKey, JUST_PRESSED)) keyPressed(key);
 		}
+	}
+
+	// Song time the keys are judged against, same one keyPressed() has always used
+	function inputSongTime():Float
+	{
+		if(Conductor.songPosition >= 0 && inst != null) return inst.time + Conductor.offset;
+		return Conductor.songPosition;
+	}
+
+	// Key events from the raw input thread, each one handled at the song time it happened at
+	// instead of the time of the frame that reads it
+	function pollRawInput():Void
+	{
+		var event:Int;
+		while ((event = RawInput.next()) >= 0)
+		{
+			var key:Int = PlayState.getKeyFromEvent(keysArray, event & 0xFFFF);
+			if(controls.controllerMode || key < 0) continue;
+
+			var time:Float = RawInput.eventTime(playbackRate);
+			if((event & 0x10000) != 0)
+			{
+				// Same as the OpenFL path, which never sees a press while the keyboard is disabled
+				if(!FlxG.keys.enabled) continue;
+				keyEventTime = time;
+				keyPressed(key);
+			}
+			else
+			{
+				keyReleaseTime[key] = time;
+				keyReleased(key);
+			}
+		}
+		RawInput.frameStart();
 	}
 
 	private function keyPressed(key:Int)
 	{
+		var eventTime:Float = keyEventTime;
+		keyEventTime = Math.NaN;
+
 		if(key < 0) return;
 
 		// more accurate hit time for the ratings?
 		var lastTime:Float = Conductor.songPosition;
-		if(Conductor.songPosition >= 0) Conductor.songPosition = inst.time + Conductor.offset;
+		if(!Math.isNaN(eventTime)) Conductor.songPosition = eventTime;
+		else Conductor.songPosition = inputSongTime();
+		var hitTime:Float = Conductor.songPosition;
 
-		// obtain notes that the player can hit
-		var plrInputNotes:Array<Note> = notes.members.filter(function(n:Note)
-			return n != null && n.canBeHit && n.mustPress && !n.tooLate &&
-			!n.wasGoodHit && !n.blockHit && !n.isSustainNote && n.noteData == key);
+		// obtain the two front notes that the player can hit (in sortHitNotes order) in one pass, without allocating
+		var funnyNote:Note = null; // front note
+		var doubleNote:Note = null;
+		for (n in notes.members)
+		{
+			if(n == null || n.noteData != key || !n.mustPress || n.isSustainNote || n.tooLate || n.wasGoodHit || n.blockHit) continue;
 
-		plrInputNotes.sort(PlayState.sortHitNotes);
+			// canBeHit is only refreshed once per frame, which is too coarse when frames are long:
+			// check the same hit window at the time of the key press instead
+			var canHit:Bool = n.canBeHit;
+			if(n.active) canHit = (n.strumTime > hitTime - (Conductor.safeZoneOffset * n.lateHitMult) &&
+									n.strumTime < hitTime + (Conductor.safeZoneOffset * n.earlyHitMult));
+			if(!canHit) continue;
+
+			if(funnyNote == null || PlayState.sortHitNotes(n, funnyNote) < 0)
+			{
+				doubleNote = funnyNote;
+				funnyNote = n;
+			}
+			else if(doubleNote == null || PlayState.sortHitNotes(n, doubleNote) < 0)
+				doubleNote = n;
+		}
 
 		var shouldMiss:Bool = !ClientPrefs.data.ghostTapping;
 
-		if (plrInputNotes.length != 0) { // slightly faster than doing `> 0` lol
-			var funnyNote:Note = plrInputNotes[0]; // front note
+		if (funnyNote != null) {
 			// trace('✡⚐🕆☼ 💣⚐💣');
 
-			if (plrInputNotes.length > 1) {
-				var doubleNote:Note = plrInputNotes[1];
-
-				if (doubleNote.noteData == funnyNote.noteData) {
-					// if the note has a 0ms distance (is on top of the current note), kill it
-					if (Math.abs(doubleNote.strumTime - funnyNote.strumTime) < 1.0)
-						invalidateNote(doubleNote);
-					else if (doubleNote.strumTime < funnyNote.strumTime)
-					{
-						// replace the note if its ahead of time (or at least ensure "doubleNote" is ahead)
-						funnyNote = doubleNote;
-					}
+			if (doubleNote != null) {
+				// if the note has a 0ms distance (is on top of the current note), kill it
+				if (Math.abs(doubleNote.strumTime - funnyNote.strumTime) < 1.0)
+					invalidateNote(doubleNote);
+				else if (doubleNote.strumTime < funnyNote.strumTime)
+				{
+					// replace the note if its ahead of time (or at least ensure "doubleNote" is ahead)
+					funnyNote = doubleNote;
 				}
 			}
 
@@ -724,7 +786,7 @@ class EditorPlayState extends MusicBeatSubstate
 		var key:Int = PlayState.getKeyFromEvent(keysArray, eventKey);
 		//trace('Pressed: ' + eventKey);
 
-		if(!controls.controllerMode && key > -1) keyReleased(key);
+		if(!controls.controllerMode && key > -1 && !RawInput.covers(eventKey)) keyReleased(key);
 	}
 
 	private function keyReleased(key:Int)
@@ -741,42 +803,49 @@ class EditorPlayState extends MusicBeatSubstate
 	private function keysCheck():Void
 	{
 		// HOLDING
-		var holdArray:Array<Bool> = [];
-		var pressArray:Array<Bool> = [];
-		var releaseArray:Array<Bool> = [];
-		for (key in keysArray)
+		var anyPressed:Bool = false;
+		var anyReleased:Bool = false;
+		for (i in 0...keysArray.length)
 		{
-			holdArray.push(controls.pressed(key));
-			pressArray.push(controls.justPressed(key));
-			releaseArray.push(controls.justReleased(key));
+			var key:String = keysArray[i];
+			holdArray[i] = controls.pressed(key);
+			pressArray[i] = controls.justPressed(key);
+			releaseArray[i] = controls.justReleased(key);
+			if(pressArray[i]) anyPressed = true;
+			if(releaseArray[i]) anyReleased = true;
 		}
 
 		// TO DO: Find a better way to handle controller inputs, this should work for now
-		if(controls.controllerMode && pressArray.contains(true))
+		if(controls.controllerMode && anyPressed)
 			for (i in 0...pressArray.length)
 				if(pressArray[i])
 					keyPressed(i);
 
 		// rewritten inputs???
-		if (notes.length > 0) {
-			for (n in notes) { // I can't do a filter here, that's kinda awesome
-				var canHit:Bool = (n != null && n.canBeHit && n.mustPress &&
-					!n.tooLate && !n.wasGoodHit && !n.blockHit);
+		for (n in notes.members) {
+			if (n == null || !n.isSustainNote) continue;
 
-				if (guitarHeroSustains)
-					canHit = canHit && n.parent != null && n.parent.wasGoodHit;
+			var canHit:Bool = (n.canBeHit && n.mustPress &&
+				!n.tooLate && !n.wasGoodHit && !n.blockHit);
 
-				if (canHit && n.isSustainNote) {
-					var released:Bool = !holdArray[n.noteData];
-					
-					if (!released)
-						goodNoteHit(n);
-				}
+			if (guitarHeroSustains)
+				canHit = canHit && n.parent != null && n.parent.wasGoodHit;
+
+			if (canHit) {
+				var released:Bool = !holdArray[n.noteData];
+
+				// A key let go between two frames was still held for every piece that passed before the release
+				var releaseTime:Float = keyReleaseTime[n.noteData];
+				if (released && releaseTime > n.strumTime && releaseTime <= Conductor.songPosition)
+					released = false;
+
+				if (!released)
+					goodNoteHit(n);
 			}
 		}
 
 		// TO DO: Find a better way to handle controller inputs, this should work for now
-		if(controls.controllerMode && releaseArray.contains(true))
+		if(controls.controllerMode && anyReleased)
 			for (i in 0...releaseArray.length)
 				if(releaseArray[i])
 					keyReleased(i);

@@ -1,0 +1,18 @@
+[package]
+name = "psych_input"
+version = "0.1.0"
+edition = "2021"
+description = "Raw Input keyboard capture with high-resolution timestamps for Psych Engine (Windows)"
+
+[lib]
+crate-type = ["staticlib"]
+
+# no_std + abort: nothing but kernel32/user32 to link into the hxcpp executable.
+[profile.dev]
+panic = "abort"
+
+[profile.release]
+panic = "abort"
+opt-level = 3
+lto = true
+codegen-units = 1
