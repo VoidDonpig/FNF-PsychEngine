@@ -177,6 +177,21 @@ class Main extends Sprite
 		#end
 
 		FlxG.fixedTimestep = false;
+
+		// Flixel caps the time one frame may advance the game at FlxG.maxElapsed, 0.1s by default: below
+		// 10 FPS everything but the music ran in slow motion. Keep that cap only for the frames right after
+		// a state switch or a focus change, where the time that passed was loading time, not game time.
+		var cappedFrames:Int = 2;
+		function capNextFrames()
+		{
+			FlxG.maxElapsed = 0.1;
+			cappedFrames = 2;
+		}
+		FlxG.signals.postStateSwitch.add(capNextFrames);
+		FlxG.signals.focusGained.add(capNextFrames);
+		FlxG.signals.preUpdate.add(function() {
+			if (cappedFrames > 0 && --cappedFrames == 0) FlxG.maxElapsed = 1;
+		});
 		FlxG.game.focusLostFramerate = 60;
 		FlxG.keys.preventDefaultKeys = [TAB];
 		
