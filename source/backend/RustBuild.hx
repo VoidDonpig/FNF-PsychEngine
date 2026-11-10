@@ -9,7 +9,8 @@ import sys.FileSystem;
 /**
  * Compiles the Rust library in native/psych_input and links it into Windows builds.
  * Called from Project.xml. Without cargo, or when its build fails, the game still compiles:
- * RUST_INPUT stays undefined and gameplay reads the keyboard from OpenFL events as before.
+ * RUST_INPUT stays undefined: gameplay reads the keyboard from OpenFL events and frames are
+ * presented by OpenGL, as before.
  */
 class RustBuild
 {
@@ -37,7 +38,7 @@ class RustBuild
 		}
 
 		Compiler.define('RUST_INPUT');
-		Compiler.addGlobalMetadata('backend.RawInput', '@:buildXml("<target id=\'haxe\'><lib name=\'$lib\'/><lib name=\'user32.lib\'/></target>")');
+		Compiler.addGlobalMetadata('backend.RawInput', '@:buildXml("<target id=\'haxe\'><lib name=\'$lib\'/><lib name=\'user32.lib\'/><lib name=\'opengl32.lib\'/><lib name=\'d3d11.lib\'/><lib name=\'dxgi.lib\'/></target>")');
 	}
 }
 #end

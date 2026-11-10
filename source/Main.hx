@@ -197,11 +197,18 @@ class Main extends Sprite
 		});
 
 		#if sys
-		// The driver lets the game queue a few frames ahead of the GPU. When the GPU is the slow part, the
-		// frame on screen is that many frames old. Wait for the GPU to finish each frame before the flip,
-		// so the newest frame is the one shown. The FPS cap is untouched: it is lime's frame timer.
+		// "-nodxgi" on the command line keeps OpenGL's own presentation (needed by tools that hook it)
+		var flipPresent:Bool = !Sys.args().contains('-nodxgi');
 		Lib.current.stage.window.onRender.add(function(context:lime.graphics.RenderContext) {
-			if (context != null && context.webgl != null) context.webgl.finish();
+			if (context == null || context.webgl == null) return;
+
+			// The driver lets the game queue a few frames ahead of the GPU. When the GPU is the slow part, the
+			// frame on screen is that many frames old. Wait for the GPU to finish each frame before the flip,
+			// so the newest frame is the one shown. The FPS cap is untouched: it is lime's frame timer.
+			context.webgl.finish();
+
+			// When the frame went out through DXGI, lime must not swap the OpenGL buffers as well
+			if (flipPresent && backend.FlipPresent.present()) Lib.current.stage.window.onRender.cancel();
 		}, false, -1000);
 		#end
 

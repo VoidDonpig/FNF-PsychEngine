@@ -2,7 +2,7 @@
 name = "psych_input"
 version = "0.1.0"
 edition = "2021"
-description = "Raw Input keyboard capture with high-resolution timestamps for Psych Engine (Windows)"
+description = "Raw Input keyboard capture and DXGI flip-model presentation for Psych Engine (Windows)"
 
 [lib]
 crate-type = ["staticlib"]
@@ -16,3 +16,7 @@ panic = "abort"
 opt-level = 3
 lto = true
 codegen-units = 1
+
+# Only for the tests: checks the hand-written COM layouts in src/present.rs against the official bindings.
+[dev-dependencies]
+windows = { version = "0.58", features = ["Win32_Graphics_Dxgi", "Win32_Graphics_Dxgi_Common", "Win32_Graphics_Direct3D", "Win32_Graphics_Direct3D11", "Win32_Foundation"] }
