@@ -312,7 +312,12 @@ impl Playing {
         self.scene.as_ref().is_some_and(|scene| scene.pixel)
     }
 
-    /// What pixel stages add to the names of their countdown and game over sounds.
+    /// What the stage adds to the names of the game over sounds.
+    fn death_suffix(&self) -> &'static str {
+        self.scene.as_ref().map_or("", |scene| scene.death().1)
+    }
+
+    /// What pixel stages add to the names of their countdown sounds.
     fn ui_suffix(&self) -> &'static str {
         if self.pixel() { "-pixel" } else { "" }
     }
@@ -336,11 +341,11 @@ impl Playing {
         let fell = self.scene.as_mut().is_some_and(|scene| scene.update_dead(dt, confirm));
         // without a scene to play the fall, the music starts after a moment
         if (fell || (self.scene.is_none() && since < 1.0 && since + dt >= 1.0)) && confirmed.is_none() {
-            self.sound(&format!("gameOver{}", self.ui_suffix()), 1.0, true);
+            self.sound(&format!("gameOver{}", self.death_suffix()), 1.0, true);
         }
         if confirm {
             self.song.stop_sounds();
-            self.sound(&format!("gameOverEnd{}", self.ui_suffix()), 1.0, false);
+            self.sound(&format!("gameOverEnd{}", self.death_suffix()), 1.0, false);
         }
         let confirmed = if confirm { Some(0.0) } else { confirmed.map(|t| t + dt) };
         self.dead = Some((since + dt, confirmed));
@@ -549,7 +554,7 @@ impl Playing {
         if (self.play.health <= 0.0 || reset) && !self.settings.practice {
             self.dead = Some((0.0, None));
             self.song.pause();
-            self.sound(&format!("fnf_loss_sfx{}", self.ui_suffix()), 1.0, false);
+            self.sound(&format!("fnf_loss_sfx{}", self.death_suffix()), 1.0, false);
             self.scene.iter_mut().for_each(|scene| scene.die());
             return Flow::Continue;
         }

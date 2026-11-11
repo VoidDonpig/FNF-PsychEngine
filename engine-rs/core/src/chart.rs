@@ -29,6 +29,13 @@ pub enum NoteKind {
     GfSing,
     /// Nobody moves for it.
     NoAnimation,
+    /// Weekend 1: the opponent lights a spray can, kicks it up and knees it over,
+    LightCan,
+    KickCan,
+    KneeCan,
+    /// and the player cocks the gun and shoots the can down. Missing the shot hurts.
+    CockGun,
+    FireGun,
 }
 
 /// Something a chart schedules besides notes: a camera zoom, a pose, a character swap.
@@ -155,6 +162,11 @@ pub fn parse(text: &str) -> Result<Chart, String> {
                     "Hey!" => NoteKind::Hey,
                     "No Animation" => NoteKind::NoAnimation,
                     "GF Sing" => NoteKind::GfSing,
+                    "weekend-1-lightcan" => NoteKind::LightCan,
+                    "weekend-1-kickcan" => NoteKind::KickCan,
+                    "weekend-1-kneecan" => NoteKind::KneeCan,
+                    "weekend-1-cockgun" => NoteKind::CockGun,
+                    "weekend-1-firegun" => NoteKind::FireGun,
                     // in a girlfriend section, the notes of the side in focus are hers
                     _ if gf_section && player == must_hit => NoteKind::GfSing,
                     _ => NoteKind::Normal,

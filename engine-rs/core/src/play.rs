@@ -196,6 +196,10 @@ impl Play {
         self.rated += 1;
         // a stray press costs half of what a missed note does
         self.health -= MISS_HEALTH * self.health_loss * if note.is_some() { 1.0 } else { 0.5 };
+        // the can that was not shot down goes off in the player's face
+        if note.is_some_and(|index| self.chart.notes[index].kind == NoteKind::FireGun) {
+            self.health -= 0.4;
+        }
         if self.health < 1e-9 || self.instakill {
             self.health = 0.0; // ten misses from full must empty the bar, whatever the rounding says
         }
@@ -292,6 +296,14 @@ mod tests {
         p.instakill = true;
         p.update(3500.0);
         assert_eq!(p.health, 0.0);
+    }
+
+    #[test]
+    fn a_missed_shot_at_the_can_costs_much_more() {
+        let mut p = play(&[(1000.0, 0, true, 0.0)], false);
+        p.chart.notes[0].kind = NoteKind::FireGun;
+        p.update(1500.0);
+        assert!((p.health - 0.5).abs() < 1e-9);
     }
 
     #[test]

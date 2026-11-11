@@ -157,7 +157,10 @@ fn backdrop(stage: &str) -> Vec<LayerDef> {
             layer("phillyStreets/phillyHighwayLights", 284.0, 305.0, 1.0, 1.0),
             layer("phillyStreets/phillyHighway", 139.0, 209.0, 1.0, 1.0),
             layer("phillyStreets/phillySmog", -6.0, 245.0, 0.8, 1.0),
-            moving("redtogreen", Still, layer("phillyStreets/phillyTraffic", 1840.0, 608.0, 0.9, 1.0)),
+            // shortcut: the light maps over the lamps (added brightness) and the rain are left out.
+            moving("car1", Still, layer("phillyStreets/phillyCars", 1200.0, 818.0, 0.9, 1.0)),
+            LayerDef { flip: true, ..moving("car1", Still, layer("phillyStreets/phillyCars", 1200.0, 818.0, 0.9, 1.0)) },
+            moving("redtogreen", Once, layer("phillyStreets/phillyTraffic", 1840.0, 608.0, 0.9, 1.0)),
             layer("phillyStreets/phillyForeground", 88.0, 317.0, 1.0, 1.0),
         ],
         _ => Vec::new(),
@@ -246,6 +249,8 @@ enum Own {
     Mall { hey: f32 },
     /// Whether the girls in the back have turned sour.
     School { sour: bool },
+    /// The traffic light (red or not, the beat it last changed and the beats until it changes again) and the two cars: one each way.
+    Streets { red: bool, changed: i64, every: i64, cars: [Car; 2] },
     /// The tank rolling round behind the ground: where on its circle it is (degrees) and how fast it goes.
     Tank { angle: f32, speed: f32 },
 }
@@ -335,6 +340,77 @@ struct Spotlight {
     fog_to: (f32, f32),
     /// The two drifts of smoke: where, how large, how fast.
     drifts: [(Vec2, f32, f32); 2],
+}
+
+/// How a car's drive is paced.
+#[derive(Clone, Copy, Debug, PartialEq)]
+enum Ease {
+    Even,
+    /// Fast at first, coming to rest.
+    Slowing,
+    /// Pulling away.
+    Quickening,
+}
+
+/// A car of the weekend 1 street driving along a bend.
+#[derive(Debug, PartialEq)]
+struct Drive {
+    /// Start, the point the bend is pulled towards, end.
+    path: [Vec2; 3],
+    /// How it is turned at the start and at the end, in degrees.
+    turn: (f32, f32),
+    seconds: f32,
+    /// Seconds it still stands before setting off.
+    wait: f32,
+    ease: Ease,
+    time: f32,
+    /// It stops at the red light and stays until the light changes.
+    to_the_light: bool,
+}
+
+impl Drive {
+    /// One of the drives: 0 past the light and away, 1 up to the red light, 2 away from the light when it turns green, 3 the other way.
+    /// `variant` (1 to 4) is the car's look; some look slower.
+    fn new(kind: usize, variant: usize) -> Drive {
+        let o = vec2(306.6, 168.3);
+        let range = match (variant, kind) {
+            (1, _) => (1.0, 1.7),
+            (2, 1) => (0.9, 1.5),
+            (2, _) => (0.6, 1.2),
+            _ => (1.5, 2.5),
+        };
+        let seconds = rand::gen_range(range.0, range.1);
+        let (away, far) = (vec2(2400.0, 980.0) - o, vec2(3102.0, 1127.0) - o);
+        let at_light = vec2(1950.0 - 80.0, 980.0 + 15.0) - o;
+        let plain = Drive { path: [Vec2::ZERO; 3], turn: (0.0, 0.0), seconds, wait: 0.0, ease: Ease::Even, time: 0.0, to_the_light: false };
+        match kind {
+            0 => Drive { path: [vec2(1570.0, 1049.0 - 30.0) - o, away + vec2(0.0, -50.0), far + vec2(0.0, 40.0)], turn: (-8.0, 18.0), ..plain },
+            1 => Drive { path: [vec2(1500.0 - 20.0, 1049.0 - 20.0) - o, vec2(1770.0 - 80.0, 994.0 + 10.0) - o, at_light], turn: (-7.0, -5.0), ease: Ease::Slowing, to_the_light: true, ..plain },
+            2 => Drive { path: [at_light, away + vec2(0.0, -50.0), far + vec2(0.0, 40.0)], turn: (-5.0, 18.0), seconds: rand::gen_range(1.8, 3.0), wait: rand::gen_range(0.2, 1.2), ease: Ease::Quickening, ..plain },
+            _ => Drive { path: [far + vec2(0.0, 60.0), away + vec2(0.0, -30.0), vec2(1570.0, 1049.0 - 10.0) - o], turn: (18.0, -8.0), ..plain },
+        }
+    }
+
+    /// Where the car is and how it is turned (degrees); and whether it has arrived.
+    fn at(&self) -> (Vec2, f32, bool) {
+        let done = ((self.time - self.wait) / self.seconds).clamp(0.0, 1.0);
+        let t = match self.ease {
+            Ease::Even => done,
+            Ease::Slowing => 1.0 - (1.0 - done).powi(3),
+            Ease::Quickening => 1.0 - (done * std::f32::consts::FRAC_PI_2).cos(),
+        };
+        let [from, pull, to] = self.path;
+        let at = from * (1.0 - t) * (1.0 - t) + pull * 2.0 * (1.0 - t) * t + to * t * t;
+        (at, self.turn.0 + (self.turn.1 - self.turn.0) * t, done >= 1.0)
+    }
+}
+
+/// A car of the weekend 1 street: its drive, whether it stands at the red light, and how far its look is drawn off its spot.
+#[derive(Default)]
+struct Car {
+    drive: Option<Drive>,
+    waiting: bool,
+    shift: Vec2,
 }
 
 #[derive(Clone, Copy, PartialEq)]
@@ -465,6 +541,8 @@ fn texture(paths: &Paths, relative: &str) -> Option<Texture2D> {
 }
 
 struct Animation {
+    /// Which of the character's sheets its frames are on.
+    sheet: usize,
     frames: Vec<Frame>,
     fps: f32,
     looped: bool,
@@ -472,7 +550,7 @@ struct Animation {
 }
 
 pub struct Character {
-    sheet: Sheet,
+    sheets: Vec<Sheet>,
     animations: HashMap<String, Animation>,
     position: Vec2,
     scale: f32,
@@ -509,16 +587,23 @@ impl Character {
     /// Loads characters/<name>.json and its sheet. `spot` is where the stage puts this character.
     fn load(paths: &Paths, name: &str, spot: Vec2, is_player: bool) -> Result<Character, String> {
         let json = read_json(paths, &format!("characters/{name}.json"))?;
-        // shortcut: a character drawn from several sheets ("a,b") uses the first only; texture-atlas (Animate) characters are not read. Extend Sheet for them.
-        let image = json["image"].as_str().unwrap_or("").split(',').next().unwrap_or("").trim().to_owned();
-        let sheet = Sheet::load(&paths.find(&format!("images/{image}.png")).ok_or(format!("images/{image}.png not found"))?)?;
+        // shortcut: texture-atlas (Animate) characters are not read. Extend Sheet for them.
+        // a character may be drawn from several sheets ("a, b"): the first is needed, the others bring more animations
+        let mut sheets = Vec::new();
+        for image in json["image"].as_str().unwrap_or("").split(',').map(str::trim) {
+            match paths.find(&format!("images/{image}.png")).ok_or(format!("images/{image}.png not found")).and_then(|path| Sheet::load(&path)) {
+                Ok(sheet) => sheets.push(sheet),
+                Err(error) if sheets.is_empty() => return Err(error),
+                Err(error) => eprintln!("Character {name}: {error}"),
+            }
+        }
         let mut animations = HashMap::new();
         for animation in json["animations"].as_array().into_iter().flatten() {
             let indices: Vec<u32> = animation["indices"].as_array().into_iter().flatten().filter_map(|i| i.as_u64()).map(|i| i as u32).collect();
-            let frames = sheet.animation(animation["name"].as_str().unwrap_or(""), &indices);
-            if !frames.is_empty() {
+            let found = sheets.iter().map(|sheet| sheet.animation(animation["name"].as_str().unwrap_or(""), &indices)).enumerate().find(|(_, frames)| !frames.is_empty());
+            if let Some((sheet, frames)) = found {
                 let fps = animation["fps"].as_f64().unwrap_or(24.0) as f32;
-                animations.insert(animation["anim"].as_str().unwrap_or("").to_owned(), Animation { frames, fps, looped: animation["loop"].as_bool().unwrap_or(false), offset: pair(&animation["offsets"]) });
+                animations.insert(animation["anim"].as_str().unwrap_or("").to_owned(), Animation { sheet, frames, fps, looped: animation["loop"].as_bool().unwrap_or(false), offset: pair(&animation["offsets"]) });
             }
         }
         let sways = animations.contains_key("danceLeft") && animations.contains_key("danceRight");
@@ -527,14 +612,14 @@ impl Character {
         let frame_size = animations.get(&current).or(animations.values().next()).map_or(Vec2::ZERO, |a| a.frames[0].size);
         let size = frame_size * scale;
         if json["no_antialiasing"].as_bool().unwrap_or(false) {
-            sheet.texture.set_filter(FilterMode::Nearest); // pixel art keeps its hard edges
+            sheets.iter().for_each(|sheet| sheet.texture.set_filter(FilterMode::Nearest)); // pixel art keeps its hard edges
         }
         let rgb = &json["healthbar_colors"];
         let channel = |i: usize| rgb[i].as_u64().unwrap_or(255) as u8;
         let icon_name = json["healthicon"].as_str().unwrap_or("face");
         let icon = texture(paths, &format!("images/icons/icon-{icon_name}.png")).or_else(|| texture(paths, &format!("images/icons/{icon_name}.png"))).or_else(|| texture(paths, "images/icons/icon-face.png"));
         Ok(Character {
-            sheet,
+            sheets,
             animations,
             position: spot + pair(&json["position"]),
             scale,
@@ -619,7 +704,7 @@ impl Character {
         let frame = (self.time * animation.fps) as usize;
         let frame = if animation.looped { frame % animation.frames.len() } else { frame.min(animation.frames.len() - 1) };
         let at = self.position - animation.offset - self.grow;
-        self.sheet.draw(animation.frames[frame], at.x, at.y, self.scale, self.flip_x, self.tint);
+        self.sheets[animation.sheet].draw(animation.frames[frame], at.x, at.y, self.scale, self.flip_x, self.tint);
     }
 }
 
@@ -652,6 +737,10 @@ pub struct Scene {
     gf_speed: i64,
     /// Where a chart event pinned the camera.
     pinned: Option<Vec2>,
+    /// Seconds until the camera, held for a stunt, goes back to following the singers.
+    unpin_in: Option<f32>,
+    /// The stage's name.
+    stage: String,
     /// Shaking of the stage and of the HUD: strength (share of the screen) and seconds left.
     shake: [(f32, f32); 2],
     /// Characters a chart event will swap in, loaded ahead so that the swap does not stall the song.
@@ -727,6 +816,8 @@ impl Scene {
             icon_scale: 1.0,
             gf_speed: 1,
             pinned: None,
+            unpin_in: None,
+            stage: chart.stage.clone(),
             shake: [(0.0, 0.0); 2],
             spares: HashMap::new(),
             own: match chart.stage.as_str() {
@@ -735,6 +826,7 @@ impl Scene {
                 "limo" => Own::Limo { speed: 0.0, back_in: None, kill: Kill::Wait, limo_speed: 0.0 },
                 "mall" => Own::Mall { hey: 0.0 },
                 "school" => Own::School { sour: false },
+                "phillyStreets" => Own::Streets { red: false, changed: 0, every: 8, cars: Default::default() },
                 "tank" => Own::Tank { angle: rand::gen_range(-90.0, 45.0), speed: rand::gen_range(5.0, 7.0) },
                 _ => Own::Nothing,
             },
@@ -1015,6 +1107,45 @@ impl Scene {
                     self.gf.iter_mut().for_each(|c| c.pose("cheer", Some(0.6)));
                 }
                 NoteKind::GfSing if self.gf.is_some() => self.gf.iter_mut().for_each(|c| c.sing(lane, false, alt)),
+                // weekend 1: the opponent lights a can, kicks it up and knees it over; the camera closes in on him and swings after the can
+                NoteKind::LightCan | NoteKind::KickCan | NoteKind::KneeCan if side == 0 => {
+                    let (pose, sound) = match kind {
+                        NoteKind::LightCan => ("lightCan", "Darnell_Lighter"),
+                        NoteKind::KickCan => ("kickCan", "Kick_Can_UP"),
+                        _ => ("kneeCan", "Kick_Can_FORWARD"),
+                    };
+                    self.opponent.iter_mut().for_each(|c| c.pose(pose, None));
+                    self.sounds.extend(self.paths.find(&format!("sounds/{sound}.ogg")).map(|path| (path, 1.0)));
+                    let on_him = self.opponent.as_ref().map(|c| c.middle() + vec2(150.0, -100.0) + c.camera_offset + self.camera_offsets[0]);
+                    match (kind, on_him, self.pinned) {
+                        (NoteKind::LightCan, Some(on_him), _) => {
+                            (self.pinned, self.camera_speed) = (Some(on_him - vec2(100.0, 0.0)), 2.0);
+                            self.default_zoom += 0.1;
+                        }
+                        (NoteKind::KickCan, _, Some(held)) => {
+                            (self.pinned, self.camera_speed, self.unpin_in) = (Some(held + vec2(250.0, 0.0)), 1.5, Some(1.1));
+                            self.default_zoom -= 0.1;
+                        }
+                        _ => {}
+                    }
+                }
+                // and the player cocks the gun and shoots the can down, or is hit by it
+                // shortcut: the can itself, its blast and the shell flying off are not drawn (the can is an Animate atlas).
+                NoteKind::CockGun | NoteKind::FireGun if side == 1 => {
+                    let (pose, sound) = match (kind, missed) {
+                        (NoteKind::FireGun, true) => ("shootMISS", "Pico_Bonk".to_owned()),
+                        (NoteKind::FireGun, false) => ("shoot", format!("shots/shot{}", rand::gen_range(1, 5))),
+                        (_, true) => ("", String::new()),
+                        (_, false) => ("cock", "Gun_Prep".to_owned()),
+                    };
+                    match pose {
+                        "" => self.player.iter_mut().for_each(|c| c.sing(lane, true, false)),
+                        pose => {
+                            self.player.iter_mut().for_each(|c| c.pose(pose, None));
+                            self.sounds.extend(self.paths.find(&format!("sounds/{sound}.ogg")).map(|path| (path, 1.0)));
+                        }
+                    }
+                }
                 _ => self.singer(side).into_iter().for_each(|c| c.sing(lane, missed, alt)),
             }
         }
@@ -1047,6 +1178,12 @@ impl Scene {
         }
         self.backdrop.iter_mut().for_each(|layer| layer.time += dt);
         self.flash.1 += dt;
+        if let Some(left) = &mut self.unpin_in {
+            *left -= dt;
+            if *left <= 0.0 {
+                (self.unpin_in, self.pinned, self.camera_speed) = (None, None, 1.0);
+            }
+        }
         if let Some(glow) = &mut self.glow {
             glow.height = (glow.height - 1000.0 * dt).max(0.0);
             for spark in &mut glow.sparks {
@@ -1156,6 +1293,46 @@ impl Scene {
                 }
             }
             Own::School { .. } => {}
+            Own::Streets { red, changed, every, cars } => {
+                const CARS: [&str; 4] = ["car1", "car2", "car3", "car4"];
+                let layers: Vec<usize> = self.backdrop.iter().enumerate().filter(|(_, layer)| layer.def.image == "phillyStreets/phillyCars").map(|(index, _)| index).collect();
+                let [Some(&here), Some(&there)] = [layers.first(), layers.get(1)] else { return };
+                let b = &mut self.backdrop;
+                // a car sets off in one of four looks, some drawn a little off its spot
+                let mut set_off = |car: &mut Car, layer: &mut Layer, kind: usize| {
+                    let variant = rand::gen_range(1, 5);
+                    layer.play(CARS[variant - 1], Motion::Still);
+                    (car.drive, car.shift) = (Some(Drive::new(kind, variant)), [Vec2::ZERO, vec2(20.0, -15.0), vec2(30.0, 50.0), vec2(10.0, 60.0)][variant - 1]);
+                };
+                if let Some(beat) = beat {
+                    let due = beat == *changed + *every;
+                    if chance(0.1) && !due && cars[0].drive.is_none() && !cars[0].waiting {
+                        set_off(&mut cars[0], &mut b[here], *red as usize);
+                    }
+                    if chance(0.1) && !due && cars[1].drive.is_none() && !*red {
+                        set_off(&mut cars[1], &mut b[there], 3);
+                    }
+                    if due {
+                        (*changed, *red) = (beat, !*red);
+                        *every = if *red { 20 } else { 30 };
+                        find(b, "phillyStreets/phillyTraffic").into_iter().for_each(|light| light.play(if *red { "greentored" } else { "redtogreen" }, Motion::Once));
+                    }
+                }
+                // the car at the light leaves when it is green
+                if cars[0].waiting && !*red {
+                    (cars[0].waiting, cars[0].drive) = (false, Some(Drive::new(2, 1)));
+                }
+                for (car, layer) in cars.iter_mut().zip([here, there]) {
+                    let Some(drive) = &mut car.drive else { continue };
+                    drive.time += dt;
+                    let (at, turn, arrived) = drive.at();
+                    (b[layer].def.at, b[layer].angle) = (at - car.shift, turn.to_radians());
+                    if arrived {
+                        car.waiting = drive.to_the_light;
+                        car.drive = None;
+                    }
+                }
+            }
             Own::Limo { speed, back_in, kill, limo_speed } => {
                 let all = |backdrop: &[Layer], image: &str| backdrop.iter().enumerate().filter(|(_, layer)| layer.def.image == image).map(|(index, _)| index).collect::<Vec<_>>();
                 let b = &mut self.backdrop;
@@ -1260,12 +1437,20 @@ impl Scene {
         self.player.as_ref().is_none_or(|player| ["idle", "danceLeft", "danceRight"].iter().any(|idle| player.current.starts_with(idle)))
     }
 
+    /// Who lies there when the player has lost, and what is added to the names of the game over sounds.
+    // shortcut: by stage, as the base game's stages set it; charts and scripts can name another game over character (gameOverChar). Read it from the chart when one needs it.
+    pub fn death(&self) -> (&'static str, &'static str) {
+        match self.stage.as_str() {
+            _ if self.pixel => ("bf-pixel-dead", "-pixel"),
+            "phillyStreets" | "phillyBlazin" => ("pico-dead", "-pico"),
+            _ => ("bf-dead", ""),
+        }
+    }
+
     /// The player lost: swaps in the fallen character and turns the camera to it.
     pub fn die(&mut self) {
         self.dead = true;
-        // shortcut: "bf-dead", or its pixel self on pixel stages; charts and scripts can name another game over character (gameOverChar). Read it from the chart when one needs it.
-        let name = if self.pixel { "bf-pixel-dead" } else { "bf-dead" };
-        if let Ok(mut fallen) = Character::load(&self.paths, name, self.spots[1], true) {
+        if let Ok(mut fallen) = Character::load(&self.paths, self.death().0, self.spots[1], true) {
             fallen.play("firstDeath");
             self.target = fallen.middle() + fallen.camera_offset;
             self.player = Some(fallen);
@@ -1409,6 +1594,24 @@ mod tests {
         let other = Soldier { right: false, ..soldier };
         assert_eq!(other.at(9_900.0, 14, 20).unwrap().0.x, 0.74 * 1280.0 + 100.0 + 100.0);
         assert_eq!(other.at(10_001.0, 14, 20).unwrap().0, macroquad::prelude::vec2(0.74 * 1280.0 + 100.0, 250.0));
+    }
+
+    #[test]
+    fn a_car_follows_its_bend_and_stops_at_the_red_light() {
+        use super::{Drive, Ease};
+        let mut drive = Drive::new(1, 1);
+        assert!(drive.to_the_light && drive.ease == Ease::Slowing && (1.0..=1.7).contains(&drive.seconds));
+        let (start, turn, arrived) = drive.at();
+        assert_eq!((start, turn, arrived), (drive.path[0], -7.0, false));
+        drive.time = drive.seconds / 2.0;
+        // slowing down, it is past the middle of its way at half time
+        assert!(drive.at().0.x > (drive.path[0].x + drive.path[2].x) / 2.0);
+        drive.time = drive.seconds;
+        assert_eq!(drive.at(), (drive.path[2], -5.0, true));
+        // away from the light it first stands a moment
+        let mut off = Drive::new(2, 1);
+        off.time = off.wait;
+        assert_eq!((off.at().0, off.path[0]), (drive.path[2], drive.path[2]));
     }
 
     #[test]

@@ -36,14 +36,16 @@ Done:
 - **Stage mechanics**: lightning over the haunted house (thunder, scared poses, flash), the window lights
   and the passing train of week 3 (with the girlfriend's hair blowing), the car speeding past the limo,
   the tank rolling round the hill of week 7, and in Stress Pico on the speakers shooting by his own
-  chart at the soldiers who run in. Stage events: Kill Henchmen (the pole sweeping the limo's
+  chart at the soldiers who run in. On the weekend 1 street the traffic light changes and cars drive
+  through both ways, stopping at red. Stage events: Kill Henchmen (the pole sweeping the limo's
   dancers off, the limo fetching new ones), the mall crowd cheering on Hey!, BG Freaks Expression, Trigger
   BG Ghouls, Philly Glow (lights out, the glow, sparks and everyone in one colour), Dadbattle Spotlight
   (the light on whoever sings, the smoke), and Set Property for the camera's zoom and speed.
 - **Chart events**: Hey!, Set GF Speed, Add Camera Zoom, Play Animation, Camera Follow Pos, Alt Idle
   Animation, Screen Shake, Change Character, Change Scroll Speed, Play Sound, from the chart and from the
-  song's `events.json`. Note types: Hurt Note, Alt Animation, Hey!, GF Sing, No Animation, and sections
-  marked for alternative poses or for the girlfriend.
+  song's `events.json`. Note types: Hurt Note, Alt Animation, Hey!, GF Sing, No Animation, the can and
+  gun notes of weekend 1 (poses, sounds, camera; a missed shot costs much health), and sections marked for
+  alternative poses or for the girlfriend. Characters may be drawn from several sheets.
 - **Pixel stages**: notes, holds, ratings, combo digits and countdown in their pixel look and colours,
   the pixel countdown and game over sounds, and the pixel game over character.
 - **Dialogue**: the talks before Senpai, Roses and Thorns in story mode: the text boxes, portraits,
@@ -76,10 +78,9 @@ Done:
 Not there yet:
 
 - **Play screen**: the events and note types that belong to scripts (Set Property beyond the
-  camera, the weekend 1 fight notes, custom ones), the rest of what stages do by themselves (the
-  speaker and lighting of weekend 1), the weekend 1
-  fight stage, coarse note splashes on pixel stages, characters made of several sheets or of
-  Animate atlases, other note and splash skins.
+  camera, the weekend 1 fight notes, custom ones), what is left of weekend 1 (the speaker under Nene
+  and her knife, the spray can itself and its blast, rain, light maps, the fight stage), coarse note
+  splashes on pixel stages, characters and props made of Animate atlases, other note and splash skins.
 - **Menus**: the mods menu's mouse buttons, per-mod settings and restart flag, the achievements
   that need features not here yet (the henchmen count, the toaster one, the title easter egg), those of mods, and resetting one, the rest of the options (graphics, note
   colours and skins, delay and combo placement, auto pause, gamepad, languages; the options menu is a plain
