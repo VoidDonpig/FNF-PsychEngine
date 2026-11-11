@@ -190,7 +190,7 @@ pub fn weeks(base: &Path) -> Vec<Week> {
                 _ => vec!["Easy".to_owned(), "Normal".to_owned(), "Hard".to_owned()],
             };
             let songs = week["songs"].as_array().into_iter().flatten().filter_map(|song| {
-                let color = [0, 1, 2].map(|i| song[2][i].as_u64().map(|c| c.min(255) as u8));
+                let color = [0, 1, 2].map(|i| song[2][i].as_f64().map(|c| c.clamp(0.0, 255.0) as u8));
                 let color = if color.contains(&None) { [146, 113, 253] } else { color.map(Option::unwrap_or_default) };
                 Some((song[0].as_str()?.to_owned(), song[1].as_str().unwrap_or("face").to_owned(), color))
             }).collect();

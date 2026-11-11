@@ -315,7 +315,8 @@ impl Playing {
             let own = file.and_then(|text| serde_json::from_str::<serde_json::Value>(&text).ok()).and_then(|json| Some(entry.inst.with_file_name(format!("Voices-{}.ogg", json["vocals_file"].as_str().filter(|name| !name.is_empty())?))));
             own.filter(|voice| voice.is_file()).or(usual.clone())
         };
-        let (voices_player, voices_opponent) = (named(&chart.player, &entry.voices_player), named(&chart.opponent, &entry.voices_opponent));
+        // (a chart may say it has none)
+        let (voices_player, voices_opponent) = if chart.needs_voices { (named(&chart.player, &entry.voices_player), named(&chart.opponent, &entry.voices_opponent)) } else { (None, None) };
         let mut tracks = vec![entry.inst.as_path()];
         tracks.extend(voices_player.as_deref());
         let player_voice = voices_player.as_ref().map(|_| 1);

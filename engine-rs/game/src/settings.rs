@@ -235,9 +235,13 @@ impl Default for Settings {
 
 impl Settings {
     /// Anything missing or unreadable keeps its default.
-    pub fn from_json(text: &str) -> Settings {
+    #[cfg(test)]
+    fn from_json(text: &str) -> Settings {
+        Settings::from_value(serde_json::from_str(text).unwrap_or_default())
+    }
+
+    fn from_value(json: Value) -> Settings {
         let mut settings = Settings::default();
-        let Ok(json) = serde_json::from_str::<Value>(text) else { return settings };
         for option in OPTIONS {
             let saved = &json[option.key];
             match option.kind {
@@ -303,11 +307,11 @@ impl Settings {
     }
 
     pub fn load(base: &Path) -> Settings {
-        Settings::from_json(&std::fs::read_to_string(base.join(FILE)).unwrap_or_default())
+        Settings::from_value(funkin_core::files::read(&base.join(FILE)))
     }
 
     pub fn save(&self, base: &Path) {
-        if let Err(error) = std::fs::write(base.join(FILE), self.to_json()) {
+        if let Err(error) = funkin_core::files::write(&base.join(FILE), &self.to_json()) {
             eprintln!("Could not save the settings: {error}");
         }
     }

@@ -133,7 +133,10 @@ impl Save {
 
     /// Anything missing or unreadable is left empty.
     pub fn from_json(text: &str) -> Save {
-        let value: Value = serde_json::from_str(text).unwrap_or_default();
+        Save::from_value(serde_json::from_str(text).unwrap_or_default())
+    }
+
+    fn from_value(value: Value) -> Save {
         let entries = |key: &str| value[key].as_object().cloned().unwrap_or_default().into_iter();
         let names = |key: &str| value[key].as_array().into_iter().flatten().filter_map(|name| name.as_str().map(str::to_owned)).collect();
         Save {
@@ -147,13 +150,11 @@ impl Save {
     }
 
     pub fn load(base: &Path) -> Save {
-        Save::from_json(&std::fs::read_to_string(file(base)).unwrap_or_default())
+        Save::from_value(crate::files::read(&file(base)))
     }
 
-    /// Written beside the old file and moved over it, so a crash half way cannot leave a broken save.
     pub fn save(&self, base: &Path) {
-        let part = file(base).with_extension("json.part");
-        if let Err(error) = std::fs::write(&part, self.to_json()).and_then(|_| std::fs::rename(&part, file(base))) {
+        if let Err(error) = crate::files::write(&file(base), &self.to_json()) {
             eprintln!("Could not save the scores: {error}");
         }
     }

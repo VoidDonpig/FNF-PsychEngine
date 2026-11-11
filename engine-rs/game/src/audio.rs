@@ -245,10 +245,20 @@ mod output {
         let mut reader = lewton::inside_ogg::OggStreamReader::new(file).map_err(|e| format!("{}: {e}", path.display()))?;
         let channels = reader.ident_hdr.audio_channels as usize;
         let mut samples = Vec::new();
-        while let Some(packet) = reader.read_dec_packet_itl().map_err(|e| format!("{}: {e}", path.display()))? {
-            for frame in packet.chunks(channels) {
-                let right = if channels > 1 { frame[1] } else { frame[0] };
-                samples.extend([frame[0], right]);
+        loop {
+            match reader.read_dec_packet_itl() {
+                Ok(Some(packet)) => {
+                    for frame in packet.chunks(channels) {
+                        let right = if channels > 1 { frame[1] } else { frame[0] };
+                        samples.extend([frame[0], right]);
+                    }
+                }
+                Ok(None) => break,
+                // a damaged packet late in a file: what came before it plays
+                Err(error) => {
+                    eprintln!("{}: {error}; played up to there", path.display());
+                    break;
+                }
             }
         }
         samples.shrink_to_fit();
@@ -291,7 +301,11 @@ mod output {
             // each track with how many of its frames pass for one of the instrumental's (the voices of a song may have another rate)
             let mut loaded = vec![(first.clone(), 1.0)];
             for other in decoded {
-                let (samples, track_rate) = other?;
+                // a voice file that cannot be read is silent; the rest of the song still plays
+                let (samples, track_rate) = other.unwrap_or_else(|error| {
+                    eprintln!("{error}");
+                    (Arc::default(), rate)
+                });
                 loaded.push((samples, track_rate as f64 / rate as f64));
             }
             let volumes: Arc<Vec<AtomicU32>> = Arc::new(loaded.iter().map(|_| AtomicU32::new(1.0f32.to_bits())).collect());
@@ -382,6 +396,8 @@ mod output {
         /// Stops the sound; `heard_ms` is what the position stays at until it plays again.
         pub fn pause(&self, heard_ms: f64) {
             self.shared.playing.store(false, Ordering::Relaxed);
+            // it goes on from what was heard, not from the end of the buffer already mixed (that would skip the latency)
+            *self.shared.seek.lock().unwrap() = Some(heard_ms / 1000.0 * self.rate);
             *self.shared.frozen.lock().unwrap() = Some(heard_ms);
             *self.shared.anchor.lock().unwrap() = None;
         }

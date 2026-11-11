@@ -92,6 +92,8 @@ pub struct Chart {
     pub splash_skin: String,
     /// The notes keep the colours they were painted in.
     pub no_rgb: bool,
+    /// The song has voices to play (`needsVoices`).
+    pub needs_voices: bool,
 }
 
 impl Chart {
@@ -193,9 +195,10 @@ pub fn parse(text: &str) -> Result<Chart, String> {
             });
         }
     }
-    notes.sort_by(|a, b| a.time.total_cmp(&b.time));
-    // Charts sometimes stack two notes on the same spot; the game plays one.
-    notes.dedup_by(|b, a| a.lane == b.lane && a.player == b.player && (a.time - b.time).abs() < 1e-3);
+    // (side and lane after the time, so that notes stacked on one spot end up side by side)
+    notes.sort_by(|a, b| a.time.total_cmp(&b.time).then(a.player.cmp(&b.player)).then(a.lane.cmp(&b.lane)));
+    // Charts sometimes stack two notes of one kind on the same spot; the game plays one.
+    notes.dedup_by(|b, a| a.lane == b.lane && a.player == b.player && a.kind == b.kind && (a.time - b.time).abs() < 1e-3);
     events.sort_by(|a, b| a.time.total_cmp(&b.time));
 
     let name = |keys: &[&str], default: &str| keys.iter().find_map(|k| root[*k].as_str()).filter(|s| !s.is_empty()).unwrap_or(default).to_owned();
@@ -207,6 +210,7 @@ pub fn parse(text: &str) -> Result<Chart, String> {
         arrow_skin: root["arrowSkin"].as_str().unwrap_or("").to_owned(),
         splash_skin: root["splashSkin"].as_str().unwrap_or("").to_owned(),
         no_rgb: root["disableNoteRGB"].as_bool().unwrap_or(false),
+        needs_voices: root["needsVoices"].as_bool().unwrap_or(true),
         notes,
         events,
         sections,
@@ -281,8 +285,8 @@ mod tests {
         assert_eq!(chart.events.iter().map(|e| (e.time, e.name.as_str(), e.value1.as_str(), e.value2.as_str())).collect::<Vec<_>>(),
                    [(100.0, "Set GF Speed", "2", ""), (900.0, "Add Camera Zoom", "0.1", ""), (900.0, "Hey!", "1", "0.6")]);
         let kinds: Vec<NoteKind> = chart.notes.iter().map(|n| n.kind).collect();
-        // sorted by time: the player's note of the girlfriend section, the opponent's, then the typed ones
-        assert_eq!(kinds, [NoteKind::GfSing, NoteKind::Normal, NoteKind::Alt, NoteKind::Hey, NoteKind::NoAnimation, NoteKind::GfSing]);
+        // sorted by time (and side): the opponent's note, the player's of the girlfriend section, then the typed ones
+        assert_eq!(kinds, [NoteKind::Normal, NoteKind::GfSing, NoteKind::Alt, NoteKind::Hey, NoteKind::NoAnimation, NoteKind::GfSing]);
         assert!(chart.sections[0].alt);
     }
 
@@ -316,6 +320,9 @@ mod tests {
     fn stacked_notes_collapse() {
         let chart = parse(r#"{"song":"T","format":"psych_v1","notes":[{"sectionNotes":[[0,1,0],[0,1,0],[0,5,0]]}]}"#).unwrap();
         assert_eq!(chart.notes.len(), 2);
+        // also when another note sits between them in the file; one of another kind stays
+        let chart = parse(r#"{"song":"T","format":"psych_v1","notes":[{"sectionNotes":[[0,1,0],[0,2,0],[0,1,0],[0,1,0,"Hurt Note"]]}]}"#).unwrap();
+        assert_eq!(chart.notes.len(), 3);
     }
 
     #[test]

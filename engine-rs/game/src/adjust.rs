@@ -107,7 +107,7 @@ impl Adjust {
         }
 
         // the music goes round, and the beat is counted where the sound is heard: later by the delay
-        if self.song.length_ms().is_some_and(|length| self.song.position_ms() >= length) {
+        if self.song.length_ms().is_some_and(|length| length > 0.0 && self.song.position_ms() >= length) {
             self.song = play(&self.music);
         }
         let position = self.song.position_ms() - settings.offset_ms;
