@@ -1,4 +1,4 @@
-//! Finds the songs of the base game and of every mod, through their week files.
+//! Finds the weeks and songs of the base game and of every mod, through their week files.
 use serde_json::Value;
 use std::path::{Path, PathBuf};
 
@@ -8,6 +8,11 @@ pub struct SongEntry {
     pub difficulty: String,
     /// Mod folder name, or "" for the base game.
     pub source: String,
+    /// Index of its week in the list it was found through.
+    pub week: usize,
+    /// Health icon and colour it has in freeplay.
+    pub icon: String,
+    pub color: [u8; 3],
     pub chart: PathBuf,
     pub inst: PathBuf,
     /// The player's vocals; a song with one vocal file for both singers has it here.
@@ -51,8 +56,38 @@ pub fn song_path(name: &str) -> String {
         .to_lowercase()
 }
 
-/// Every playable song under `base` (the folder holding `assets` and `mods`), in week order.
-pub fn discover(base: &Path) -> Vec<SongEntry> {
+/// What a difficulty adds to a song's chart name and to the names scores are kept under.
+pub fn suffix(difficulty: &str) -> String {
+    match song_path(difficulty).as_str() { "normal" => String::new(), d => format!("-{d}") }
+}
+
+/// A week file: a row of the story menu and the songs it brings to freeplay.
+#[derive(Clone, Debug, Default, PartialEq)]
+pub struct Week {
+    /// File name without ".json"; scores and unlocks are kept under it.
+    pub file: String,
+    /// Mod folder name, or "" for the base game.
+    pub source: String,
+    pub story_name: String,
+    /// The week that has to be finished first, unless `start_unlocked`.
+    pub before: String,
+    pub start_unlocked: bool,
+    pub hidden_until_unlocked: bool,
+    pub hide_story: bool,
+    pub hide_freeplay: bool,
+    /// The three characters of the story menu ("" for none).
+    pub characters: [String; 3],
+    pub background: String,
+    pub difficulties: Vec<String>,
+    /// Title, health icon and menu colour of each song.
+    pub songs: Vec<(String, String, [u8; 3])>,
+    /// Folders its charts and its songs' audio are in.
+    pub data: PathBuf,
+    pub audio: PathBuf,
+}
+
+/// Every week under `base` (the folder holding `assets` and `mods`): the game's, then each mod's.
+pub fn weeks(base: &Path) -> Vec<Week> {
     // (name, weeks, data, songs)
     let mut roots: Vec<(String, PathBuf, PathBuf, PathBuf)> = Vec::new();
     let assets = base.join("assets");
@@ -67,25 +102,52 @@ pub fn discover(base: &Path) -> Vec<SongEntry> {
         }
     }
 
+    // weekList.txt names the weeks that come first, in its order; the game's list also covers the base_game folder
+    let listed = |dir: &Path| std::fs::read_to_string(dir.join("weekList.txt")).unwrap_or_default().lines().map(|l| l.trim().to_owned()).collect::<Vec<_>>();
+    let game_order = [listed(&roots[0].1), listed(&roots[1].1)].concat();
     let mut found = Vec::new();
-    for (source, weeks, data, songs) in roots {
-        for week_file in sorted(&weeks).into_iter().filter(|p| p.extension().is_some_and(|e| e == "json")) {
-            let Some(week) = std::fs::read_to_string(&week_file).ok().and_then(|t| serde_json::from_str::<Value>(&t).ok()) else { continue };
+    for (source, dir, data, audio) in roots {
+        let order = if source.is_empty() { game_order.clone() } else { listed(&dir) };
+        let name = |path: &Path| path.file_stem().unwrap_or_default().to_string_lossy().into_owned();
+        let mut files: Vec<PathBuf> = sorted(&dir).into_iter().filter(|p| p.extension().is_some_and(|e| e == "json")).collect();
+        files.sort_by_key(|path| order.iter().position(|listed| *listed == name(path)).unwrap_or(usize::MAX)); // stable: the rest stay alphabetical
+        for path in files {
+            let Some(week) = std::fs::read_to_string(&path).ok().and_then(|t| serde_json::from_str::<Value>(&t).ok()) else { continue };
+            let text = |key: &str| week[key].as_str().unwrap_or_default().to_owned();
             let difficulties = match week["difficulties"].as_str().map(str::trim) {
                 Some(list) if !list.is_empty() => list.split(',').map(|d| d.trim().to_owned()).collect(),
                 _ => vec!["Easy".to_owned(), "Normal".to_owned(), "Hard".to_owned()],
             };
-            for title in week["songs"].as_array().into_iter().flatten().filter_map(|s| s[0].as_str()) {
-                let folder = song_path(title);
-                let inst = songs.join(&folder).join("Inst.ogg");
-                for difficulty in &difficulties {
-                    let suffix = match song_path(difficulty).as_str() { "normal" => String::new(), d => format!("-{d}") };
-                    let chart = data.join(&folder).join(format!("{folder}{suffix}.json"));
-                    if chart.is_file() && inst.is_file() {
-                        let track = |name: &str| Some(songs.join(&folder).join(name)).filter(|p| p.is_file());
-                        let voices_player = track("Voices-Player.ogg").or_else(|| track("Voices.ogg"));
-                        found.push(SongEntry { title: title.to_owned(), difficulty: difficulty.clone(), source: source.clone(), chart, inst: inst.clone(), voices_player, voices_opponent: track("Voices-Opponent.ogg") });
-                    }
+            let songs = week["songs"].as_array().into_iter().flatten().filter_map(|song| {
+                let color = [0, 1, 2].map(|i| song[2][i].as_u64().map(|c| c.min(255) as u8));
+                let color = if color.contains(&None) { [146, 113, 253] } else { color.map(Option::unwrap_or_default) };
+                Some((song[0].as_str()?.to_owned(), song[1].as_str().unwrap_or("face").to_owned(), color))
+            }).collect();
+            found.push(Week {
+                file: name(&path), source: source.clone(), story_name: text("storyName"), before: text("weekBefore"),
+                start_unlocked: week["startUnlocked"].as_bool().unwrap_or(true), hidden_until_unlocked: week["hiddenUntilUnlocked"].as_bool().unwrap_or(false),
+                hide_story: week["hideStoryMode"].as_bool().unwrap_or(false), hide_freeplay: week["hideFreeplay"].as_bool().unwrap_or(false),
+                characters: [0, 1, 2].map(|i| week["weekCharacters"][i].as_str().unwrap_or_default().to_owned()), background: text("weekBackground"),
+                difficulties, songs, data: data.clone(), audio: audio.clone(),
+            });
+        }
+    }
+    found
+}
+
+/// Every playable song of `weeks`, in their order: one entry for each difficulty that has a chart.
+pub fn songs(weeks: &[Week]) -> Vec<SongEntry> {
+    let mut found = Vec::new();
+    for (index, week) in weeks.iter().enumerate() {
+        for (title, icon, color) in &week.songs {
+            let folder = song_path(title);
+            let inst = week.audio.join(&folder).join("Inst.ogg");
+            for difficulty in &week.difficulties {
+                let chart = week.data.join(&folder).join(format!("{folder}{}.json", suffix(difficulty)));
+                if chart.is_file() && inst.is_file() {
+                    let track = |name: &str| Some(week.audio.join(&folder).join(name)).filter(|p| p.is_file());
+                    let voices_player = track("Voices-Player.ogg").or_else(|| track("Voices.ogg"));
+                    found.push(SongEntry { title: title.clone(), difficulty: difficulty.clone(), source: week.source.clone(), week: index, icon: icon.clone(), color: *color, chart, inst: inst.clone(), voices_player, voices_opponent: track("Voices-Opponent.ogg") });
                 }
             }
         }
@@ -124,7 +186,11 @@ mod tests {
     #[test]
     fn finds_base_game_and_mod_songs() {
         let repo = Path::new(concat!(env!("CARGO_MANIFEST_DIR"), "/../.."));
-        let songs = discover(repo);
+        let all = weeks(repo);
+        assert_eq!(all.iter().map(|w| w.file.as_str()).collect::<Vec<_>>(), ["tutorial", "week1", "week2", "week3", "week4", "week5", "week6", "week7", "weekend1"]);
+        assert_eq!((all[1].story_name.as_str(), all[1].before.as_str(), all[1].characters[0].as_str(), all[1].background.as_str()), ("Daddy Dearest", "tutorial", "dad", "stage"));
+        let songs = songs(&all);
+        assert_eq!((songs[0].icon.as_str(), songs[0].color, songs[0].week), ("gf", [165, 0, 77], 0));
         let fresh: Vec<&str> = songs.iter().filter(|s| s.title == "Fresh").map(|s| s.difficulty.as_str()).collect();
         assert_eq!(fresh, ["Easy", "Normal", "Hard"]);
         assert!(songs.iter().all(|s| s.chart.is_file() && s.inst.is_file()));
@@ -134,10 +200,15 @@ mod tests {
         let m = dir.join("mods/My Mod");
         for sub in ["weeks", "data/my-song", "songs/my-song"] { std::fs::create_dir_all(m.join(sub)).unwrap(); }
         std::fs::write(m.join("weeks/w.json"), r#"{"songs":[["My Song","dad",[0,0,0]]],"difficulties":"Practice"}"#).unwrap();
+        std::fs::write(m.join("weeks/a.json"), r#"{"songs":[], "startUnlocked": false, "weekBefore": "w"}"#).unwrap();
+        std::fs::write(m.join("weeks/weekList.txt"), "w\n").unwrap();
         std::fs::write(m.join("data/my-song/my-song-practice.json"), "{}").unwrap();
         std::fs::write(m.join("songs/my-song/Inst.ogg"), "").unwrap();
-        let found = discover(&dir);
+        let listed = weeks(&dir);
+        let found = super::songs(&listed);
         std::fs::remove_dir_all(&dir).unwrap();
+        assert_eq!(listed.iter().map(|w| w.file.as_str()).collect::<Vec<_>>(), ["w", "a"], "weekList.txt goes before the alphabet");
+        assert!(!listed[1].start_unlocked && listed[0].start_unlocked);
         assert_eq!(found.len(), 1);
         assert_eq!((found[0].title.as_str(), found[0].difficulty.as_str(), found[0].source.as_str(), &found[0].voices_player), ("My Song", "Practice", "My Mod", &None));
     }

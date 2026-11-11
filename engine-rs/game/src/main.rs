@@ -8,10 +8,13 @@
 mod atlas;
 mod audio;
 mod input;
+mod menu;
 mod scene;
 mod settings;
 
-use funkin_core::content::{discover, Paths, SongEntry};
+use funkin_core::content::{songs as find_songs, weeks as find_weeks, Paths, SongEntry};
+use funkin_core::save::Save;
+use menu::{Go, Menus, Page};
 use funkin_core::chart::NoteKind;
 use funkin_core::play::{Event, NoteState, Play, Rating};
 use input::{KeyEvent, Keyboard};
@@ -539,7 +542,7 @@ impl Playing {
             set_camera(&Camera2D { target: vec2(WIDTH / 2.0, HEIGHT / 2.0), zoom: vec2(2.0 / WIDTH, 2.0 / HEIGHT), ..Default::default() });
             draw_rectangle(0.0, 0.0, WIDTH, HEIGHT, Color::new(0.0, 0.0, 0.0, 0.6));
             skin.centered("PAUSED", 220.0, 48, WHITE);
-            for (index, label) in ["Resume", "Restart song", "Exit to the song list"].iter().enumerate() {
+            for (index, label) in ["Resume", "Restart song", "Exit to menu"].iter().enumerate() {
                 skin.centered(label, 320.0 + index as f32 * 50.0, 32, if index == row { YELLOW } else { WHITE });
             }
         }
@@ -555,7 +558,7 @@ enum Flow {
 }
 
 enum Screen {
-    Menu,
+    Menu(Page),
     /// The options: the selected row, and whether it waits for a key to bind.
     Options(usize, bool),
     Playing(Box<Playing>),
@@ -585,26 +588,48 @@ async fn main() {
         if here.join("assets").is_dir() { here } else { beside.filter(|p| p.join("assets").is_dir()).unwrap_or(here) }
     });
 
-    let songs = discover(&base);
+    let weeks = find_weeks(&base);
+    let songs = find_songs(&weeks);
+    let mut save = Save::load(&base);
+    let mut menus = Menus::new(&base);
+    // story mode: the week being played, the songs still to come, and the score so far
+    let mut story: Option<(usize, Vec<usize>, i64)> = None;
     let mut settings = Settings::load(&base);
     settings.botplay |= flag("--bot");
     let keyboard = Keyboard::start();
     let bindable: Vec<KeyCode> = settings::bindable().into_iter().map(|(key, _)| key).collect();
-    let mut selected = 0usize;
     let mut frames = 0u32;
+    let first = match value("--menu").as_deref() {
+        Some("main") => Page::Main,
+        Some("story") => Page::Story,
+        Some("freeplay") => Page::Freeplay,
+        _ => Page::Title,
+    };
     let (skin, mut screen) = match Skin::load(&base) {
-        Ok(skin) => (Some(skin), Screen::Menu),
+        Ok(skin) => (Some(skin), Screen::Menu(first)),
         Err(error) => (None, Screen::Failed(format!("Could not load the note skin.\n{error}\nRun the game from the folder that holds \"assets\", or pass --base <folder>."))),
     };
-    if flag("--options") && matches!(screen, Screen::Menu) {
+    if flag("--options") && matches!(screen, Screen::Menu(_)) {
         screen = Screen::Options(0, false);
     }
-    if let (Some(wanted), Screen::Menu) = (value("--play"), &screen) {
+    if let (Some(wanted), Screen::Menu(_)) = (value("--play"), &screen) {
         // compared as file names are, so that spaces, hyphens and capitals do not matter
         let wanted = funkin_core::content::song_path(&wanted);
         screen = match songs.iter().find(|s| funkin_core::content::song_path(&format!("{} {}", s.title, s.difficulty)).contains(&wanted)) {
             Some(entry) => Playing::open(&base, entry, &settings, start_at).map_or_else(Screen::Failed, |p| Screen::Playing(Box::new(p))),
             None => Screen::Failed(format!("No song matches \"{wanted}\".")),
+        };
+    }
+
+    if let (Some(wanted), Screen::Menu(_)) = (value("--story"), &screen) {
+        let list = weeks.iter().position(|week| week.file == wanted).and_then(|index| menu::playlist(index, &weeks[index], &songs, "Normal").map(|list| (index, list)));
+        screen = match list {
+            Some((week, mut list)) => {
+                let entry = &songs[list.remove(0)];
+                story = Some((week, list, 0));
+                Playing::open(&base, entry, &settings, start_at).map_or_else(Screen::Failed, |p| Screen::Playing(Box::new(p)))
+            }
+            None => Screen::Failed(format!("No week \"{wanted}\" with a Normal difficulty.")),
         };
     }
 
@@ -620,31 +645,18 @@ async fn main() {
         };
 
         screen = match screen {
-            Screen::Menu => {
-                plain("Friday Night Funkin' - Rust engine", 40.0, 60.0, 36, WHITE);
-                plain(&format!("Up/Down: choose   Enter: play   O: options   B: botplay {}   Esc: quit", if settings.botplay { "ON" } else { "off" }), 40.0, 96.0, 18, GRAY);
-                if songs.is_empty() {
-                    plain(&format!("No songs found under {}", base.display()), 40.0, 160.0, 22, ORANGE);
+            Screen::Menu(page) => match skin.as_ref().map(|skin| menus.run(page, skin, &weeks, &songs, &save)) {
+                Some(Go::Stay) => Screen::Menu(page),
+                Some(Go::Page(page)) => Screen::Menu(page),
+                Some(Go::Options) => Screen::Options(0, false),
+                Some(Go::Play(mut list, week)) => {
+                    menus.quiet();
+                    let entry = &songs[list.remove(0)];
+                    story = week.map(|week| (week, list, 0));
+                    Playing::open(&base, entry, &settings, 0.0).map_or_else(Screen::Failed, |p| Screen::Playing(Box::new(p)))
                 }
-                let first = selected.saturating_sub(8);
-                for (row, (index, song)) in songs.iter().enumerate().skip(first).take(18).enumerate() {
-                    let from = if song.source.is_empty() { String::new() } else { format!("   ({})", song.source) };
-                    let color = if index == selected { YELLOW } else { WHITE };
-                    plain(&format!("{}{} [{}]{from}", if index == selected { "> " } else { "  " }, song.title, song.difficulty), 40.0, 150.0 + row as f32 * 30.0, 24, color);
-                }
-                if is_key_pressed(KeyCode::Down) && selected + 1 < songs.len() { selected += 1; }
-                if is_key_pressed(KeyCode::Up) { selected = selected.saturating_sub(1); }
-                if is_key_pressed(KeyCode::B) {
-                    settings.botplay = !settings.botplay;
-                    settings.save(&base);
-                }
-                if is_key_pressed(KeyCode::Escape) { break; }
-                match songs.get(selected) {
-                    Some(entry) if is_key_pressed(KeyCode::Enter) => Playing::open(&base, entry, &settings, 0.0).map_or_else(Screen::Failed, |p| Screen::Playing(Box::new(p))),
-                    _ if is_key_pressed(KeyCode::O) => Screen::Options(0, false),
-                    _ => Screen::Menu,
-                }
-            }
+                Some(Go::Quit) | None => break,
+            },
             Screen::Options(mut row, mut binding) => {
                 const SWITCHES: [&str; 4] = ["Downscroll", "Middlescroll", "Ghost tapping", "Botplay"];
                 const ROWS: usize = 13; // 4 switches, the offset, 2 keys for each of 4 lanes
@@ -706,7 +718,7 @@ async fn main() {
                     }
                     if is_key_pressed(KeyCode::Escape) {
                         settings.save(&base);
-                        Screen::Menu
+                        Screen::Menu(Page::Main)
                     } else {
                         Screen::Options(row, binding)
                     }
@@ -725,11 +737,35 @@ async fn main() {
                 match flow {
                     Flow::Continue => Screen::Playing(playing),
                     Flow::Finished => {
-                        let survived = playing.play.health > 0.0;
-                        Screen::Results(playing, survived)
+                        let (play, entry) = (&playing.play, &playing.entry);
+                        // a run the game played itself is not the player's score
+                        if !play.botplay {
+                            save.record_song(&entry.title, &entry.difficulty, play.score, play.accuracy().unwrap_or(0.0));
+                        }
+                        match story.take() {
+                            // story mode goes straight on to the next song of the week
+                            Some((week, mut rest, score)) if !rest.is_empty() => {
+                                save.save(&base);
+                                let next = &songs[rest.remove(0)];
+                                story = Some((week, rest, score + play.score));
+                                Playing::open(&base, next, &settings, start_at).map_or_else(Screen::Failed, |p| Screen::Playing(Box::new(p)))
+                            }
+                            Some((week, _, score)) => {
+                                if !play.botplay {
+                                    save.record_week(&weeks[week].file, &entry.difficulty, score + play.score);
+                                }
+                                save.save(&base);
+                                Screen::Menu(Page::Story)
+                            }
+                            None => {
+                                save.save(&base);
+                                let survived = play.health > 0.0;
+                                Screen::Results(playing, survived)
+                            }
+                        }
                     }
                     Flow::Restart => Playing::open(&base, &playing.entry, &settings, 0.0).map_or_else(Screen::Failed, |p| Screen::Playing(Box::new(p))),
-                    Flow::Quit => Screen::Menu,
+                    Flow::Quit => Screen::Menu(if story.take().is_some() { Page::Story } else { Page::Freeplay }),
                 }
             }
             Screen::Results(playing, survived) => {
@@ -738,8 +774,8 @@ async fn main() {
                 plain(&format!("{} [{}]", playing.entry.title, playing.entry.difficulty), 40.0, 170.0, 28, WHITE);
                 let accuracy = play.accuracy().map_or("-".to_owned(), |a| format!("{:.2}%", a * 100.0));
                 plain(&format!("Score {}    Misses {}    Accuracy {}", play.score, play.misses, accuracy), 40.0, 220.0, 28, WHITE);
-                plain("Enter: back to the song list", 40.0, 280.0, 20, GRAY);
-                if is_key_pressed(KeyCode::Enter) || is_key_pressed(KeyCode::Escape) { Screen::Menu } else { Screen::Results(playing, survived) }
+                plain("Enter: back to freeplay", 40.0, 280.0, 20, GRAY);
+                if is_key_pressed(KeyCode::Enter) || is_key_pressed(KeyCode::Escape) { Screen::Menu(Page::Freeplay) } else { Screen::Results(playing, survived) }
             }
             Screen::Failed(message) => {
                 for (row, line) in message.lines().enumerate() {
