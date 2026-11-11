@@ -115,7 +115,9 @@ Done:
   sprite sheets described in JSON (Aseprite, TexturePacker) beside the XML and text kinds; note splashes
   as coarse as the rest on pixel stages; the title screen's colours turned with Left and Right; languages
   (`data/<language>.lang` of the game and of mods: the words the Haxe engine translates, and the pictures
-  and sounds a language brings in place of the usual ones), chosen at the bottom of the options.
+  and sounds a language brings in place of the usual ones), chosen at the bottom of the options; the
+  stages' own scenes in story mode: lightning before Monster, the lights coming on before Winter Horrorland
+  and going out after the song before it.
 
 Not there yet:
 
@@ -131,7 +133,7 @@ Not there yet:
   and its Shaders and GPU Caching switches (nothing to switch here); the screen for adjusting delay and
   placing the rating by dragging; Discord presence; update check; the mouse anywhere.
 - **Saved data**: scores of the Haxe engine are not read (it keeps them in its own binary save).
-- **Cutscenes**: week 2's Monster, week 5's Winter Horrorland and Eggnog, week 7's three, weekend 1's;
+- **Cutscenes**: week 7's three, weekend 1's;
   videos; dialogue from a song's `dialogue.json` (the kind scripts start).
 - **Scripts**: Lua (about 225 functions and the callbacks). HScript is Haxe code run against the Haxe
   engine's own classes, so mods that use it cannot run here as they are. Custom shaders.

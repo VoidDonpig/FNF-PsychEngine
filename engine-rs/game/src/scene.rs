@@ -510,6 +510,33 @@ enum Kill {
 
 const WINDOW_LIGHTS: [u32; 5] = [0x31A2FD, 0x31FD8C, 0xFB33F5, 0xFD4531, 0xFBA633];
 
+/// A stage's own scene around a song in story mode.
+#[derive(Clone, Copy, Debug, PartialEq)]
+enum Stunt {
+    /// Week 2's Monster: lightning before the countdown, and the two it scares.
+    Lightning,
+    /// Winter Horrorland: the lights come on at the top of the tree, then the view pulls back to the stage.
+    LightsOn,
+    /// The song before Winter Horrorland: the lights go out when it is over.
+    LightsOut,
+}
+
+/// Where a stunt stands `t` seconds in: how much of the stage is covered (white by lightning, else black), how far the view has
+/// pulled back (0 to 1), whether the HUD shows, and whether the stunt is over.
+fn stunt_at(stunt: Stunt, t: f32) -> (f32, f32, bool, bool) {
+    match stunt {
+        // white for a moment, gone a second later
+        Stunt::Lightning => ((1.1 - t).clamp(0.0, 1.0), 1.0, false, t >= 1.1),
+        Stunt::LightsOn => {
+            // the dark lifts in 0.7 s; from 0.8 s the view eases back over two and a half
+            let back = ((t - 0.8) / 2.5).clamp(0.0, 1.0);
+            let eased = if back < 0.5 { 2.0 * back * back } else { 1.0 - 2.0 * (1.0 - back) * (1.0 - back) };
+            ((1.0 - t / 0.7).max(0.0), eased, t >= 0.8, t >= 3.3)
+        }
+        Stunt::LightsOut => (1.0, 1.0, false, t >= 1.5),
+    }
+}
+
 fn chance(share: f32) -> bool {
     rand::gen_range(0.0, 1.0) < share
 }
@@ -897,6 +924,8 @@ pub struct Scene {
     pub flashing: bool,
     /// Sounds the stage wants played (file and volume); the play screen takes them.
     pub sounds: Vec<(std::path::PathBuf, f32)>,
+    /// The stage's own scene before or after the song: which, for how long it has run, and where the view is held.
+    stunt: Option<(Stunt, f32, Vec2)>,
     /// How many times the henchmen were swept off the limo since the play screen last asked.
     pub kills: u32,
     /// The ghosts the spirit of week 6 leaves behind: what it was doing and where, every 0.4 s, newest first.
@@ -988,6 +1017,7 @@ impl Scene {
             cam_zooms: true,
             flashing: true,
             sounds: Vec::new(),
+            stunt: None,
             kills: 0,
             trail: Vec::new(),
             trail_in: 0.0,
@@ -1655,6 +1685,54 @@ impl Scene {
     }
 
     /// Whether the player's character is in its idle move (or absent) rather than singing or posing.
+    fn begin(&mut self, stunt: Stunt, sound: &str, view: Vec2) -> bool {
+        self.sounds.extend(self.paths.find(&format!("sounds/{sound}.ogg")).map(|path| (path, 1.0)));
+        self.stunt = Some((stunt, 0.0, view));
+        true
+    }
+
+    /// Starts the scene this stage has before the countdown of `song` (as its folder is called) in story mode. False: it has none.
+    pub fn open_with(&mut self, song: &str) -> bool {
+        match (self.stage.as_str(), song) {
+            ("spooky", "monster") => {
+                for character in [&mut self.gf, &mut self.player].into_iter().flatten() {
+                    character.play("scared");
+                }
+                let view = self.opponent.as_ref().map_or(self.camera, |monster| monster.middle() + vec2(150.0, -100.0));
+                self.begin(Stunt::Lightning, &format!("thunder_{}", rand::gen_range(1, 3)), view)
+            }
+            ("mallEvil", "winter-horrorland") => self.begin(Stunt::LightsOn, "Lights_Turn_On", vec2(400.0, -2050.0)),
+            _ => false,
+        }
+    }
+
+    /// Starts the scene this stage has after its song when `next` follows it in the week. False: it has none.
+    pub fn close_with(&mut self, next: &str) -> bool {
+        self.stage == "mall" && next == "winter-horrorland" && self.begin(Stunt::LightsOut, "Lights_Shut_off", self.camera)
+    }
+
+    /// Runs the stage's own scene on by `dt` seconds. True when it is over (or there is none).
+    pub fn stunt(&mut self, dt: f32) -> bool {
+        let Some((stunt, t, view)) = &mut self.stunt else { return true };
+        *t += dt;
+        let (_, back, _, over) = stunt_at(*stunt, *t);
+        // the view stays where the scene put it, as close as the scene wants it
+        self.camera = *view;
+        if *stunt == Stunt::LightsOn {
+            self.zoom = 1.5 + (self.default_zoom - 1.5) * back;
+        }
+        // (the dark of the lights going out stays until the screen changes)
+        if over && *stunt != Stunt::LightsOut {
+            self.stunt = None;
+        }
+        over
+    }
+
+    /// Whether the stage's own scene keeps the notes and the rest of the HUD out of sight.
+    pub fn hides_hud(&self) -> bool {
+        self.stunt.is_some_and(|(stunt, t, _)| !stunt_at(stunt, t).2)
+    }
+
     pub fn player_idle(&self) -> bool {
         self.player.as_ref().is_none_or(|player| ["idle", "danceLeft", "danceRight"].iter().any(|idle| player.current.starts_with(idle)))
     }
@@ -1772,6 +1850,10 @@ impl Scene {
         if age < length {
             cover(Color { a: color.a * (1.0 - age / length), ..color });
         }
+        if let Some((stunt, t, _)) = self.stunt {
+            let shade = if stunt == Stunt::Lightning { WHITE } else { BLACK };
+            cover(Color { a: stunt_at(stunt, t).0, ..shade });
+        }
         if let Own::Spooky { since, .. } = self.own {
             // the lightning whitens everything: up at once, held, then gone
             let alpha = match since {
@@ -1788,6 +1870,19 @@ impl Scene {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn stage_scenes_cover_the_stage_and_hand_over_in_time() {
+        use super::{stunt_at, Stunt};
+        // lightning: white for a tenth of a second, then fading; the countdown starts 1.1 s in
+        assert_eq!((stunt_at(Stunt::Lightning, 0.05), stunt_at(Stunt::Lightning, 0.6)), ((1.0, 1.0, false, false), (0.5, 1.0, false, false)));
+        assert!(stunt_at(Stunt::Lightning, 1.1).3);
+        // the lights come on: dark gone after 0.7 s, the HUD back at 0.8 s, the view half way back at 2.05 s, over at 3.3 s
+        assert_eq!(stunt_at(Stunt::LightsOn, 0.35), (0.5, 0.0, false, false));
+        assert_eq!((stunt_at(Stunt::LightsOn, 2.05), stunt_at(Stunt::LightsOn, 3.3)), ((0.0, 0.5, true, false), (0.0, 1.0, true, true)));
+        // the lights go out: dark for a second and a half
+        assert_eq!((stunt_at(Stunt::LightsOut, 1.0), stunt_at(Stunt::LightsOut, 1.5)), ((1.0, 1.0, false, false), (1.0, 1.0, false, true)));
+    }
+
     #[test]
     fn a_stage_file_can_describe_its_own_backdrop() {
         let stage: serde_json::Value = serde_json::from_str(r##"{"objects": [

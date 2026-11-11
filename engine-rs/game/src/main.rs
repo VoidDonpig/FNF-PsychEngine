@@ -225,6 +225,10 @@ struct Playing {
     /// The look of the notes when the chart brings its own pictures for them or wants them left unpainted.
     own_skin: Option<Rc<Skin>>,
     base: PathBuf,
+    /// The stage plays a scene of its own before the countdown (story mode).
+    staged: bool,
+    /// The song is over and the stage plays a scene of its own before the next.
+    bowing: bool,
     /// Stage and characters; None when they could not be loaded (the notes still work).
     scene: Option<scene::Scene>,
     /// Ms spent on the play screen before the song starts.
@@ -317,7 +321,9 @@ impl Playing {
         // shortcut: in story mode the week goes on at the difficulty it began with; let the rest of the week change with it if that is missed
         let difficulties = if story { Vec::new() } else { songs.iter().filter(|other| other.week == entry.week && other.title == entry.title).map(|other| other.difficulty.clone()).collect() };
         atlas::forget_unused();
-        Ok(Playing { entry: entry.clone(), play, song, player_voice, own_skin: None, base: base.to_path_buf(), scene, waited: 0.0, clock: Default::default(), ticked: std::time::Instant::now(), started: false, paused: None, choosing: None, difficulties, story, taunt_until: None, start_at, position: -lead_in, settings: settings.clone(), held_keys: Vec::new(), flash_until: [[f64::MIN; 4]; 2], judgement: None, last_hit: f64::MIN, lanes_used: [false; 4], idled: false, idle_for: 0.0, sang_for: 0.0,
+        let mut scene = scene;
+        let staged = story && start_at <= 0.0 && scene.as_mut().is_some_and(|scene| scene.open_with(&funkin_core::content::song_path(&entry.title)));
+        Ok(Playing { entry: entry.clone(), play, song, player_voice, own_skin: None, base: base.to_path_buf(), staged, bowing: false, scene, waited: 0.0, clock: Default::default(), ticked: std::time::Instant::now(), started: false, paused: None, choosing: None, difficulties, story, taunt_until: None, start_at, position: -lead_in, settings: settings.clone(), held_keys: Vec::new(), flash_until: [[f64::MIN; 4]; 2], judgement: None, last_hit: f64::MIN, lanes_used: [false; 4], idled: false, idle_for: 0.0, sang_for: 0.0,
             paths, cutscene, lead_in, counted: i64::MIN, popups: Vec::new(), splashes: Vec::new(), dead: None, next_event: 0, speed, speed_change: None }.with(settings))
     }
 
@@ -435,6 +441,18 @@ impl Playing {
             }
             return Flow::Continue;
         }
+        if self.staged {
+            // the stage's own scene: the song waits, the stage goes on
+            let dt = get_frame_time().min(0.1);
+            if let Some(scene) = &mut self.scene {
+                scene.update(dt, self.position, &self.play.chart, &[], [[false; 4]; 2]);
+                self.staged = !scene.stunt(dt);
+                for (path, volume) in scene.sounds.drain(..) {
+                    self.song.play_sound(&path, volume, false);
+                }
+            }
+            return Flow::Continue;
+        }
         if let Some(row) = self.paused {
             let step = |row: usize, count: usize| (row + controls::pressed(Ui::Down) as usize + (count - 1) * controls::pressed(Ui::Up) as usize) % count;
             if let Some(pick) = self.choosing {
@@ -473,7 +491,7 @@ impl Playing {
             };
         }
         // (as the Haxe engine does, the game pauses itself when another window comes to the front)
-        if controls::pressed(Ui::Pause) || (self.settings.auto_pause && !is_focused()) {
+        if !self.bowing && (controls::pressed(Ui::Pause) || (self.settings.auto_pause && !is_focused())) {
             self.song.pause();
             self.paused = Some(0);
             if self.settings.pause_music > 0 {
@@ -641,6 +659,18 @@ impl Playing {
         if self.position < self.length() { Flow::Continue } else { Flow::Finished }
     }
 
+    /// The song is over: whether the stage's own scene before `next` (the folder of the week's next song) still runs.
+    fn bows_out(&mut self, next: &str) -> bool {
+        let Some(scene) = self.scene.as_mut().filter(|_| self.story) else { return false };
+        if !self.bowing {
+            self.bowing = scene.close_with(next);
+            for (path, volume) in scene.sounds.drain(..) {
+                self.song.play_sound(&path, volume, false);
+            }
+        }
+        self.bowing && !scene.stunt(get_frame_time().min(0.1))
+    }
+
     /// Length of the song in ms.
     fn length(&self) -> f64 {
         let last_note = self.play.chart.notes.last().map_or(0.0, |n| n.time + n.sustain);
@@ -661,6 +691,9 @@ impl Playing {
         set_camera(&Camera2D { target: vec2(WIDTH / 2.0, HEIGHT / 2.0) + hud_shake, zoom: vec2(2.0 / WIDTH, 2.0 / HEIGHT) * hud_zoom, ..Default::default() });
         if self.dead.is_some() {
             skin.centered("Enter: retry    Esc: back to the song list", HEIGHT - 30.0, 18, GRAY);
+            return;
+        }
+        if self.scene.as_ref().is_some_and(|scene| scene.hides_hud()) {
             return;
         }
         // a faster song does not make the notes travel faster: they are spread out to match
@@ -1124,8 +1157,11 @@ fn main() {
                     toasts.push(("oversinging", get_time()));
                     chime = true;
                 }
+                // what the week goes on with, as its folder is called
+                let coming = || story.as_ref().and_then(|(_, rest, ..)| rest.first()).map_or(String::new(), |next| funkin_core::content::song_path(&songs[*next].title));
                 match flow {
                     Flow::Continue => Screen::Playing(playing),
+                    Flow::Finished if playing.bows_out(&coming()) => Screen::Playing(playing),
                     Flow::Finished => {
                         let (play, entry) = (&playing.play, &playing.entry);
                         // a run the game played itself is not the player's score
