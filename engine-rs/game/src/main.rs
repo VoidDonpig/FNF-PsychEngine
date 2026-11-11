@@ -824,7 +824,13 @@ async fn main() {
         };
     }
 
+    // when the screen last changed: the new one is uncovered by a dark edge sliding down. MAX: changed this very frame.
+    let mut wiped = f64::MIN;
     loop {
+        // the change itself may have taken long (a song loading): the wipe starts when the new screen first shows
+        if wiped == f64::MAX {
+            wiped = get_time();
+        }
         // the game is laid out for 1280x720 and stretched to the window
         set_camera(&Camera2D { target: vec2(WIDTH / 2.0, HEIGHT / 2.0), zoom: vec2(2.0 / WIDTH, 2.0 / HEIGHT), ..Default::default() });
         clear_background(Color::from_hex(0x1B1B26));
@@ -835,6 +841,12 @@ async fn main() {
             None => drop(draw_text(text, x, y, size as f32, color)),
         };
 
+        // which screen it is, for noticing a change
+        let which = |screen: &Screen| (std::mem::discriminant(screen), match screen {
+            Screen::Menu(page) => *page as usize,
+            _ => 0,
+        });
+        let was = which(&screen);
         screen = match screen {
             Screen::Menu(page) => match skin.as_ref().map(|skin| menus.run(page, skin, &weeks, &songs, &save, settings.flashing)) {
                 Some(Go::Stay) => Screen::Menu(page),
@@ -846,6 +858,11 @@ async fn main() {
                     let entry = &songs[list.remove(0)];
                     story = week.map(|week| (week, list, 0, 0));
                     Playing::open(&base, entry, &settings, 0.0, story.is_some()).map_or_else(Screen::Failed, |p| Screen::Playing(Box::new(p)))
+                }
+                Some(Go::Reset(week, name, difficulty)) => {
+                    if week { save.reset_week(&name, &difficulty) } else { save.reset_song(&name, &difficulty) }
+                    save.save(&base);
+                    Screen::Menu(page)
                 }
                 Some(Go::Quit) | None => break,
             },
@@ -940,6 +957,20 @@ async fn main() {
             }
         };
 
+        if which(&screen) != was {
+            wiped = f64::MAX;
+        }
+        // shortcut: the new screen is cut to black and uncovered; the Haxe engine first covers the old one the same way.
+        let uncovered = if wiped == f64::MAX { 0.0 } else { (get_time() - wiped) as f32 / 0.5 };
+        let edge = -(HEIGHT + 400.0) + (2.0 * HEIGHT + 50.0) * uncovered;
+        if edge < HEIGHT {
+            set_camera(&Camera2D { target: vec2(WIDTH / 2.0, HEIGHT / 2.0), zoom: vec2(2.0 / WIDTH, 2.0 / HEIGHT), ..Default::default() });
+            // a screen's height of fading edge, and black below it
+            for strip in 0..36 {
+                draw_rectangle(0.0, edge + strip as f32 * 20.0, WIDTH, 20.0, Color::new(0.0, 0.0, 0.0, (strip as f32 + 0.5) / 36.0));
+            }
+            draw_rectangle(0.0, edge + HEIGHT, WIDTH, 2.0 * HEIGHT + 400.0, BLACK);
+        }
         // the main menu greets whoever plays on a Friday night
         if matches!(screen, Screen::Menu(Page::Main)) && !std::mem::replace(&mut greeted, true) {
             if let Some(id) = menus.greeting().filter(|id| save.unlock(id)) {

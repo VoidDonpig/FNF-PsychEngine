@@ -65,7 +65,8 @@ Done:
 - **Menus**: the title screen with its opening lines, the main menu, story mode (week list, locked weeks,
   difficulties, the three characters, track list, week score; a week plays through song after song) and
   freeplay (bold song names, icons, song colours, difficulties, personal best), with the menu music and
-  sounds. Week order follows `weekList.txt`. Credits (those of the mods first; Enter opens a link) and the
+  sounds. Week order follows `weekList.txt`. In freeplay Space plays the selected song, R asks whether
+  to reset its score (in story mode: the week's), and holding Up or Down runs through the list. Credits (those of the mods first; Enter opens a link) and the
   mods menu: switch mods on and off and move them up and down, kept in `modsList.txt` as the Haxe engine
   keeps it. Mods switched off bring no weeks; mods that run globally lend their files to every song.
 - **Achievements**: the Haxe engine's list and rules (a week on Hard without a miss, a rating of 100% or
@@ -89,11 +90,12 @@ Not there yet:
   camera, the weekend 1 fight notes, custom ones), what is left of weekend 1 (Nene's knife and
   cheers, the shell flying off the gun, the stage going dark at the shot, rain, light maps, the two rare
   turns of the fight when the player is nearly out), coarse note splashes on pixel stages, other note and splash skins.
-- **Menus**: the mods menu's mouse buttons, per-mod settings and restart flag, the achievements
-  that need features not here yet (the henchmen count, the toaster one, the title easter egg), those of mods, and resetting one, the rest of the options (graphics, note
-  colours and skins, delay and combo placement, auto pause, gamepad, languages; the options menu is a plain
-  list, not the Haxe engine's look), in freeplay the song preview and score reset,
-  transitions between screens, loading screen, a mod's own title screen (`gfDanceTitle.json`).
+- **Menus**: the mods menu's mouse buttons, per-mod settings and restart flag; the achievements that
+  need features not here yet (the henchmen count, the toaster one, the title easter egg), those of mods,
+  and resetting one; the rest of the options (graphics, note colours and skins, delay and combo
+  placement, auto pause, gamepad, languages; the options menu is a plain list, not the Haxe engine's
+  look); winding and speed in the freeplay song player; covering the old screen before a change (the new
+  one is uncovered by a wipe); the loading screen; a mod's own title screen (`gfDanceTitle.json`).
 - **Saved data**: translations. Scores of the Haxe engine are
   not read (it keeps them in its own binary save).
 - **Cutscenes**: dialogue from a song's `dialogue.json` (the portrait and speech bubble kind that

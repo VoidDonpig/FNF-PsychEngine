@@ -101,6 +101,8 @@ pub struct Week {
     /// Mod folder name, or "" for the base game.
     pub source: String,
     pub story_name: String,
+    /// What the week is called ("Week 1").
+    pub name: String,
     /// The week that has to be finished first, unless `start_unlocked`.
     pub before: String,
     pub start_unlocked: bool,
@@ -157,7 +159,7 @@ pub fn weeks(base: &Path) -> Vec<Week> {
                 Some((song[0].as_str()?.to_owned(), song[1].as_str().unwrap_or("face").to_owned(), color))
             }).collect();
             found.push(Week {
-                file: name(&path), source: source.clone(), story_name: text("storyName"), before: text("weekBefore"),
+                file: name(&path), source: source.clone(), story_name: text("storyName"), name: text("weekName"), before: text("weekBefore"),
                 start_unlocked: week["startUnlocked"].as_bool().unwrap_or(true), hidden_until_unlocked: week["hiddenUntilUnlocked"].as_bool().unwrap_or(false),
                 hide_story: week["hideStoryMode"].as_bool().unwrap_or(false), hide_freeplay: week["hideFreeplay"].as_bool().unwrap_or(false),
                 characters: [0, 1, 2].map(|i| week["weekCharacters"][i].as_str().unwrap_or_default().to_owned()), background: text("weekBackground"),
