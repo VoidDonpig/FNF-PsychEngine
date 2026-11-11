@@ -3,7 +3,7 @@ use crate::atlas::{Frame, Sheet};
 use crate::menu::wrap;
 use crate::{HEIGHT, PIXEL_ZOOM, WIDTH};
 use funkin_core::content::Paths;
-use macroquad::prelude::*;
+use crate::gfx::*;
 use std::path::Path;
 
 /// Which of the three songs it is before: each has its own box, music and manners.

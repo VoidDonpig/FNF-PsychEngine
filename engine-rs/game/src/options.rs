@@ -1,7 +1,7 @@
 //! The options menu: key binds, and the pages of `settings::OPTIONS`.
 use crate::settings::{hex, Kind, Settings, LANE_COLORS, OPTIONS, PAGES, PIXEL_LANE_COLORS};
 use crate::{DIRECTIONS, HEIGHT};
-use macroquad::prelude::*;
+use crate::gfx::*;
 
 #[derive(Default)]
 pub struct OptionsMenu {
@@ -19,8 +19,8 @@ pub struct OptionsMenu {
 
 /// The colour with its hue turned by `degrees`. Greys have none and stay as they are.
 fn turned(color: u32, degrees: f32) -> u32 {
-    let (hue, saturation, light) = macroquad::color::rgb_to_hsl(Color::from_hex(color));
-    let Color { r, g, b, .. } = macroquad::color::hsl_to_rgb((hue + degrees / 360.0).rem_euclid(1.0), saturation, light);
+    let (hue, saturation, light) = rgb_to_hsl(Color::from_hex(color));
+    let Color { r, g, b, .. } = hsl_to_rgb((hue + degrees / 360.0).rem_euclid(1.0), saturation, light);
     [r, g, b].iter().fold(0, |code, channel| code << 8 | (channel * 255.0).round() as u32)
 }
 

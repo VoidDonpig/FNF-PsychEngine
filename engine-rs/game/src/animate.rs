@@ -1,6 +1,6 @@
 //! Things drawn the Animate way: a timeline of layers that place pieces of one picture, through symbols nested in symbols.
 //! Read from a folder holding `Animation.json` and `spritemap1.json`/`.png`, in either of the two spellings Animate exports.
-use macroquad::prelude::*;
+use crate::gfx::*;
 use serde_json::Value;
 use std::collections::HashMap;
 use std::path::Path;
@@ -164,15 +164,14 @@ impl Atlas {
 
     /// Draws a frame with the timeline's origin at `at`.
     pub fn draw(&self, frame: usize, at: Vec2, scale: f32, flip_x: bool, color: Color) {
-        let gl = unsafe { get_internal_gl() }.quad_gl;
         // mirrored, it is turned over around the origin
         let whole = Affine2::from_translation(at) * Affine2::from_scale(vec2(if flip_x { -scale } else { scale }, scale));
         for (name, placed) in self.rig.pieces(frame.min(self.rig.length().saturating_sub(1))) {
             let Some(source) = self.sprites.get(name) else { continue };
             let Affine2 { matrix2: turn, translation: shift } = whole * placed;
-            gl.push_model_matrix(Mat4::from_cols(turn.x_axis.extend(0.0).extend(0.0), turn.y_axis.extend(0.0).extend(0.0), Vec4::Z, shift.extend(0.0).extend(1.0)));
+            push_model_matrix(Mat4::from_cols(turn.x_axis.extend(0.0).extend(0.0), turn.y_axis.extend(0.0).extend(0.0), Vec4::Z, shift.extend(0.0).extend(1.0)));
             draw_texture_ex(&self.texture, 0.0, 0.0, color, DrawTextureParams { source: Some(*source), ..Default::default() });
-            gl.pop_model_matrix();
+            pop_model_matrix();
         }
     }
 }

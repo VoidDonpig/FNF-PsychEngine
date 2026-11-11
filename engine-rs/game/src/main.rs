@@ -10,14 +10,13 @@ mod atlas;
 mod audio;
 mod dialogue;
 mod fight;
+mod gfx;
 mod input;
 mod menu;
 mod options;
-mod present;
 mod props;
 mod scene;
 mod settings;
-mod vulkan;
 
 use funkin_core::content::{songs as find_songs, weeks as find_weeks, Paths, SongEntry};
 use funkin_core::achievements::{earned, Run};
@@ -26,8 +25,7 @@ use menu::{Go, Menus, Page};
 use funkin_core::chart::NoteKind;
 use funkin_core::play::{Event, NoteState, Play, Rating};
 use input::{KeyEvent, Keyboard};
-use macroquad::miniquad::{BlendFactor, BlendState, BlendValue, Equation, PipelineParams};
-use macroquad::prelude::*;
+use gfx::*;
 use settings::Settings;
 use std::path::{Path, PathBuf};
 
@@ -44,37 +42,11 @@ const NOTE_NAMES: [&str; 4] = ["purple", "blue", "green", "red"];
 /// Pixel stages draw their small pictures this many times as large.
 const PIXEL_ZOOM: f32 = 6.0;
 
-const VERTEX: &str = "#version 100
-attribute vec3 position;
-attribute vec2 texcoord;
-attribute vec4 color0;
-varying lowp vec2 uv;
-varying lowp vec4 color;
-uniform mat4 Model;
-uniform mat4 Projection;
-void main() {
-    gl_Position = Projection * Model * vec4(position, 1);
-    color = color0 / 255.0;
-    uv = texcoord;
-}";
-const RECOLOR: &str = "#version 100
-precision mediump float;
-varying lowp vec2 uv;
-varying lowp vec4 color;
-uniform sampler2D Texture;
-uniform vec3 r;
-uniform vec3 g;
-uniform vec3 b;
-void main() {
-    vec4 mask = texture2D(Texture, uv);
-    gl_FragColor = vec4(min(mask.r * r + mask.g * g + mask.b * b, vec3(1.0)), mask.a) * color;
-}";
-
 struct Skin {
     sheet: Texture2D,
     frames: Vec<(String, atlas::Frame)>,
-    /// One recolouring material per lane.
-    lanes: Vec<Material>,
+    /// The three colours each lane's notes are made of (body, shine, outline): the sheet stores each note as three masks.
+    lanes: std::cell::Cell<[[Vec3; 3]; 4]>,
     font: Option<Font>,
     /// Pictures for sick, good, bad, shit.
     ratings: Vec<Texture2D>,
@@ -104,27 +76,10 @@ struct Popup {
 }
 
 impl Skin {
-    /// One recolouring material per lane: the sheet stores each note as three masks, which `recolor` gives their colours.
-    fn lanes() -> Result<Vec<Material>, String> {
-        let mut lanes = Vec::new();
-        for _ in 0..4 {
-            let uniforms = ["r", "g", "b"].iter().map(|name| UniformDesc::new(name, UniformType::Float3)).collect();
-            // custom materials do not blend unless told to
-            let blend = BlendState::new(Equation::Add, BlendFactor::Value(BlendValue::SourceAlpha), BlendFactor::OneMinusValue(BlendValue::SourceAlpha));
-            let params = MaterialParams { uniforms, pipeline_params: PipelineParams { color_blend: Some(blend), ..Default::default() }, ..Default::default() };
-            lanes.push(load_material(ShaderSource::Glsl { vertex: VERTEX, fragment: RECOLOR }, params).map_err(|e| e.to_string())?);
-        }
-        Ok(lanes)
-    }
-
     /// The three colours each lane's notes are made of from now on (body, shine, outline).
     fn recolor(&self, lane_colors: &[[u32; 3]; 4]) {
         let rgb = |c: u32| vec3((c >> 16 & 255) as f32, (c >> 8 & 255) as f32, (c & 255) as f32) / 255.0;
-        for (material, colors) in self.lanes.iter().zip(lane_colors) {
-            for (name, color) in ["r", "g", "b"].iter().zip(colors) {
-                material.set_uniform(name, rgb(*color));
-            }
-        }
+        self.lanes.set(lane_colors.map(|colors| colors.map(rgb)));
     }
 
     /// The note of a lane as it flies, centred on (x, y).
@@ -150,7 +105,7 @@ impl Skin {
         let images = base.join("assets/shared/images");
         let digits = Skin::pictures(&images, &["num0", "num1", "num2", "num3", "num4", "num5", "num6", "num7", "num8", "num9"], false);
         let splashes = atlas::Sheet::load(&images.join("noteSplashes/noteSplashes.png")).ok();
-        Ok(Skin { sheet, frames, lanes: Skin::lanes()?, font, ratings: Skin::pictures(&images, &["sick", "good", "bad", "shit"], false), digits, countdown: Skin::pictures(&images, &["ready", "set", "go"], false), splashes,
+        Ok(Skin { sheet, frames, lanes: Default::default(), font, ratings: Skin::pictures(&images, &["sick", "good", "bad", "shit"], false), digits, countdown: Skin::pictures(&images, &["ready", "set", "go"], false), splashes,
             note_scale: NOTE_SCALE, hold: vec2(50.0, 64.0) * NOTE_SCALE, popup_scales: [0.7, 0.5, 1.0] })
     }
 
@@ -192,7 +147,7 @@ impl Skin {
         let digits = Skin::pictures(&dir, &["num0-pixel", "num1-pixel", "num2-pixel", "num3-pixel", "num4-pixel", "num5-pixel", "num6-pixel", "num7-pixel", "num8-pixel", "num9-pixel"], true);
         // shortcut: the usual splashes; the Haxe engine coarsens them with a shader on pixel stages.
         let splashes = atlas::Sheet::load(&base.join("assets/shared/images/noteSplashes/noteSplashes.png")).ok();
-        Ok(Skin { sheet, frames, lanes: Skin::lanes()?, font, ratings: Skin::pictures(&dir, &["sick-pixel", "good-pixel", "bad-pixel", "shit-pixel"], true), digits,
+        Ok(Skin { sheet, frames, lanes: Default::default(), font, ratings: Skin::pictures(&dir, &["sick-pixel", "good-pixel", "bad-pixel", "shit-pixel"], true), digits,
             countdown: Skin::pictures(&dir, &["ready-pixel", "set-pixel", "date-pixel"], true), splashes, note_scale: PIXEL_ZOOM, hold: end * PIXEL_ZOOM, popup_scales: [PIXEL_ZOOM * 0.85, PIXEL_ZOOM, PIXEL_ZOOM] })
     }
 
@@ -200,12 +155,9 @@ impl Skin {
     fn frame(&self, name: &str, x: f32, y: f32, size: Option<Vec2>, lane: Option<usize>, alpha: f32) {
         let Some(source) = self.frames.iter().find(|(n, _)| n == name).map(|(_, f)| f.source) else { return };
         let size = size.unwrap_or(vec2(source.w, source.h) * self.note_scale);
-        match lane {
-            Some(lane) => gl_use_material(&self.lanes[lane]),
-            None => gl_use_default_material(),
-        }
+        recolor(lane.map(|lane| self.lanes.get()[lane]));
         draw_texture_ex(&self.sheet, x - size.x / 2.0, y - size.y / 2.0, Color::new(1.0, 1.0, 1.0, alpha), DrawTextureParams { dest_size: Some(size), source: Some(source), ..Default::default() });
-        gl_use_default_material();
+        recolor(None);
     }
 
     fn text(&self, text: &str, x: f32, y: f32, size: u16, color: Color) {
@@ -655,9 +607,9 @@ impl Playing {
             for &(lane, at) in &self.splashes {
                 let frames = sheet.animation(&format!("note splash {} 1", NOTE_NAMES[lane]), &[]);
                 if let Some(&frame) = frames.get(((position - at) * 0.024) as usize) {
-                    gl_use_material(&skin.lanes[lane]);
+                    recolor(Some(skin.lanes.get()[lane]));
                     sheet.draw(frame, lane_x(settings, true, lane) - frame.size.x / 2.0, strum_y - frame.size.y / 2.0, 1.0, false, Color::new(1.0, 1.0, 1.0, settings.splash_alpha as f32));
-                    gl_use_default_material();
+                    recolor(None);
                 }
             }
         }
@@ -773,15 +725,7 @@ fn base_dir() -> PathBuf {
     })
 }
 
-fn window() -> Conf {
-    let fullscreen = Settings::load(&base_dir()).fullscreen;
-    // frames are shown as soon as they are done, as the Haxe engine shows them: the Framerate option is what limits them
-    let platform = macroquad::miniquad::conf::Platform { swap_interval: Some(0), ..Default::default() };
-    Conf { window_title: TITLE.to_owned(), window_width: WIDTH as i32, window_height: HEIGHT as i32, fullscreen, platform, ..Default::default() }
-}
-
-#[macroquad::main(window)]
-async fn main() {
+fn main() {
     let args: Vec<String> = std::env::args().skip(1).collect();
     let flag = |name: &str| args.iter().any(|a| a == name);
     let value = |name: &str| args.iter().position(|a| a == name).and_then(|i| args.get(i + 1)).cloned();
@@ -791,6 +735,26 @@ async fn main() {
     let start_at = value("--at").and_then(|s| s.parse::<f64>().ok()).unwrap_or(0.0) * 1000.0;
 
     let base = base_dir();
+    let mut settings = Settings::load(&base);
+    settings.botplay |= flag("--bot");
+    atlas::SMOOTH.store(settings.antialiasing, std::sync::atomic::Ordering::Relaxed);
+    // `--opengl`: the way out when the chosen graphics API shows nothing and the options cannot be reached
+    let api = if flag("--opengl") { "OpenGL" } else { settings::GRAPHICS_APIS[settings.graphics_api] };
+    match open(Conf { title: TITLE, width: WIDTH, height: HEIGHT, fullscreen: settings.fullscreen, api }) {
+        Ok((drawn_with, note)) => {
+            eprintln!("Drawing with {drawn_with}");
+            // why the chosen graphics API is not the one in use, where a player can find it
+            let _ = match note {
+                Some(note) => std::fs::write(base.join("funkin-rs-graphics.log"), format!("{note}\nDrawing with {drawn_with}\n")),
+                None => std::fs::remove_file(base.join("funkin-rs-graphics.log")),
+            };
+        }
+        Err(error) => {
+            eprintln!("The game cannot draw: {error}");
+            let _ = std::fs::write(base.join("funkin-rs-graphics.log"), format!("The game cannot draw: {error}\n"));
+            return;
+        }
+    }
 
     let mut weeks = find_weeks(&base);
     let mut songs = find_songs(&weeks);
@@ -802,12 +766,7 @@ async fn main() {
     let mut toasts: Vec<(&'static str, f64)> = Vec::new();
     let mut chime = false;
     let mut greeted = false;
-    let mut settings = Settings::load(&base);
-    settings.botplay |= flag("--bot");
-    atlas::SMOOTH.store(settings.antialiasing, std::sync::atomic::Ordering::Relaxed);
-    // `--opengl`: the way out when the chosen graphics API shows nothing and the options cannot be reached
-    let mut presenter = present::Presenter::new(if flag("--opengl") { 0 } else { settings.graphics_api }, TITLE);
-    let mut fullscreen = settings.fullscreen;
+    let mut fullscreen = (settings.fullscreen, false);
     let keyboard = Keyboard::start();
     let bindable: Vec<KeyCode> = settings::bindable().into_iter().map(|(key, _)| key).collect();
     let mut frames = 0u32;
@@ -1055,8 +1014,6 @@ async fn main() {
             _ => true,
         };
         if let (Some(path), true) = (&shot, frames >= 5 && get_time() >= shot_after && reached) {
-            // the frame is only drawn for real when it ends; push it out now to read it back
-            unsafe { get_internal_gl() }.flush();
             get_screen_data().export_png(path);
             break;
         }
@@ -1064,15 +1021,12 @@ async fn main() {
             settings.fullscreen ^= true;
             settings.save(&base);
         }
-        if settings.fullscreen != fullscreen {
-            fullscreen = settings.fullscreen;
-            set_fullscreen(fullscreen);
-            if !fullscreen {
-                // the window library leaves a window as large as the screen behind
-                request_new_screen_size(WIDTH, HEIGHT);
-            }
+        if (settings.fullscreen, settings.exclusive_fullscreen) != fullscreen {
+            fullscreen = (settings.fullscreen, settings.exclusive_fullscreen);
+            set_fullscreen(fullscreen.0, fullscreen.1);
         }
-        presenter.frame(fullscreen && settings.exclusive_fullscreen, settings.framerate, &base);
-        next_frame().await;
+        if !next_frame(settings.framerate) {
+            break;
+        }
     }
 }

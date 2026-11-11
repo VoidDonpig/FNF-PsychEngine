@@ -1,5 +1,5 @@
 //! Sparrow sprite sheets: a picture plus an .xml that says where each animation frame sits in it.
-use macroquad::prelude::*;
+use crate::gfx::*;
 use std::path::Path;
 
 #[derive(Clone, Copy, Debug, PartialEq)]

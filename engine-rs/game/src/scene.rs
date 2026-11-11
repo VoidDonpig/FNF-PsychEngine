@@ -3,7 +3,7 @@ use crate::atlas::{Frame, Sheet};
 use funkin_core::chart::{Chart, ChartEvent, NoteKind};
 use funkin_core::content::Paths;
 use funkin_core::play::Event;
-use macroquad::prelude::*;
+use crate::gfx::*;
 use serde_json::Value;
 use std::collections::HashMap;
 
@@ -537,17 +537,16 @@ impl Layer {
             return;
         }
         // a turned layer is drawn upright with everything turned around its middle
-        let gl = unsafe { get_internal_gl() }.quad_gl;
         if self.angle != 0.0 {
             let middle = (at + size * scale / 2.0).extend(0.0);
-            gl.push_model_matrix(Mat4::from_translation(middle) * Mat4::from_rotation_z(self.angle) * Mat4::from_translation(-middle));
+            push_model_matrix(Mat4::from_translation(middle) * Mat4::from_rotation_z(self.angle) * Mat4::from_translation(-middle));
         }
         match frame {
             Some(f) => crate::atlas::draw_frame(&self.texture, self.frames[f], at.x, at.y, scale, self.def.flip, tint),
             None => draw_texture_ex(&self.texture, at.x, at.y, tint, DrawTextureParams { dest_size: Some(size * scale), flip_x: self.def.flip, ..Default::default() }),
         }
         if self.angle != 0.0 {
-            gl.pop_model_matrix();
+            pop_model_matrix();
         }
     }
 }
@@ -1744,7 +1743,7 @@ mod tests {
         // from the right he comes the other way and falls where he stands
         let other = Soldier { right: false, ..soldier };
         assert_eq!(other.at(9_900.0, 14, 20).unwrap().0.x, 0.74 * 1280.0 + 100.0 + 100.0);
-        assert_eq!(other.at(10_001.0, 14, 20).unwrap().0, macroquad::prelude::vec2(0.74 * 1280.0 + 100.0, 250.0));
+        assert_eq!(other.at(10_001.0, 14, 20).unwrap().0, crate::gfx::vec2(0.74 * 1280.0 + 100.0, 250.0));
     }
 
     #[test]
@@ -1768,7 +1767,7 @@ mod tests {
     #[test]
     fn colours_dim_and_pale_without_changing_hue() {
         use super::toned;
-        use macroquad::prelude::Color;
+        use crate::gfx::Color;
         let red = Color::new(1.0, 0.0, 0.0, 1.0);
         assert_eq!((toned(red, 0.75, 1.0), toned(red, 1.0, 0.5)), (Color::new(1.0, 0.25, 0.25, 1.0), Color::new(0.5, 0.0, 0.0, 1.0)));
         let grey = Color::new(0.4, 0.4, 0.4, 1.0);

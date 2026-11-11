@@ -41,7 +41,7 @@ impl Fight {
         let back = |pose: &str, shake| act(pose, false, shake);
         if stray {
             // he swings at nothing, and the opponent ducks or blocks
-            let dodge = macroquad::rand::gen_range(0, 2) == 0;
+            let dodge = crate::gfx::rand::gen_range(0, 2) == 0;
             return (punch(&mut self.player_left, true), if dodge { back("dodge", None) } else { back("block", Some((0.002, 0.1))) });
         }
         let low = kind.contains("low");

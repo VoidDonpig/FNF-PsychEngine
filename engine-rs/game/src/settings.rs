@@ -1,5 +1,5 @@
 //! What the player chose in the options, kept in a file next to the game.
-use macroquad::input::KeyCode;
+use crate::gfx::KeyCode;
 use serde_json::{json, Value};
 use std::path::Path;
 
@@ -43,7 +43,7 @@ pub const LANE_COLORS: [[u32; 3]; 4] = [[0xC24B99, 0xFFFFFF, 0x3C1F56], [0x00FFF
 pub const PIXEL_LANE_COLORS: [[u32; 3]; 4] = [[0xE276FF, 0xFFF9FF, 0x60008D], [0x3DCAFF, 0xF4FFFF, 0x003060], [0x71E300, 0xF6FFE6, 0x003100], [0xFF884E, 0xFFFAF5, 0x6C0000]];
 pub const SCROLL_TYPES: [&str; 2] = ["multiplicative", "constant"];
 pub const TIME_BARS: [&str; 4] = ["Time Left", "Time Elapsed", "Song Name", "Disabled"];
-/// Who puts the finished frames on screen (see present.rs).
+/// What the game draws with (see gfx.rs). DirectX is DirectX 12.
 pub const GRAPHICS_APIS: [&str; 3] = ["OpenGL", "DirectX", "Vulkan"];
 pub const PAUSE_MUSIC: [&str; 4] = ["None", "Tea Time", "Breakfast", "Breakfast (Pico)"];
 
@@ -87,9 +87,9 @@ pub const OPTIONS: &[Opt] = &[
     Opt { page: 4, key: "low_quality", name: "Low Quality", about: "If checked, disables some background details, decreases loading times and improves performance.", kind: Kind::Flag(|s| &mut s.low_quality) },
     Opt { page: 4, key: "antialiasing", name: "Anti-Aliasing", about: "If unchecked, disables anti-aliasing, increases performance at the cost of sharper visuals.", kind: Kind::Flag(|s| &mut s.antialiasing) },
     Opt { page: 4, key: "framerate", name: "Framerate", about: "Pretty self explanatory, isn't it?", kind: Kind::Number(|s| &mut s.framerate, 60.0, 240.0, 1.0, "FPS") },
-    Opt { page: 4, key: "graphics_api", name: "Graphics API", about: "How frames reach the screen. DirectX (DXGI flip model) has less display latency, Vulkan goes through a Vulkan swap chain, OpenGL is the classic way. Restart the game to apply.", kind: Kind::Choice(|s| &mut s.graphics_api, &GRAPHICS_APIS) },
-    Opt { page: 4, key: "fullscreen", name: "Fullscreen", about: "The game takes the whole screen. F11 or Alt+Enter switch it at any time.", kind: Kind::Flag(|s| &mut s.fullscreen) },
-    Opt { page: 4, key: "exclusive_fullscreen", name: "Exclusive Fullscreen", about: "If checked, fullscreen takes the whole display for the game alone (DirectX only). If unchecked, fullscreen is a borderless window.", kind: Kind::Flag(|s| &mut s.exclusive_fullscreen) },
+    Opt { page: 4, key: "graphics_api", name: "Graphics API", about: "What the game is drawn with: DirectX (12, Windows only), Vulkan or OpenGL. One this machine does not have is replaced by one it has. Restart the game to apply.", kind: Kind::Choice(|s| &mut s.graphics_api, &GRAPHICS_APIS) },
+    Opt { page: 4, key: "fullscreen", name: "Fullscreen", about: "The game takes the whole screen. F11 switches it at any time.", kind: Kind::Flag(|s| &mut s.fullscreen) },
+    Opt { page: 4, key: "exclusive_fullscreen", name: "Exclusive Fullscreen", about: "If checked, fullscreen takes the whole display for the game alone. If unchecked, fullscreen is a borderless window.", kind: Kind::Flag(|s| &mut s.exclusive_fullscreen) },
 ];
 
 /// How many pictures a second the display shows, where the system says.
@@ -170,7 +170,7 @@ pub struct Settings {
     pub antialiasing: bool,
     /// Frames a second at most.
     pub framerate: f64,
-    /// Index into `GRAPHICS_APIS`. Read when the game starts.
+    /// Index into `GRAPHICS_APIS`. Read when the game starts. Until chosen: DirectX on Windows, Vulkan elsewhere.
     pub graphics_api: usize,
     pub fullscreen: bool,
     pub exclusive_fullscreen: bool,
@@ -190,7 +190,7 @@ impl Default for Settings {
             splash_alpha: 0.6, hide_hud: false, time_bar: 0, flashing: true, cam_zooms: true, score_zoom: true, health_bar_alpha: 1.0, show_fps: true,
             pause_music: 1, combo_stacking: true, show_ms: false,
             scroll_type: 0, scroll_speed: 1.0, playback_rate: 1.0, health_gain: 1.0, health_loss: 1.0, instakill: false, practice: false,
-            combo_offset: [0.0; 4], low_quality: false, antialiasing: true, framerate: refresh_rate().clamp(60.0, 240.0), graphics_api: 0, fullscreen: false, exclusive_fullscreen: false, note_colors: LANE_COLORS, pixel_note_colors: PIXEL_LANE_COLORS,
+            combo_offset: [0.0; 4], low_quality: false, antialiasing: true, framerate: refresh_rate().clamp(60.0, 240.0), graphics_api: if cfg!(windows) { 1 } else { 2 }, fullscreen: false, exclusive_fullscreen: false, note_colors: LANE_COLORS, pixel_note_colors: PIXEL_LANE_COLORS,
             keys: [[Some(A), Some(Left)], [Some(S), Some(Down)], [Some(W), Some(Up)], [Some(D), Some(Right)]],
         }
     }

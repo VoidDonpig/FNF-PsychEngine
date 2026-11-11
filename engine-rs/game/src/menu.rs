@@ -5,7 +5,7 @@ use crate::{Skin, HEIGHT, WIDTH};
 use funkin_core::content::{mods as find_mods, save_mods, song_path, Paths, SongEntry, Week};
 use funkin_core::achievements::LIST as ACHIEVEMENTS;
 use funkin_core::save::Save;
-use macroquad::prelude::*;
+use crate::gfx::*;
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 use std::rc::Rc;
@@ -455,7 +455,7 @@ fn looped(frames: &[Frame]) -> Option<Frame> {
 impl Menus {
     pub fn new(base: &Path) -> Menus {
         let paths = Paths::new(base, "", "");
-        rand::srand(macroquad::miniquad::date::now() as u64);
+        rand::srand(std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map_or(1, |since| since.as_nanos() as u64));
         let lines = paths.find("data/introText.txt").and_then(|path| std::fs::read_to_string(path).ok()).unwrap_or_default();
         let lines: Vec<&str> = lines.lines().filter(|line| line.contains("--")).collect();
         let wacky = lines.get(rand::gen_range(0, lines.len().max(1))).and_then(|line| line.split_once("--")).unwrap_or(("", ""));

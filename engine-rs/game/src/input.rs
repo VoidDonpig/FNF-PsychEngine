@@ -4,7 +4,7 @@
 //! frame late. On Windows the raw input thread (native/psych_input) stamps every key change
 //! when it happens; other systems and the few keys it leaves alone are timed per frame.
 use crate::settings::bindable;
-use macroquad::input::{is_key_pressed, is_key_released, KeyCode};
+use crate::gfx::{is_key_pressed, is_key_released, KeyCode};
 
 pub struct KeyEvent {
     pub key: KeyCode,

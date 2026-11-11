@@ -314,8 +314,6 @@ pub use win::{psych_rawinput_age_ms, psych_rawinput_start};
 #[cfg(windows)]
 mod present;
 #[cfg(windows)]
-pub use present::{psych_present, psych_present_error, psych_present_hresult};
-#[cfg(windows)]
 mod window;
 
 // Other systems have no capture thread: the game keeps using OpenFL key events.

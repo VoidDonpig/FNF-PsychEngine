@@ -3,7 +3,8 @@
 A rewrite of the engine in Rust, growing next to the Haxe one until it can replace it.
 
 - `core/` — the rules: chart files, judgement, score, health, finding songs. No window or sound, all unit tested.
-- `game/` — the program: window and drawing (macroquad), sound (cpal + lewton), keyboard.
+- `game/` — the program: drawing (wgpu, on Vulkan, DirectX 12 or OpenGL), window and keyboard (winit), sound
+  (cpal + lewton).
 
 ## Run
 
@@ -18,11 +19,12 @@ song whose name contains the text, `--story <week file>` a whole week,
 `--menu <main|story|freeplay|mods|credits|achievements>` opens at that menu, `--options [page]` at the options. Keys: A S W D or the arrows, Enter or Space, Esc or Backspace. The options are kept in
 `funkin-rs-settings.json` in that folder, scores and finished weeks in `funkin-rs-save.json`.
 
-F11 switches fullscreen. `--opengl` starts with the plain OpenGL way of showing frames, whatever the Graphics
-API option says (the way out when that one shows nothing); why a graphics API was given up is written to
-`funkin-rs-present.log`.
+F11 switches fullscreen. `--opengl` draws with OpenGL whatever the Graphics API option says (the way out when
+the chosen one shows nothing). When the chosen graphics API is not there and another is used instead, why is
+written to `funkin-rs-graphics.log`.
 
-Without ALSA headers (Linux): add `--no-default-features` to build without sound.
+Without ALSA headers (Linux): add `--no-default-features` to build without sound. On Linux the window needs
+`libxkbcommon-x11`, and drawing needs Vulkan or EGL.
 
 ## Where it stands against the Haxe engine
 
@@ -91,11 +93,11 @@ Done:
 - **Gameplay changers** (an options page, also Ctrl in story mode and freeplay): scroll type and speed,
   playback rate (the pitch follows), health gain and loss, instakill on miss, practice mode, botplay.
   Runs in practice mode or on botplay keep no scores.
-- **Graphics API** (an option, applied at the next start): who shows the frames the game draws with
-  OpenGL. OpenGL itself; DirectX (Windows): the DXGI flip-model swap chain of `native/psych_input`, which
-  Windows can show without its compositor and which can hold the display alone (the Exclusive Fullscreen
-  option); or Vulkan: a Vulkan swap chain in a window of its own over the game's, to which each frame is
-  copied through main memory (so it is the slowest of the three). One that fails falls back to OpenGL.
+- **Graphics API** (an option, applied at the next start): what the game is drawn with. DirectX 12
+  (Windows, where it is the one chosen at first), Vulkan (chosen at first elsewhere) or OpenGL. One the
+  machine does not have is replaced by one it has. Frames are shown as soon as they are done; the
+  Framerate option limits them. Fullscreen is a window without borders over the screen, or, with the
+  Exclusive Fullscreen option, the display taken for the game alone.
 - **Input**: on Windows key presses are timed by the raw input thread of `native/psych_input`.
 
 Not there yet:

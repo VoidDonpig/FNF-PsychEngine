@@ -11,10 +11,15 @@ audio = ["dep:cpal", "dep:lewton"]
 
 [dependencies]
 funkin_core = { path = "../core" }
-macroquad = { version = "0.4", default-features = false }
 cpal = { version = "0.15", optional = true }
 lewton = { version = "0.10", optional = true }
 serde_json = "1"
-# Vulkan, for showing frames through a Vulkan swap chain (the "Graphics API" option). Loaded at run time: nothing to install to build.
-ash = "0.38"
+# Drawing, on Vulkan, DirectX 12 or OpenGL (the "Graphics API" option); the window and keyboard; letters from font files; picture files.
+wgpu = "30"
+winit = "0.30"
+fontdue = "0.9"
+png = "0.17"
+glam = "0.27"
+pollster = "0.4"
+bytemuck = "1"
 psych_input = { path = "../../native/psych_input", features = ["std"] }

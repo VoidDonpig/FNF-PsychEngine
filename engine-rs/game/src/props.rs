@@ -2,7 +2,7 @@
 use crate::animate::Atlas;
 use crate::atlas::Sheet;
 use funkin_core::content::Paths;
-use macroquad::prelude::*;
+use crate::gfx::*;
 
 /// Frame of a once-through animation `seconds` in, at 24 frames a second; None when it is over.
 fn step(first: usize, last: usize, seconds: f32) -> Option<usize> {
