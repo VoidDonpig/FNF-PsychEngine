@@ -3,6 +3,7 @@ pub mod achievements;
 pub mod chart;
 pub mod clock;
 pub mod content;
+pub mod haxe;
 pub mod lang;
 pub mod play;
 pub mod save;

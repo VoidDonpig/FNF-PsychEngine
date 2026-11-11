@@ -93,6 +93,39 @@ impl Save {
         !week.start_unlocked && !week.before.is_empty() && !self.completed.contains(&week.before)
     }
 
+    /// Takes in what the Haxe engine saved (its `funkin.sol`, read with `haxe::unserialize`): best scores and their accuracy,
+    /// best week totals, finished weeks, unlocked achievements and how far the counted ones got, the title's hidden dancer.
+    /// What is kept already stays where it is better.
+    pub fn take_in_haxe(&mut self, saved: &Value) {
+        let entries = |key: &str| saved[key].as_object().cloned().unwrap_or_default().into_iter();
+        let ratings = saved["songRating"].as_object().cloned().unwrap_or_default();
+        for (song, score) in entries("songScores") {
+            let (score, accuracy) = (score.as_i64().unwrap_or(0), ratings.get(&song).and_then(Value::as_f64).unwrap_or(0.0));
+            let best = self.songs.entry(song).or_insert((score, accuracy));
+            if score > best.0 {
+                *best = (score, accuracy);
+            }
+        }
+        for (week, score) in entries("weekScores") {
+            let best = self.weeks.entry(week).or_insert(0);
+            *best = (*best).max(score.as_i64().unwrap_or(0));
+        }
+        self.completed.extend(entries("weekCompleted").filter(|(_, done)| *done == true).map(|(week, _)| week));
+        self.achievements.extend(saved["achievementsUnlocked"].as_array().into_iter().flatten().filter_map(|id| id.as_str().map(str::to_owned)));
+        for (id, count) in entries("achievementsVariables") {
+            let kept = self.counts.entry(id).or_insert(0);
+            *kept = (*kept).max(count.as_f64().unwrap_or(0.0) as u32);
+        }
+        if self.egg.is_empty() {
+            self.egg = saved["psychDevsEasterEgg"].as_str().unwrap_or("").to_owned();
+        }
+    }
+
+    /// Whether a save of this engine is in `base` yet.
+    pub fn exists(base: &Path) -> bool {
+        file(base).is_file()
+    }
+
     pub fn to_json(&self) -> String {
         let songs: BTreeMap<&String, Value> = self.songs.iter().map(|(name, (score, accuracy))| (name, json!({ "score": score, "accuracy": accuracy }))).collect();
         serde_json::to_string_pretty(&json!({ "songs": songs, "weeks": self.weeks, "completed": self.completed, "achievements": self.achievements, "counts": self.counts, "egg": self.egg })).unwrap_or_default()
@@ -129,6 +162,22 @@ impl Save {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn takes_in_what_the_haxe_engine_saved() {
+        let mut save = Save::from_json(r#"{"songs": {"fresh": {"score": 900, "accuracy": 0.5}}, "achievements": ["ur_bad"]}"#);
+        let haxe = serde_json::json!({
+            "songScores": { "bopeebo-hard": 1200, "fresh": 800 }, "songRating": { "bopeebo-hard": 0.95, "fresh": 0.99 },
+            "weekScores": { "week1-hard": 5000 }, "weekCompleted": { "week1": true, "week2": false },
+            "achievementsUnlocked": ["hype"], "achievementsVariables": { "roadkill_enthusiast": 12.0 }, "psychDevsEasterEgg": "PESSY"
+        });
+        save.take_in_haxe(&haxe);
+        // a better score of its own stays; one it lacks comes with its accuracy
+        assert_eq!((save.song("Fresh", "Normal"), save.song("Bopeebo", "Hard")), ((900, 0.5), (1200, 0.95)));
+        assert_eq!((save.week("week1", "Hard"), save.completed.contains("week1"), save.completed.contains("week2")), (5000, true, false));
+        assert!(save.unlocked("ur_bad") && save.unlocked("hype"));
+        assert_eq!((save.counted("roadkill_enthusiast"), save.egg.as_str()), (12, "PESSY"));
+    }
 
     #[test]
     fn keeps_the_best_and_unlocks_the_next_week() {

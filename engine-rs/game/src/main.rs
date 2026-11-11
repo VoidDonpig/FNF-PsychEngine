@@ -939,6 +939,21 @@ impl Playing {
     }
 }
 
+/// The Haxe engine's save (`funkin.sol`) and what it holds: one put in the game's folder, else the one the Haxe engine keeps
+/// where the system keeps programs' data, under its company's name.
+fn haxe_save(base: &Path) -> Option<(PathBuf, serde_json::Value)> {
+    fn find(folder: &Path, depth: u32) -> Option<PathBuf> {
+        let entries: Vec<PathBuf> = std::fs::read_dir(folder).ok()?.flatten().map(|entry| entry.path()).collect();
+        entries.iter().find(|path| path.file_name().is_some_and(|name| name == "funkin.sol")).cloned()
+            .or_else(|| entries.iter().filter(|path| path.is_dir() && depth > 0).find_map(|path| find(path, depth - 1)))
+    }
+    let home = std::env::var_os("HOME").map(PathBuf::from);
+    let data = [std::env::var_os("APPDATA").map(PathBuf::from), std::env::var_os("XDG_DATA_HOME").map(PathBuf::from), home.as_ref().map(|home| home.join(".local/share")), home.map(|home| home.join("Library/Application Support"))];
+    let file = Some(base.join("funkin.sol")).filter(|file| file.is_file()).or_else(|| data.into_iter().flatten().find_map(|folder| find(&folder.join("ShadowMario"), 4)))?;
+    let saved = funkin_core::haxe::unserialize(&std::fs::read_to_string(&file).ok()?)?;
+    Some((file, saved))
+}
+
 /// What Discord shows of a screen, in the Haxe engine's words.
 fn presence(screen: &Screen, weeks: &[funkin_core::content::Week]) -> discord::Presence {
     let details = match screen {
@@ -1091,7 +1106,14 @@ fn main() {
 
     let mut weeks = find_weeks(&base);
     let mut songs = find_songs(&weeks);
+    // the first time, what the Haxe engine saved is taken in: its scores, finished weeks and achievements
+    let first_save = !Save::exists(&base);
     let mut save = Save::load(&base);
+    if let Some((file, saved)) = haxe_save(&base).filter(|_| first_save) {
+        save.take_in_haxe(&saved);
+        save.save(&base);
+        eprintln!("Took in the Haxe engine's save: {}", file.display());
+    }
     // the words of the language chosen, before anything is written or any picture found
     let found_languages = |base: &Path| funkin_core::content::languages(menu_paths(base).roots());
     let (mut languages, mut spoken) = (found_languages(&base), settings.language.clone());
