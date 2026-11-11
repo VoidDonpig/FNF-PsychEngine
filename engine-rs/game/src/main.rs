@@ -1368,8 +1368,10 @@ fn main() {
                         None => Screen::Playing(playing),
                     },
                     Flow::Options => {
+                        // (the note colours start on the notes of the stage's kind)
+                        let menu = options::OptionsMenu::pixel(playing.pixel());
                         held = Some(playing);
-                        Screen::Options(Default::default(), Page::Main)
+                        Screen::Options(menu, Page::Main)
                     }
                     Flow::Quit => Screen::Menu(if story.take().is_some() { Page::Story } else { Page::Freeplay }),
                 }

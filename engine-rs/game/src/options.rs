@@ -285,6 +285,11 @@ fn next_language(languages: &[(String, String)], file: &str, steps: usize) -> us
 }
 
 impl OptionsMenu {
+    /// Opened from a song's pause menu: the note colours start on the pixel notes when the stage has them.
+    pub fn pixel(pixel: bool) -> OptionsMenu {
+        OptionsMenu { pixel, ..Default::default() }
+    }
+
     /// Opened at a mod's own settings.
     pub fn for_mod(folder: &str, options: Vec<ModOption>) -> OptionsMenu {
         OptionsMenu { mod_page: Some((folder.to_owned(), options)), direct: true, ..Default::default() }
