@@ -600,8 +600,9 @@ async fn main() {
         screen = Screen::Options(0, false);
     }
     if let (Some(wanted), Screen::Menu) = (value("--play"), &screen) {
-        let wanted = wanted.to_lowercase();
-        screen = match songs.iter().find(|s| format!("{} {}", s.title, s.difficulty).to_lowercase().contains(&wanted)) {
+        // compared as file names are, so that spaces, hyphens and capitals do not matter
+        let wanted = funkin_core::content::song_path(&wanted);
+        screen = match songs.iter().find(|s| funkin_core::content::song_path(&format!("{} {}", s.title, s.difficulty)).contains(&wanted)) {
             Some(entry) => Playing::open(&base, entry, &settings, start_at).map_or_else(Screen::Failed, |p| Screen::Playing(Box::new(p))),
             None => Screen::Failed(format!("No song matches \"{wanted}\".")),
         };

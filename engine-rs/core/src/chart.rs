@@ -179,8 +179,23 @@ pub fn parse(text: &str) -> Result<Chart, String> {
         player: name(&["player1"], "bf"),
         opponent: name(&["player2"], "dad"),
         gf: name(&["gfVersion", "player3"], "gf"),
-        stage: name(&["stage"], "stage"),
+        stage: name(&["stage"], vanilla_stage(&crate::content::song_path(root["song"].as_str().unwrap_or("")))),
     })
+}
+
+/// The stage of a base game song whose chart does not name one.
+fn vanilla_stage(song: &str) -> &'static str {
+    match song {
+        "spookeez" | "south" | "monster" => "spooky",
+        "pico" | "blammed" | "philly" | "philly-nice" => "philly",
+        "milf" | "satin-panties" | "high" => "limo",
+        "cocoa" | "eggnog" => "mall",
+        "winter-horrorland" => "mallEvil",
+        "senpai" | "roses" => "school",
+        "thorns" => "schoolEvil",
+        "ugh" | "guns" | "stress" => "tank",
+        _ => "stage",
+    }
 }
 
 #[cfg(test)]
@@ -240,6 +255,15 @@ mod tests {
         assert!(chart.notes.is_empty());
         assert_eq!(chart.events.len(), 1);
         assert!(parse("not json").is_err());
+    }
+
+    #[test]
+    fn a_chart_without_a_stage_gets_the_songs_usual_one() {
+        let stage = |json: &str| parse(json).unwrap().stage;
+        assert_eq!(stage(r#"{"song":"Philly Nice","notes":[]}"#), "philly");
+        assert_eq!(stage(r#"{"song":"Spookeez","stage":"","notes":[]}"#), "spooky");
+        assert_eq!(stage(r#"{"song":"Spookeez","stage":"tank","notes":[]}"#), "tank");
+        assert_eq!(stage(r#"{"song":"My Song","notes":[]}"#), "stage");
     }
 
     #[test]

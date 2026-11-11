@@ -10,18 +10,206 @@ use std::collections::HashMap;
 const SING: [&str; 4] = ["singLEFT", "singDOWN", "singUP", "singRIGHT"];
 const SCREEN: Vec2 = vec2(1280.0, 720.0);
 
-/// Backdrop pictures of a stage, back to front: image, x, y, scroll factor, scale, mirrored.
-// shortcut: only the week 1 stage has its backdrop; the others are still code in source/states/stages. Add them here (or read them from the stage file once it lists its objects).
-fn backdrop(stage: &str) -> &'static [(&'static str, f32, f32, f32, f32, bool)] {
+#[derive(Clone, Copy, PartialEq)]
+enum Size {
+    Times(f32),
+    /// Stretched to this width in pixels.
+    Wide(f32),
+}
+
+#[derive(Clone, Copy, PartialEq)]
+enum Motion {
+    /// Shows the first frame.
+    Still,
+    Loop,
+    /// Plays once on every beat.
+    Beat,
+    /// Alternates on every beat between the first so many frames and the rest (dancers stepping left and right).
+    Sway(usize),
+}
+
+/// One picture of a stage's backdrop.
+#[derive(Clone, Copy)]
+struct LayerDef {
+    image: &'static str,
+    at: Vec2,
+    /// How much of the camera's movement the layer follows, per axis: less than 1 looks further away.
+    scroll: Vec2,
+    size: Size,
+    flip: bool,
+    /// Animation: frame name prefix ("" for a sheet's frames in file order) and how it plays.
+    anim: Option<(&'static str, Motion)>,
+    fps: f32,
+    /// Drawn over the characters.
+    front: bool,
+    /// Pixel art keeps its hard edges.
+    pixel: bool,
+    /// Grows around its middle instead of from its top left corner.
+    centered: bool,
+}
+
+fn layer(image: &'static str, x: f32, y: f32, scroll_x: f32, scroll_y: f32) -> LayerDef {
+    LayerDef { image, at: vec2(x, y), scroll: vec2(scroll_x, scroll_y), size: Size::Times(1.0), flip: false, anim: None, fps: 24.0, front: false, pixel: false, centered: false }
+}
+
+/// The backdrop of a stage, back to front. The numbers are those of source/states/stages.
+// shortcut: pictures only. What moves by its own rules (the train, cars, lightning, window lights, the rolling tank, running soldiers, crowd reactions) and the weekend 1 lighting are not here yet.
+fn backdrop(stage: &str) -> Vec<LayerDef> {
+    use Motion::*;
+    use Size::*;
+    let sized = |size: Size, def: LayerDef| LayerDef { size, ..def };
+    let moving = |prefix: &'static str, motion: Motion, def: LayerDef| LayerDef { anim: Some((prefix, motion)), ..def };
+    let front = |def: LayerDef| LayerDef { front: true, ..def };
+    let pixel = |def: LayerDef| LayerDef { pixel: true, ..def };
+    // pixel stages draw their 311 pixel wide pictures six times as large
+    let wide = 311.0 * 6.0;
     match stage {
-        "stage" => &[
-            ("stageback", -600.0, -200.0, 0.9, 1.0, false),
-            ("stagefront", -650.0, 600.0, 0.9, 1.1, false),
-            ("stage_light", -125.0, -100.0, 0.9, 1.1, false),
-            ("stage_light", 1225.0, -100.0, 0.9, 1.1, true),
-            ("stagecurtains", -500.0, -300.0, 1.3, 0.9, false),
+        "stage" => vec![
+            layer("stageback", -600.0, -200.0, 0.9, 0.9),
+            sized(Times(1.1), layer("stagefront", -650.0, 600.0, 0.9, 0.9)),
+            sized(Times(1.1), layer("stage_light", -125.0, -100.0, 0.9, 0.9)),
+            LayerDef { flip: true, ..sized(Times(1.1), layer("stage_light", 1225.0, -100.0, 0.9, 0.9)) },
+            sized(Times(0.9), layer("stagecurtains", -500.0, -300.0, 1.3, 1.3)),
         ],
-        _ => &[],
+        "spooky" => vec![moving("halloweem bg0", Still, layer("halloween_bg", -200.0, -100.0, 1.0, 1.0))],
+        "philly" => vec![
+            layer("philly/sky", -100.0, 0.0, 0.1, 0.1),
+            sized(Times(0.85), layer("philly/city", -10.0, 0.0, 0.3, 0.3)),
+            layer("philly/behindTrain", -40.0, 50.0, 1.0, 1.0),
+            layer("philly/street", -40.0, 50.0, 1.0, 1.0),
+        ],
+        "limo" => {
+            let mut layers = vec![
+                layer("limo/limoSunset", -120.0, -50.0, 0.1, 0.1),
+                moving("background limo pink", Loop, layer("limo/bgLimo", -150.0, 480.0, 0.4, 0.4)),
+            ];
+            layers.extend((0..5).map(|i| moving("bg dancer sketch PINK", Sway(15), layer("limo/limoDancer", 370.0 * i as f32 + 170.0, 80.0, 0.4, 0.4))));
+            layers.push(moving("Limo stage", Loop, layer("limo/limoDrive", -120.0, 550.0, 1.0, 1.0)));
+            layers
+        }
+        "mall" => vec![
+            sized(Times(0.8), layer("christmas/bgWalls", -1000.0, -500.0, 0.2, 0.2)),
+            sized(Times(0.85), moving("Upper Crowd Bob", Beat, layer("christmas/upperBop", -240.0, -90.0, 0.33, 0.33))),
+            sized(Times(0.9), layer("christmas/bgEscalator", -1100.0, -600.0, 0.3, 0.3)),
+            layer("christmas/christmasTree", 370.0, -250.0, 0.4, 0.4),
+            moving("Bottom Level Boppers Idle", Beat, layer("christmas/bottomBop", -300.0, 140.0, 0.9, 0.9)),
+            layer("christmas/fgSnow", -600.0, 700.0, 1.0, 1.0),
+            moving("santa idle in fear", Beat, layer("christmas/santa", -840.0, 150.0, 1.0, 1.0)),
+        ],
+        "mallEvil" => vec![
+            sized(Times(0.8), layer("christmas/evilBG", -400.0, -500.0, 0.2, 0.2)),
+            layer("christmas/evilTree", 300.0, -300.0, 0.2, 0.2),
+            layer("christmas/evilSnow", -200.0, 700.0, 1.0, 1.0),
+        ],
+        "school" => vec![
+            pixel(sized(Wide(wide), layer("weeb/weebSky", 0.0, 0.0, 0.1, 0.1))),
+            pixel(sized(Wide(wide), layer("weeb/weebSchool", -200.0, 0.0, 0.6, 0.9))),
+            pixel(sized(Wide(wide), layer("weeb/weebStreet", -200.0, 0.0, 0.95, 0.95))),
+            pixel(sized(Wide(wide * 0.8), layer("weeb/weebTreesBack", -30.0, 130.0, 0.9, 0.9))),
+            LayerDef { fps: 12.0, ..pixel(sized(Wide(wide * 1.4), moving("", Loop, layer("weeb/weebTrees", -580.0, -800.0, 0.85, 0.85)))) },
+            pixel(sized(Wide(wide), moving("PETALS ALL", Loop, layer("weeb/petals", -200.0, -40.0, 0.85, 0.85)))),
+            pixel(sized(Times(6.0), moving("BG girls group", Sway(15), layer("weeb/bgFreaks", -100.0, 190.0, 0.9, 0.9)))),
+        ],
+        "schoolEvil" => vec![LayerDef { centered: true, ..pixel(sized(Times(6.0), moving("background 2", Loop, layer("weeb/animatedEvilSchool", 400.0, 200.0, 0.8, 0.9)))) }],
+        "tank" => vec![
+            layer("tankSky", -400.0, -400.0, 0.0, 0.0),
+            layer("tankClouds", -400.0, 0.0, 0.1, 0.1),
+            sized(Times(1.2), layer("tankMountains", -300.0, -20.0, 0.2, 0.2)),
+            sized(Times(1.1), layer("tankBuildings", -200.0, 0.0, 0.3, 0.3)),
+            sized(Times(1.1), layer("tankRuins", -200.0, 0.0, 0.35, 0.35)),
+            moving("SmokeBlurLeft", Loop, layer("smokeLeft", -200.0, -100.0, 0.4, 0.4)),
+            moving("SmokeRight", Loop, layer("smokeRight", 1100.0, -100.0, 0.4, 0.4)),
+            moving("watchtower gradient color", Beat, layer("tankWatchtower", 100.0, 50.0, 0.5, 0.5)),
+            sized(Times(1.15), layer("tankGround", -420.0, -150.0, 1.0, 1.0)),
+            front(moving("fg", Beat, layer("tank0", -500.0, 650.0, 1.7, 1.5))),
+            front(moving("fg", Beat, layer("tank1", -300.0, 750.0, 2.0, 0.2))),
+            front(moving("foreground", Beat, layer("tank2", 450.0, 940.0, 1.5, 1.5))),
+            front(moving("fg", Beat, layer("tank4", 1300.0, 900.0, 1.5, 1.5))),
+            front(moving("fg", Beat, layer("tank5", 1620.0, 700.0, 1.5, 1.5))),
+            front(moving("fg", Beat, layer("tank3", 1300.0, 1200.0, 3.5, 2.5))),
+        ],
+        "phillyStreets" => vec![
+            sized(Times(0.65), layer("phillyStreets/phillySkybox", -650.0, -375.0, 0.1, 0.1)),
+            layer("phillyStreets/phillySkyline", -545.0, -273.0, 0.2, 0.2),
+            layer("phillyStreets/phillyForegroundCity", 625.0, 94.0, 0.3, 0.3),
+            layer("phillyStreets/phillyConstruction", 1800.0, 364.0, 0.7, 1.0),
+            layer("phillyStreets/phillyHighwayLights", 284.0, 305.0, 1.0, 1.0),
+            layer("phillyStreets/phillyHighway", 139.0, 209.0, 1.0, 1.0),
+            layer("phillyStreets/phillySmog", -6.0, 245.0, 0.8, 1.0),
+            moving("redtogreen", Still, layer("phillyStreets/phillyTraffic", 1840.0, 608.0, 0.9, 1.0)),
+            layer("phillyStreets/phillyForeground", 88.0, 317.0, 1.0, 1.0),
+        ],
+        _ => Vec::new(),
+    }
+}
+
+/// A backdrop picture, loaded.
+struct Layer {
+    def: LayerDef,
+    texture: Texture2D,
+    /// Its animation's frames; empty for a plain picture.
+    frames: Vec<Frame>,
+    /// Seconds into the animation.
+    time: f32,
+    /// Sway: on the second half of its frames.
+    swayed: bool,
+}
+
+impl Layer {
+    fn load(paths: &Paths, def: LayerDef) -> Option<Layer> {
+        let image = paths.find(&format!("images/{}.png", def.image))?;
+        let (texture, frames) = match def.anim {
+            Some((prefix, _)) => {
+                let sheet = Sheet::load(&image).map_err(|e| eprintln!("Stage: {e}")).ok()?;
+                let frames = sheet.animation(prefix, &[]);
+                (sheet.texture, frames)
+            }
+            None => (Texture2D::from_file_with_format(&std::fs::read(image).ok()?, None), Vec::new()),
+        };
+        if def.pixel {
+            texture.set_filter(FilterMode::Nearest);
+        }
+        Some(Layer { def, texture, frames, time: 0.0, swayed: false })
+    }
+
+    fn beat(&mut self) {
+        match self.def.anim {
+            Some((_, Motion::Beat)) => self.time = 0.0,
+            Some((_, Motion::Sway(_))) => {
+                self.swayed = !self.swayed;
+                self.time = 0.0;
+            }
+            _ => {}
+        }
+    }
+
+    /// `scroll`: the camera's top left corner in stage coordinates.
+    fn draw(&self, scroll: Vec2) {
+        let step = (self.time * self.def.fps) as usize;
+        let count = self.frames.len();
+        let frame = match self.def.anim {
+            _ if count == 0 => None,
+            Some((_, Motion::Loop)) => Some(step % count),
+            Some((_, Motion::Sway(half))) => {
+                let (first, len) = if self.swayed { (half.min(count - 1), count.saturating_sub(half).max(1)) } else { (0, half.min(count)) };
+                Some(first + step.min(len - 1))
+            }
+            Some((_, Motion::Beat)) => Some(step.min(count - 1)),
+            _ => Some(0),
+        };
+        let size = frame.map_or(self.texture.size(), |f| self.frames[f].size);
+        let scale = match self.def.size {
+            Size::Times(times) => times,
+            Size::Wide(width) => width / size.x,
+        };
+        let mut at = self.def.at + scroll * (Vec2::ONE - self.def.scroll);
+        if self.def.centered {
+            at -= size * (scale - 1.0) / 2.0;
+        }
+        match frame {
+            Some(f) => crate::atlas::draw_frame(&self.texture, self.frames[f], at.x, at.y, scale, self.def.flip, WHITE),
+            None => draw_texture_ex(&self.texture, at.x, at.y, WHITE, DrawTextureParams { dest_size: Some(size * scale), flip_x: self.def.flip, ..Default::default() }),
+        }
     }
 }
 
@@ -53,6 +241,9 @@ pub struct Character {
     flip_x: bool,
     /// Size of the pose the character stands in, for finding its middle.
     size: Vec2,
+    /// A character drawn larger or smaller grows around the middle of its first frame, not from its corner
+    /// (the Haxe engine's sprites do, and character positions are written for that): this is that shift.
+    grow: Vec2,
     camera_offset: Vec2,
     /// Sing poses are held for this many 16th notes after the last note.
     sing_steps: f32,
@@ -91,7 +282,11 @@ impl Character {
         let sways = animations.contains_key("danceLeft") && animations.contains_key("danceRight");
         let current = if sways { "danceRight" } else { "idle" }.to_owned();
         let scale = json["scale"].as_f64().unwrap_or(1.0) as f32;
-        let size = animations.get(&current).or(animations.values().next()).map_or(Vec2::ZERO, |a| a.frames[0].size * scale);
+        let frame_size = animations.get(&current).or(animations.values().next()).map_or(Vec2::ZERO, |a| a.frames[0].size);
+        let size = frame_size * scale;
+        if json["no_antialiasing"].as_bool().unwrap_or(false) {
+            sheet.texture.set_filter(FilterMode::Nearest); // pixel art keeps its hard edges
+        }
         let rgb = &json["healthbar_colors"];
         let channel = |i: usize| rgb[i].as_u64().unwrap_or(255) as u8;
         let icon_name = json["healthicon"].as_str().unwrap_or("face");
@@ -104,6 +299,7 @@ impl Character {
             // sheets are drawn facing right; whoever stands on the player's side is turned around
             flip_x: json["flip_x"].as_bool().unwrap_or(false) != is_player,
             size,
+            grow: frame_size * (scale - 1.0) / 2.0,
             camera_offset: pair(&json["camera_position"]),
             sing_steps: json["sing_duration"].as_f64().unwrap_or(4.0) as f32,
             current,
@@ -178,7 +374,7 @@ impl Character {
         let Some(animation) = self.animations.get(&self.current) else { return };
         let frame = (self.time * animation.fps) as usize;
         let frame = if animation.looped { frame % animation.frames.len() } else { frame.min(animation.frames.len() - 1) };
-        let at = self.position - animation.offset;
+        let at = self.position - animation.offset - self.grow;
         self.sheet.draw(animation.frames[frame], at.x, at.y, self.scale, self.flip_x, WHITE);
     }
 }
@@ -189,7 +385,7 @@ pub struct Scene {
     spots: [Vec2; 3],
     /// The player lost: only the fallen character is shown.
     dead: bool,
-    backdrop: Vec<(Texture2D, Vec2, f32, f32, bool)>,
+    backdrop: Vec<Layer>,
     pub opponent: Option<Character>,
     gf: Option<Character>,
     pub player: Option<Character>,
@@ -231,7 +427,7 @@ impl Scene {
     pub fn load(base: &std::path::Path, source: &str, chart: &Chart) -> Result<Scene, String> {
         let stage = read_json(&Paths::new(base, source, ""), &format!("stages/{}.json", chart.stage))?;
         let paths = Paths::new(base, source, stage["directory"].as_str().unwrap_or(""));
-        let backdrop = backdrop(&chart.stage).iter().filter_map(|&(image, x, y, scroll, scale, flip)| Some((texture(&paths, &format!("images/{image}.png"))?, vec2(x, y), scroll, scale, flip))).collect();
+        let backdrop = backdrop(&chart.stage).into_iter().filter_map(|def| Layer::load(&paths, def)).collect();
         let character = |name: &str, spot: &str, is_player: bool| Character::load(&paths, name, pair(&stage[spot]), is_player).map_err(|e| eprintln!("Character {name}: {e}")).ok();
         // an opponent that is the girlfriend (the tutorial) stands in her place, and she is not drawn twice
         let opponent_is_gf = chart.opponent.starts_with("gf");
@@ -413,11 +609,13 @@ impl Scene {
         for shake in &mut self.shake {
             shake.1 = (shake.1 - dt).max(0.0);
         }
+        self.backdrop.iter_mut().for_each(|layer| layer.time += dt);
 
         let beat = chart.beat_at(position).floor() as i64;
         if beat != self.beat {
             self.beat = beat;
             self.icon_scale = 1.2;
+            self.backdrop.iter_mut().for_each(Layer::beat);
             if self.bumping && beat % 4 == 0 {
                 self.zoom += 0.015;
                 self.hud_zoom += 0.03;
@@ -476,14 +674,11 @@ impl Scene {
             return;
         }
         let scroll = self.camera - SCREEN / 2.0;
-        for (texture, position, factor, scale, flip_x) in &self.backdrop {
-            // a scroll factor below 1 makes a layer follow the camera partly, so it looks further away
-            let at = *position + scroll * (1.0 - factor);
-            draw_texture_ex(texture, at.x, at.y, WHITE, DrawTextureParams { dest_size: Some(texture.size() * *scale), flip_x: *flip_x, ..Default::default() });
-        }
+        self.backdrop.iter().filter(|layer| !layer.def.front).for_each(|layer| layer.draw(scroll));
         for character in [&self.gf, &self.opponent, &self.player].into_iter().flatten() {
             character.draw();
         }
+        self.backdrop.iter().filter(|layer| layer.def.front).for_each(|layer| layer.draw(scroll));
     }
 }
 
