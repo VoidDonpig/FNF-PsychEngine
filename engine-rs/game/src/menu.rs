@@ -3,7 +3,7 @@ use crate::atlas::{draw_frame, Frame, Sheet};
 use crate::audio::Song;
 use crate::{Skin, HEIGHT, WIDTH};
 use funkin_core::content::{mods as find_mods, save_mods, song_path, Paths, SongEntry, Week};
-use funkin_core::achievements::LIST as ACHIEVEMENTS;
+use funkin_core::achievements::{LIST as ACHIEVEMENTS, ROADKILL};
 use funkin_core::save::Save;
 use crate::controls::Ui;
 use crate::gfx::*;
@@ -1115,7 +1115,9 @@ impl Menus {
             label(skin, text, (WIDTH - measure_text(text, skin.font.as_ref(), size, 1.0).width) / 2.0, top, size, WHITE, false);
         };
         centred(if save.unlocked(selected.id) { selected.name } else { "???" }, 580.0, 32);
-        centred(selected.text, 618.0, 24);
+        // one that is counted up to says how far it is
+        let counted = Some(save.counted(selected.id)).filter(|count| selected.id == ROADKILL.0 && *count < ROADKILL.1);
+        centred(&counted.map_or(selected.text.to_owned(), |count| format!("{} ({count} / {})", selected.text, ROADKILL.1)), 618.0, 24);
         if save.unlocked(selected.id) {
             label(skin, "R: reset", WIDTH - 10.0, 690.0, 16, GRAY, true);
             if pressed(&Ui::Reset) {

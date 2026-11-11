@@ -14,6 +14,8 @@ pub struct Save {
     completed: BTreeSet<String>,
     /// Achievements unlocked, by id.
     achievements: BTreeSet<String>,
+    /// How far the achievements that are counted up to have got.
+    counts: BTreeMap<String, u32>,
 }
 
 fn key(name: &str, difficulty: &str) -> String {
@@ -63,9 +65,21 @@ impl Save {
         self.achievements.insert(achievement.to_owned())
     }
 
-    /// Locks an achievement again.
+    /// Locks an achievement again, and starts its count over.
     pub fn forget(&mut self, achievement: &str) {
         self.achievements.remove(achievement);
+        self.counts.remove(achievement);
+    }
+
+    /// One more toward an achievement that is counted up to `goal`. True when this one reached it.
+    pub fn count(&mut self, achievement: &str, goal: u32) -> bool {
+        let count = self.counts.entry(achievement.to_owned()).or_default();
+        *count = (*count + 1).min(goal);
+        *count == goal && self.unlock(achievement)
+    }
+
+    pub fn counted(&self, achievement: &str) -> u32 {
+        self.counts.get(achievement).copied().unwrap_or(0)
     }
 
     pub fn unlocked(&self, achievement: &str) -> bool {
@@ -79,7 +93,7 @@ impl Save {
 
     pub fn to_json(&self) -> String {
         let songs: BTreeMap<&String, Value> = self.songs.iter().map(|(name, (score, accuracy))| (name, json!({ "score": score, "accuracy": accuracy }))).collect();
-        serde_json::to_string_pretty(&json!({ "songs": songs, "weeks": self.weeks, "completed": self.completed, "achievements": self.achievements })).unwrap_or_default()
+        serde_json::to_string_pretty(&json!({ "songs": songs, "weeks": self.weeks, "completed": self.completed, "achievements": self.achievements, "counts": self.counts })).unwrap_or_default()
     }
 
     /// Anything missing or unreadable is left empty.
@@ -92,6 +106,7 @@ impl Save {
             weeks: entries("weeks").filter_map(|(name, score)| Some((name, score.as_i64()?))).collect(),
             completed: names("completed"),
             achievements: names("achievements"),
+            counts: entries("counts").filter_map(|(name, count)| Some((name, count.as_u64()? as u32))).collect(),
         }
     }
 
@@ -136,6 +151,9 @@ mod tests {
         assert!(save.unlock("ur_good") && !save.unlock("ur_good") && save.unlocked("ur_good") && !save.unlocked("hype"));
         save.unlock("hype");
         save.forget("hype");
+        // counted up to: unlocked by the count that reaches the goal, and only by that one
+        assert_eq!([save.count("roadkill", 3), save.count("roadkill", 3), save.count("roadkill", 3), save.count("roadkill", 3)], [false, false, true, false]);
+        assert!(save.unlocked("roadkill") && save.counted("roadkill") == 3 && save.counted("hype") == 0);
         assert!(save.unlocked("ur_good") && !save.unlocked("hype"));
         assert_eq!(Save::from_json(&save.to_json()), save);
         assert_eq!(Save::from_json("not json"), Save::default());

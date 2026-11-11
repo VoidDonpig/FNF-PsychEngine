@@ -20,7 +20,7 @@ mod scene;
 mod settings;
 
 use funkin_core::content::{songs as find_songs, weeks as find_weeks, Paths, SongEntry};
-use funkin_core::achievements::{earned, Run};
+use funkin_core::achievements::{earned, Run, ROADKILL};
 use funkin_core::save::Save;
 use menu::{Go, Menus, Page};
 use funkin_core::chart::NoteKind;
@@ -270,10 +270,17 @@ impl Playing {
             chart.events.extend(shared.events);
             chart.events.sort_by(|a, b| a.time.total_cmp(&b.time));
         }
+        // a character may name its own voice file ("Voices-<name>.ogg" beside the instrumental)
+        let named = |character: &str, usual: &Option<PathBuf>| {
+            let file = Paths::new(base, &entry.source, "").find(&format!("characters/{character}.json")).and_then(|file| std::fs::read_to_string(file).ok());
+            let own = file.and_then(|text| serde_json::from_str::<serde_json::Value>(&text).ok()).and_then(|json| Some(entry.inst.with_file_name(format!("Voices-{}.ogg", json["vocals_file"].as_str().filter(|name| !name.is_empty())?))));
+            own.filter(|voice| voice.is_file()).or(usual.clone())
+        };
+        let (voices_player, voices_opponent) = (named(&chart.player, &entry.voices_player), named(&chart.opponent, &entry.voices_opponent));
         let mut tracks = vec![entry.inst.as_path()];
-        tracks.extend(entry.voices_player.as_deref());
-        let player_voice = entry.voices_player.as_ref().map(|_| 1);
-        tracks.extend(entry.voices_opponent.as_deref());
+        tracks.extend(voices_player.as_deref());
+        let player_voice = voices_player.as_ref().map(|_| 1);
+        tracks.extend(voices_opponent.as_deref());
         let scene = scene::Scene::load(base, &entry.source, &chart, settings.low_quality).map_err(|e| eprintln!("Stage: {e}")).ok();
         // shortcut: --at only moves the silent clock (it exists for screenshots); seek the audio too to make it a practice feature.
         let song = audio::Song::load_at(if start_at > 0.0 { &[] } else { &tracks }, settings.playback_rate);
@@ -801,6 +808,8 @@ enum Screen {
     Failed(String),
     /// What a new player is told before anything flashes.
     Warning,
+    /// A song is about to be read (the entry, whether with its story talk): a picture to look at meanwhile, shown for a frame first.
+    Loading(usize, bool, bool),
 }
 
 /// How much memory the game holds, in megabytes, where the system says.
@@ -977,9 +986,9 @@ fn main() {
                 Some(Go::Changers) => Screen::Options(options::OptionsMenu::at("Gameplay Changers"), page),
                 Some(Go::Play(mut list, week)) => {
                     menus.quiet();
-                    let entry = &songs[list.remove(0)];
+                    let first = list.remove(0);
                     story = week.map(|week| (week, list, 0, 0));
-                    Playing::open(&base, entry, &songs, &settings, 0.0, story.is_some()).map_or_else(Screen::Failed, |p| Screen::Playing(Box::new(p)))
+                    Screen::Loading(first, story.is_some(), false)
                 }
                 Some(Go::Reset(week, name, difficulty)) => {
                     match week {
@@ -1024,6 +1033,14 @@ fn main() {
                     }
                     None => Flow::Quit,
                 };
+                // the henchmen swept off the limo, fifty times over all the songs ever played
+                for _ in 0..playing.scene.as_mut().map_or(0, |scene| std::mem::take(&mut scene.kills)) {
+                    if save.count(ROADKILL.0, ROADKILL.1) {
+                        toasts.push((ROADKILL.0, get_time()));
+                        chime = true;
+                    }
+                    save.save(&base);
+                }
                 // ten seconds of singing without a rest
                 if playing.sang_for >= 10.0 && playing.settings.keeps_scores() && save.unlock("oversinging") {
                     save.save(&base);
@@ -1099,6 +1116,19 @@ fn main() {
                 plain("Enter: back to freeplay", 40.0, 280.0, 20, GRAY);
                 if controls::pressed(Ui::Accept) || controls::pressed(Ui::Back) { Screen::Menu(Page::Freeplay) } else { Screen::Results(playing, survived) }
             }
+            Screen::Loading(entry, talk, shown) => {
+                clear_background(Color::from_hex(0xCAFF4D));
+                if let Some(picture) = atlas::picture(&base.join("assets/shared/images/funkay.png")) {
+                    let size = picture.size() * (HEIGHT / picture.height());
+                    draw_texture_ex(&picture, (WIDTH - size.x) / 2.0, 0.0, WHITE, DrawTextureParams { dest_size: Some(size), ..Default::default() });
+                }
+                plain("Now Loading...", 12.0, HEIGHT - 16.0, 30, WHITE);
+                // the reading itself holds this frame up: the picture was put on screen by the one before
+                match shown {
+                    true => Playing::open(&base, &songs[entry], &songs, &settings, 0.0, talk).map_or_else(Screen::Failed, |p| Screen::Playing(Box::new(p))),
+                    false => Screen::Loading(entry, talk, true),
+                }
+            }
             Screen::Warning => {
                 let lines = ["Hey, watch out!", "This Mod contains some flashing lights!", "Press ENTER to disable them now or go to Options Menu.", "Press ESCAPE to ignore this message.", "You've been warned!"];
                 for (row, line) in lines.iter().enumerate() {
@@ -1124,7 +1154,8 @@ fn main() {
             }
         };
 
-        if which(&screen) != was {
+        // (the loading picture is there at once: the song behind it is what gets uncovered)
+        if which(&screen) != was && !matches!(screen, Screen::Loading(..)) {
             wiped = f64::MAX;
         }
         // shortcut: the new screen is cut to black and uncovered; the Haxe engine first covers the old one the same way.

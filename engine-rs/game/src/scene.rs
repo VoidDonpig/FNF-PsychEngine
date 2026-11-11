@@ -815,13 +815,18 @@ impl Character {
     }
 
     fn draw(&self) {
-        let Some(animation) = self.animations.get(&self.current) else { return };
-        let frame = (self.time * animation.fps) as usize;
+        self.draw_as(&self.current, self.time, self.position, self.tint);
+    }
+
+    /// Draws it as it is, or was: in that pose, that far into it, there, in that light.
+    fn draw_as(&self, pose: &str, time: f32, position: Vec2, tint: Color) {
+        let Some(animation) = self.animations.get(pose) else { return };
+        let frame = (time * animation.fps) as usize;
         let frame = if animation.looped { frame % animation.frames.len() } else { frame.min(animation.frames.len() - 1) };
-        let at = self.position - animation.offset - self.grow;
+        let at = position - animation.offset - self.grow;
         match &self.rig {
-            Some(atlas) => atlas.draw(animation.steps[frame], at, self.scale, self.flip_x, self.tint),
-            None => self.sheets[animation.sheet].draw(animation.frames[frame], at.x, at.y, self.scale, self.flip_x, self.tint),
+            Some(atlas) => atlas.draw(animation.steps[frame], at, self.scale, self.flip_x, tint),
+            None => self.sheets[animation.sheet].draw(animation.frames[frame], at.x, at.y, self.scale, self.flip_x, tint),
         }
     }
 }
@@ -892,6 +897,11 @@ pub struct Scene {
     pub flashing: bool,
     /// Sounds the stage wants played (file and volume); the play screen takes them.
     pub sounds: Vec<(std::path::PathBuf, f32)>,
+    /// How many times the henchmen were swept off the limo since the play screen last asked.
+    pub kills: u32,
+    /// The ghosts the spirit of week 6 leaves behind: what it was doing and where, every 0.4 s, newest first.
+    trail: Vec<(String, f32, Vec2)>,
+    trail_in: f32,
 }
 
 /// Who a chart event means: 0 the opponent, 1 the player, 2 the girlfriend.
@@ -978,6 +988,9 @@ impl Scene {
             cam_zooms: true,
             flashing: true,
             sounds: Vec::new(),
+            kills: 0,
+            trail: Vec::new(),
+            trail_in: 0.0,
         };
         // Pico on the speakers shoots by a chart of his own, and on the tank stage soldiers run into some of his shots
         if let Some(shooter) = scene.gf.as_mut().filter(|_| chart.gf == "pico-speaker") {
@@ -1047,6 +1060,7 @@ impl Scene {
             "Kill Henchmen" if !self.low => {
                 if let Own::Limo { kill: kill @ Kill::Wait, .. } = &mut self.own {
                     *kill = Kill::Sweep;
+                    self.kills += 1;
                     for layer in self.backdrop.iter_mut() {
                         match (layer.def.image, layer.def.anim) {
                             ("gore/metalPole", _) => (layer.def.at.x, layer.tint.a) = (-400.0, 1.0),
@@ -1220,6 +1234,13 @@ impl Scene {
     /// Advances by `dt` seconds to song position `position` (ms). `held` says which lanes have a hold running, per side.
     pub fn update(&mut self, dt: f32, position: f64, chart: &Chart, events: &[Event], held: [[bool; 4]; 2]) {
         self.position = position;
+        self.trail_in -= dt;
+        if let (Some(spirit), true) = (&self.opponent, self.stage == "schoolEvil" && !self.low && self.trail_in <= 0.0) {
+            // four ghosts, each 0.4 s older than the last (the Haxe engine's trail: every 24th frame)
+            self.trail.insert(0, (spirit.current.clone(), spirit.time, spirit.position));
+            self.trail.truncate(4);
+            self.trail_in = 0.4;
+        }
         if let Some(shooter) = self.gf.as_mut().filter(|shooter| shooter.skip_dance) {
             // every cue is a shot to the left (1, 2) or to the right (3, 4)
             while let Some(&(_, lane)) = self.shots.get(self.shots_done).filter(|(time, _)| *time < position) {
@@ -1736,6 +1757,12 @@ impl Scene {
         self.abot.iter().for_each(|abot| abot.draw());
         // whoever throws the punch stands in front
         let fighters = if self.opponent_front { [&self.gf, &self.player, &self.opponent] } else { [&self.gf, &self.opponent, &self.player] };
+        if let Some(spirit) = &self.opponent {
+            // fainter the older they are
+            for (age, (pose, time, at)) in self.trail.iter().enumerate().rev() {
+                spirit.draw_as(pose, *time, *at, Color { a: 0.3 - 0.069 * age as f32, ..spirit.tint });
+            }
+        }
         for character in fighters.into_iter().flatten() {
             character.draw();
         }

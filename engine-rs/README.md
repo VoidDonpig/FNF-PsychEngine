@@ -100,22 +100,33 @@ Done:
   Exclusive Fullscreen option, the display taken for the game alone.
 - **Input**: on Windows key presses are timed by the raw input thread of `native/psych_input`.
 
+- **Since**: rating names and full-combo grades in the score line; the pause menu's Change Difficulty and
+  Options; "Sustains as One Note" (off: holds judged sixteenth by sixteenth); arrows dropping in at the start;
+  a chart's `offset`; a character's own voice file (`vocals_file`); menu and volume keys that can be bound;
+  volume keys and display; auto pause; the flashing lights warning at first start; Alt+Enter; memory in the FPS
+  counter; note skins and note splash skins; stages of mods built from the `objects` of their stage file; the
+  spirit's ghost trail in Thorns; Tankman's lines at week 7's game over; the counted Roadkill Enthusiast
+  achievement; a loading picture while a song is read; a crash log (`funkin-rs-crash.log`).
+
 Not there yet:
 
-- **Play screen**: the events and note types that belong to scripts (Set Property beyond the
-  camera, the weekend 1 fight notes, custom ones), what is left of weekend 1 (Nene's knife and
-  cheers, the shell flying off the gun, the stage going dark at the shot, rain, light maps, the two rare
-  turns of the fight when the player is nearly out), coarse note splashes on pixel stages, other note and splash skins.
-- **Menus**: the mods menu's mouse buttons and per-mod settings; the achievements that
-  need features not here yet (the henchmen count, the title easter egg) and those of mods; the rest of the options (note skins, placing the rating and combo by
-  dragging them, auto pause, gamepad, languages; the options menu is a plain list, not the Haxe engine's
-  look, and its Shaders and GPU Caching switches have nothing to switch here); covering the old screen before a change (the new
-  one is uncovered by a wipe); the loading screen; a mod's own title screen (`gfDanceTitle.json`).
-- **Saved data**: translations. Scores of the Haxe engine are
-  not read (it keeps them in its own binary save).
-- **Cutscenes**: dialogue from a song's `dialogue.json` (the portrait and speech bubble kind that
-  scripts start), the other weeks' cutscenes, videos.
-- **Scripts**: Lua. HScript is Haxe code run against the Haxe engine's own classes, so mods that use it
-  cannot run here as they are.
-- **Editors**: chart, character, stage, week, menu character, dialogue, note splash.
-- **Other**: gamepads, Discord presence.
+- **Play screen**: the events and note types that belong to scripts (Set Property beyond the camera, custom
+  ones); a chart's own `arrowSkin`/`splashSkin` and `disableNoteRGB`; what is left of weekend 1 (Nene's
+  knife and cheers, the shell flying off the gun, the stage going dark at the shot, rain, light maps, the two
+  rare turns of the fight when the player is nearly out); coarse note splashes on pixel stages; the Haxe
+  fork's Display Lag Correction; the charting mode entries of the pause menu.
+- **Stages**: objects of a stage file listed between two characters are drawn behind all three; `flipY`,
+  colour names and the story-mode/freeplay filters of stage objects.
+- **Menus**: the title screen's easter eggs and a mod's own title screen (`gfDanceTitle.json`); the screen
+  that closes over the old screen before a change (the new one is uncovered by a wipe); the mods menu's
+  mouse buttons and per-mod settings; achievements of mods; the options menu's look (it is a plain list)
+  and its Shaders and GPU Caching switches (nothing to switch here); the screen for adjusting delay and
+  placing the rating by dragging; Discord presence; update check; languages; the mouse anywhere.
+- **Saved data**: scores of the Haxe engine are not read (it keeps them in its own binary save).
+- **Cutscenes**: week 2's Monster, week 5's Winter Horrorland and Eggnog, week 7's three, weekend 1's;
+  videos; dialogue from a song's `dialogue.json` (the kind scripts start).
+- **Scripts**: Lua (about 225 functions and the callbacks). HScript is Haxe code run against the Haxe
+  engine's own classes, so mods that use it cannot run here as they are. Custom shaders.
+- **Files**: Aseprite (JSON) sprite sheets.
+- **Editors**: chart, character, stage, week, menu character, dialogue, dialogue character, note splash.
+- **Other**: gamepads.

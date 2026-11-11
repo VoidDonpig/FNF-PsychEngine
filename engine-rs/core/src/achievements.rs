@@ -26,6 +26,7 @@ pub const LIST: &[Achievement] = &[
     shown("weekend1_nomiss", "Just a Friendly Sparring", "Beat Weekend 1 on Hard with no Misses."),
     shown("ur_bad", "What a Funkin' Disaster!", "Complete a Song with a rating lower than 20%."),
     shown("ur_good", "Perfectionist", "Complete a Song with a rating of 100%."),
+    shown(ROADKILL.0, "Roadkill Enthusiast", "Watch the Henchmen die 50 times."),
     shown("oversinging", "Oversinging Much...?", "Sing for 10 seconds without going back to Idle."),
     shown("hype", "Hyperactive", "Finish a Song without going back to Idle."),
     shown("two_keys", "Just the Two of Us", "Finish a Song pressing only two keys."),
@@ -50,6 +51,9 @@ pub struct Run<'a> {
     /// Every graphics option is at its lowest.
     pub lowest_graphics: bool,
 }
+
+/// The achievement that is counted up to, and how far.
+pub const ROADKILL: (&str, u32) = ("roadkill_enthusiast", 50);
 
 /// The achievements a finished song earns.
 pub fn earned(run: &Run) -> Vec<&'static str> {
