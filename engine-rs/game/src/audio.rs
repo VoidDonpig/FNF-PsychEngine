@@ -208,7 +208,7 @@ mod output {
 
     /// A sound playing on top of the song.
     pub struct Voice {
-        samples: Arc<Vec<f32>>,
+        samples: Arc<Vec<i16>>,
         /// Source frames per output frame.
         step: f64,
         cursor: f64,
@@ -225,12 +225,13 @@ mod output {
         pub volumes: Arc<Vec<AtomicU32>>,
         rate: f64,
         /// The instrumental's samples, for showing how it sounds.
-        first: Arc<Vec<f32>>,
+        first: Arc<Vec<i16>>,
         pub length_ms: f64,
     }
 
     /// Decodes an Ogg Vorbis file to interleaved stereo.
-    fn decode(path: &Path) -> Result<(Vec<f32>, u32), String> {
+    /// Kept as the file gives them (16 bits a sample): half the memory of floats.
+    fn decode(path: &Path) -> Result<(Vec<i16>, u32), String> {
         let file = std::fs::File::open(path).map_err(|e| format!("{}: {e}", path.display()))?;
         let mut reader = lewton::inside_ogg::OggStreamReader::new(file).map_err(|e| format!("{}: {e}", path.display()))?;
         let channels = reader.ident_hdr.audio_channels as usize;
@@ -238,20 +239,21 @@ mod output {
         while let Some(packet) = reader.read_dec_packet_itl().map_err(|e| format!("{}: {e}", path.display()))? {
             for frame in packet.chunks(channels) {
                 let right = if channels > 1 { frame[1] } else { frame[0] };
-                samples.extend([frame[0] as f32 / 32768.0, right as f32 / 32768.0]);
+                samples.extend([frame[0], right]);
             }
         }
+        samples.shrink_to_fit();
         Ok((samples, reader.ident_hdr.audio_sample_rate))
     }
 
     /// A decoded file: its samples, its rate, and whether it is a track of a song.
-    type Decoded = (std::path::PathBuf, Arc<Vec<f32>>, u32, bool);
+    type Decoded = (std::path::PathBuf, Arc<Vec<i16>>, u32, bool);
 
     /// The files decoded so far: sounds for good (they are short, or come back all the time like the menu music), the tracks of a
     /// song until another song is opened. Playing or trying a song again does not decode it again.
     static DECODED: Mutex<Vec<Decoded>> = Mutex::new(Vec::new());
 
-    pub(super) fn decoded(path: &Path, track: bool) -> Result<(Arc<Vec<f32>>, u32), String> {
+    pub(super) fn decoded(path: &Path, track: bool) -> Result<(Arc<Vec<i16>>, u32), String> {
         if let Some((_, samples, rate, _)) = DECODED.lock().unwrap().iter().find(|kept| kept.0 == path) {
             return Ok((samples.clone(), *rate));
         }
@@ -262,7 +264,7 @@ mod output {
     }
 
     /// The tracks of a song, decoded side by side. Those of the song before are let go of.
-    pub(super) fn tracks_of(tracks: &[&Path]) -> Vec<Result<(Arc<Vec<f32>>, u32), String>> {
+    pub(super) fn tracks_of(tracks: &[&Path]) -> Vec<Result<(Arc<Vec<i16>>, u32), String>> {
         if !tracks.is_empty() {
             DECODED.lock().unwrap().retain(|kept| !kept.3 || tracks.contains(&kept.0.as_path()));
         }
@@ -324,12 +326,14 @@ mod output {
                             }
                         }
                         let step = step * f64::from_bits(for_callback.speed.load(Ordering::Relaxed));
+                        // each track's loudness, read once for the whole buffer, with the 16 bit samples brought to -1..1
+                        let volumes: Vec<f32> = for_mix.iter().map(|volume| f32::from_bits(volume.load(Ordering::Relaxed)) / 32768.0).collect();
                         for frame in data.chunks_mut(channels) {
                             let (index, blend) = (cursor as usize, cursor.fract() as f32);
                             for (channel, out) in frame.iter_mut().take(2).enumerate() {
-                                for (samples, volume) in loaded.iter().zip(for_mix.iter()) {
-                                    if let (Some(a), Some(b)) = (samples.get(index * 2 + channel), samples.get(index * 2 + 2 + channel)) {
-                                        *out += (a * (1.0 - blend) + b * blend) * f32::from_bits(volume.load(Ordering::Relaxed));
+                                for (samples, volume) in loaded.iter().zip(&volumes) {
+                                    if let (Some(&a), Some(&b)) = (samples.get(index * 2 + channel), samples.get(index * 2 + 2 + channel)) {
+                                        *out += (a as f32 * (1.0 - blend) + b as f32 * blend) * volume;
                                     }
                                 }
                             }
@@ -338,14 +342,14 @@ mod output {
                     }
                     let mut sounds = for_sounds.lock().unwrap();
                     for voice in sounds.iter_mut() {
-                        let frames = voice.samples.len() / 2;
+                        let (frames, volume) = (voice.samples.len() / 2, voice.volume / 32768.0);
                         for frame in data.chunks_mut(channels) {
                             if voice.looped && frames > 0 {
                                 voice.cursor %= frames as f64;
                             }
                             let index = voice.cursor as usize;
                             for (channel, out) in frame.iter_mut().take(2).enumerate() {
-                                *out += voice.samples.get(index * 2 + channel).copied().unwrap_or(0.0) * voice.volume;
+                                *out += voice.samples.get(index * 2 + channel).map_or(0.0, |&sample| sample as f32 * volume);
                             }
                             voice.cursor += voice.step;
                         }
@@ -393,7 +397,7 @@ mod output {
         pub fn levels(&self) -> [f32; 7] {
             let Some(heard) = self.heard_ms() else { return [0.0; 7] };
             let from = (heard / 1000.0 * self.rate) as usize;
-            let window: Vec<f32> = self.first.chunks(2).skip(from).take(1024).map(|frame| frame.iter().sum::<f32>() / 2.0).collect();
+            let window: Vec<f32> = self.first.chunks(2).skip(from).take(1024).map(|frame| frame.iter().map(|&sample| sample as f32).sum::<f32>() / 65536.0).collect();
             if window.len() < 64 { [0.0; 7] } else { super::bands(&window, self.rate as f32) }
         }
 

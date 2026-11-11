@@ -683,6 +683,9 @@ impl Context {
             view_formats: &[],
         });
         self.write(&texture, 0, 0, width, height, pixels);
+        // sent off now: the copy of the pixels made for the card is let go of at once, not when the frame is drawn (a song
+        // loading many large pictures would otherwise hold a second copy of all of them until then)
+        self.queue.submit([]);
         let view = texture.create_view(&Default::default());
         let group = |sampler: &wgpu::Sampler| {
             let entries = [wgpu::BindGroupEntry { binding: 0, resource: wgpu::BindingResource::TextureView(&view) }, wgpu::BindGroupEntry { binding: 1, resource: wgpu::BindingResource::Sampler(sampler) }];
