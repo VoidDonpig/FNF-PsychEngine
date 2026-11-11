@@ -654,6 +654,7 @@ impl Playing {
             if scene.shows_levels() {
                 scene.levels = self.song.levels();
             }
+            (scene.health, scene.combo) = (self.play.health, self.play.combo);
             scene.update(dt * rate as f32, judged, &self.play.chart, &events, held);
         }
         self.stage_sounds();

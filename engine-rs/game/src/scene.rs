@@ -295,6 +295,60 @@ struct Layer {
     tint: Color,
     /// Turned around its middle, in radians.
     angle: f32,
+    /// How bright it is drawn (1 as it is): the streets of weekend 1 darken for a moment at a shot.
+    shade: f32,
+}
+
+/// Nene's knife on the streets of weekend 1: she raises it when the player is nearly out, and puts it away when he is not.
+#[derive(Clone, Copy, Debug, Default, PartialEq)]
+enum Knife {
+    #[default]
+    Away,
+    /// Her sway plays out first.
+    Waiting,
+    Raising,
+    Up,
+    Lowering,
+}
+
+/// The knife's next state for the player's health (0 to 2) and whether her animation has played through; and what she does.
+fn knife(state: Knife, health: f64, finished: bool) -> (Knife, Option<&'static str>) {
+    let low = health <= 0.5;
+    match state {
+        Knife::Away if low => (Knife::Waiting, None),
+        Knife::Waiting if !low => (Knife::Away, None),
+        Knife::Waiting if finished => (Knife::Raising, Some("raiseKnife")),
+        Knife::Raising if finished => (Knife::Up, None),
+        Knife::Up if !low => (Knife::Lowering, Some("lowerKnife")),
+        Knife::Lowering if finished => (Knife::Away, None),
+        state => (state, None),
+    }
+}
+
+/// How bright the streets are `since` a shot: as they are for a frame, nearly black for one, then back over 1.4 seconds.
+fn shot_shade(since: f32) -> f32 {
+    match since {
+        t if t < 1.0 / 24.0 => 1.0,
+        t if t < 2.0 / 24.0 => 0x11 as f32 / 255.0,
+        t => (0x22 as f32 / 255.0 + (1.0 - 0x22 as f32 / 255.0) * (t - 2.0 / 24.0) / 1.4).min(1.0),
+    }
+}
+
+/// Whether Pico shows `since` his miss of the can ended: he flickers for a second, then twice as fast for half a second.
+fn pico_shown(since: f32) -> bool {
+    match since {
+        t if !(0.0..1.5).contains(&t) => true,
+        t if t < 1.0 => (t * 30.0) as u32 % 2 == 0,
+        t => ((t - 1.0) * 60.0) as u32 % 2 == 0,
+    }
+}
+
+/// A shell off Pico's gun: where it pops out, how long ago, and once it lies on the ground how it rolls (speed, slowing,
+/// angle, turning speed, how that slows).
+struct Casing {
+    at: Vec2,
+    since: f32,
+    roll: Option<[f32; 5]>,
 }
 
 /// The train of the philly stage: it waits off screen to the right, and when its sound has played for a while its cars rush past.
@@ -362,7 +416,7 @@ enum Own {
     /// The fight stage: how far its sky has drifted, the seconds until lightning strikes and since it last did.
     Blazin { drift: f32, strike_in: f32, since: f32 },
     /// The traffic light (red or not, the beat it last changed and the beats until it changes again) and the two cars: one each way.
-    Streets { red: bool, changed: i64, every: i64, cars: [Car; 2] },
+    Streets { red: bool, changed: i64, every: i64, cars: [Car; 2], knife: Knife, blink_in: i64 },
     /// The tank rolling round behind the ground: where on its circle it is (degrees) and how fast it goes.
     Tank { angle: f32, speed: f32 },
 }
@@ -632,7 +686,7 @@ impl Layer {
         }
         let frames = def.anim.map_or(Vec::new(), |(prefix, _)| crate::atlas::animation(&sheet, prefix, def.indices));
         let time = if matches!(def.anim, Some((_, Motion::Once | Motion::Flash))) { 1e9 } else { 0.0 };
-        Some(Layer { def, texture, frames, sheet, time, swayed: false, tint: def.tint, angle: def.angle })
+        Some(Layer { def, texture, frames, sheet, time, swayed: false, tint: def.tint, angle: def.angle, shade: 1.0 })
     }
 
     /// Changes to another animation of its sheet, from its start.
@@ -655,7 +709,8 @@ impl Layer {
 
     /// `scroll`: the camera's top left corner in stage coordinates.
     fn draw(&self, scroll: Vec2) {
-        self.draw_in(scroll, self.tint);
+        let shade = self.shade;
+        self.draw_in(scroll, Color { r: self.tint.r * shade, g: self.tint.g * shade, b: self.tint.b * shade, ..self.tint });
     }
 
     /// Draws it in another colour than its own.
@@ -980,6 +1035,17 @@ pub struct Scene {
     can: Option<crate::props::Can>,
     /// How loud seven bands of the music are right now; the play screen keeps this up to date.
     pub levels: [f32; 7],
+    /// The player's health (0 to 2) and combo, as of this frame; the play screen keeps them up to date.
+    pub health: f64,
+    pub combo: u32,
+    /// Weekend 1's shells off Pico's gun (and their picture), how long since he cocked it (a shell flies out three frames
+    /// in), the fading copy of him then, how long since the last shot (the streets darken), and since his miss (he flickers).
+    casings: Vec<Casing>,
+    casing_sheet: Option<Sheet>,
+    cocked: Option<f32>,
+    fade: Option<(Vec2, f32)>,
+    shot: f32,
+    flicker: Option<f32>,
     /// The fist fight of weekend 1, on its stage; and whether the opponent stands in front of the player in it.
     fight: Option<crate::fight::Fight>,
     opponent_front: bool,
@@ -1097,13 +1163,21 @@ impl Scene {
                 "mall" => Own::Mall { hey: 0.0 },
                 "school" => Own::School { sour: false },
                 "phillyBlazin" => Own::Blazin { drift: 0.0, strike_in: 3.0, since: 1e9 },
-                "phillyStreets" => Own::Streets { red: false, changed: 0, every: 8, cars: Default::default() },
+                "phillyStreets" => Own::Streets { red: false, changed: 0, every: 8, cars: Default::default(), knife: Knife::Away, blink_in: 3 },
                 "tank" => Own::Tank { angle: rand::gen_range(-90.0, 45.0), speed: rand::gen_range(5.0, 7.0) },
                 _ => Own::Nothing,
             },
             abot: None,
             can: None,
             levels: [0.0; 7],
+            health: 1.0,
+            combo: 0,
+            casings: Vec::new(),
+            casing_sheet: None,
+            cocked: None,
+            fade: None,
+            shot: f32::MAX,
+            flicker: None,
             fight: (chart.stage == "phillyBlazin").then(Default::default),
             opponent_front: false,
             cast,
@@ -1152,6 +1226,9 @@ impl Scene {
         }
         // what only some songs' events use is only loaded for them
         let uses = |name: &str| chart.events.iter().any(|event| event.name == name);
+        if scene.stage == "phillyStreets" && !low {
+            scene.casing_sheet = scene.paths.find("images/PicoBullet.png").and_then(|path| Sheet::load(&path).ok());
+        }
         let picture = |name: &str| texture(&scene.paths, &format!("images/{name}.png"));
         if let (true, Some(gradient), Some(spark)) = (chart.stage == "philly" && uses("Philly Glow"), picture("philly/gradient"), picture("philly/particle")) {
             scene.glow = Some(Glow { gradient, spark, color: None, height: 0.0, sparks: Vec::new() });
@@ -1459,11 +1536,23 @@ impl Scene {
                         _ => {}
                     }
                 }
-                // and the player cocks the gun and shoots the can down, or is hit by it
-                // shortcut: the shell flying off the gun and the stage going dark at the shot are not drawn.
+                // and the player cocks the gun (a shell flies off, a faint copy of him swells and fades) and shoots the can down
+                // (the streets go dark a moment), or is hit by it (he flickers once his fall has played)
                 NoteKind::CockGun | NoteKind::FireGun if side == 1 => {
-                    if kind == NoteKind::FireGun && !missed {
-                        self.can.iter_mut().for_each(|can| can.shoot());
+                    match (kind, missed) {
+                        (NoteKind::FireGun, false) => {
+                            self.can.iter_mut().for_each(|can| can.shoot());
+                            self.shot = 0.0;
+                        }
+                        (NoteKind::FireGun, true) => {
+                            let fall = self.player.as_ref().and_then(|pico| pico.animations.get("shootMISS")).map_or(0.0, |fall| fall.frames.len() as f32 / fall.fps);
+                            self.flicker = Some(-fall);
+                        }
+                        (_, false) if !self.low => {
+                            self.cocked = Some(0.0);
+                            self.fade = self.player.as_ref().map(|pico| (pico.position, 0.0));
+                        }
+                        _ => {}
                     }
                     let (pose, sound) = match (kind, missed) {
                         (NoteKind::FireGun, true) => ("shootMISS", "Pico_Bonk".to_owned()),
@@ -1481,6 +1570,11 @@ impl Scene {
                 }
                 _ => {
                     self.singer(side).into_iter().for_each(|c| c.sing(lane, missed, alt));
+                    // on the streets of weekend 1, now and then, Nene cheers a combo of 50 or 100
+                    if matches!(self.own, Own::Streets { .. }) && side == 1 && !missed && matches!(self.combo, 50 | 100) && chance(0.1) {
+                        let cheer = format!("combo{}", self.combo);
+                        self.gf.iter_mut().for_each(|nene| nene.pose(&cheer, None));
+                    }
                     // a combo of more than five lost makes the girlfriend sad
                     if broken > 5 {
                         self.gf.iter_mut().filter(|gf| gf.animations.contains_key("sad")).for_each(|gf| gf.pose("sad", None));
@@ -1675,7 +1769,57 @@ impl Scene {
                     character.iter_mut().for_each(|c| c.tint = Color::new(shade, shade, shade, 1.0));
                 }
             }
-            Own::Streets { red, changed, every, cars } => {
+            Own::Streets { red, changed, every, cars, knife: state, blink_in } => {
+                // Nene's knife, by the player's health; while it is up she blinks now and then
+                if let Some(nene) = &mut self.gf {
+                    let (next, start) = knife(*state, self.health, nene.finished());
+                    if let Some(animation) = start {
+                        nene.play(animation);
+                    }
+                    (*state, nene.skip_dance) = (next, next != Knife::Away);
+                    if let (Knife::Up, Some(_)) = (next, beat) {
+                        if *blink_in == 0 {
+                            nene.play("idleKnife");
+                            *blink_in = rand::gen_range(3, 8);
+                        } else {
+                            *blink_in -= 1;
+                        }
+                    }
+                }
+                // the shells: one flies out three frames into the cocking, pops for forty frames, then lies and rolls to a stop
+                if let Some(since) = &mut self.cocked {
+                    *since += dt;
+                    if *since >= 3.0 / 24.0 {
+                        self.cocked = None;
+                        self.casings.extend(self.player.as_ref().map(|pico| Casing { at: pico.position + vec2(250.0, 100.0), since: 0.0, roll: None }));
+                    }
+                }
+                if let Some(sheet) = self.casing_sheet.as_ref().filter(|_| !self.casings.is_empty()) {
+                    let landed = sheet.animation("Pop0", &[]).get(40).copied();
+                    for casing in &mut self.casings {
+                        casing.since += dt;
+                        match (&mut casing.roll, landed) {
+                            (None, Some(landed)) if casing.since >= 40.0 / 24.0 => {
+                                casing.at += landed.offset + vec2(-1.0, 1.0);
+                                let (slowing, speed) = (rand::gen_range(3.0, 10.0), rand::gen_range(1.0, 2.0));
+                                let (pace, drag) = (20.0 * speed, slowing * speed);
+                                casing.roll = Some([pace, drag, 125.1, 100.0, drag / pace * 100.0]);
+                            }
+                            (Some([pace, drag, angle, turning, turn_drag]), _) => {
+                                casing.at.x += *pace * dt;
+                                *angle += *turning * dt;
+                                *pace = (*pace - *drag * dt).max(0.0);
+                                *turning = (*turning - *turn_drag * dt).max(0.0);
+                            }
+                            _ => {}
+                        }
+                    }
+                }
+                self.fade = self.fade.filter(|(_, since)| *since < 0.4).map(|(at, since)| (at, since + dt));
+                self.shot += dt;
+                let shade = shot_shade(self.shot);
+                self.backdrop.iter_mut().for_each(|layer| layer.shade = shade);
+                self.flicker = self.flicker.map(|since| since + dt).filter(|since| *since < 1.5);
                 const CARS: [&str; 4] = ["car1", "car2", "car3", "car4"];
                 let layers: Vec<usize> = self.backdrop.iter().enumerate().filter(|(_, layer)| layer.def.image == "phillyStreets/phillyCars").map(|(index, _)| index).collect();
                 let [Some(&here), Some(&there)] = [layers.first(), layers.get(1)] else { return };
@@ -2082,6 +2226,13 @@ impl Scene {
         self.abot.iter().for_each(|abot| abot.draw());
         // whoever throws the punch stands in front
         let everyone = [&self.gf, &self.opponent, &self.player];
+        // the faint copy of Pico as he cocks the gun, swelling to 1.3 times his size as it fades
+        if let (Some((at, since)), Some(pico)) = (self.fade, &self.player) {
+            let (part, middle) = (since / 0.4, (at + pico.size / 2.0).extend(0.0));
+            push_model_matrix(Mat4::from_translation(middle) * Mat4::from_scale(vec3(1.0 + 0.3 * part, 1.0 + 0.3 * part, 1.0)) * Mat4::from_translation(-middle));
+            pico.draw_as("cock", 0.0, at, Color { a: 0.3 * (1.0 - part), ..pico.tint });
+            pop_model_matrix();
+        }
         let fighters: Vec<&Option<Character>> = if self.opponent_front { vec![&self.gf, &self.player, &self.opponent] } else { self.cast.iter().map(|who| everyone[*who]).collect() };
         if let Some(spirit) = &self.opponent {
             // fainter the older they are
@@ -2106,8 +2257,32 @@ impl Scene {
                 }
                 // the player without her, standing still
                 (_, Some((.., Some(alone))), Some(player)) if std::ptr::eq(slot, &self.player) => alone.draw_as("idle", 60.0, player.position + vec2(0.0, 20.0), WHITE),
+                // Pico flickers after the can hits him
+                (_, _, Some(_)) if std::ptr::eq(slot, &self.player) && !self.flicker.is_none_or(pico_shown) => {}
                 (_, _, Some(character)) => character.draw(),
                 _ => {}
+            }
+        }
+        if let Some(sheet) = &self.casing_sheet {
+            for casing in &self.casings {
+                let step = (casing.since * 24.0) as usize;
+                match casing.roll {
+                    None => {
+                        let popping = sheet.animation("Pop0", &[]);
+                        if let Some(frame) = popping.get(step.min(popping.len().saturating_sub(1))) {
+                            sheet.draw(*frame, casing.at.x, casing.at.y, 1.0, false, WHITE);
+                        }
+                    }
+                    // lying on its side, turned as it rolls
+                    Some([_, _, angle, ..]) => {
+                        let lying = sheet.animation("Bullet0", &[]);
+                        let Some(frame) = lying.get(step % lying.len().max(1)) else { continue };
+                        let middle = (casing.at + frame.size / 2.0).extend(0.0);
+                        push_model_matrix(Mat4::from_translation(middle) * Mat4::from_rotation_z(angle.to_radians()) * Mat4::from_translation(-middle));
+                        sheet.draw(*frame, casing.at.x, casing.at.y, 1.0, false, WHITE);
+                        pop_model_matrix();
+                    }
+                }
             }
         }
         self.can.iter().for_each(|can| can.draw());
@@ -2136,6 +2311,23 @@ impl Scene {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn nene_raises_her_knife_when_the_player_is_nearly_out() {
+        use super::{knife, pico_shown, shot_shade, Knife};
+        // low: she waits for her sway to play out, raises the knife, holds it up; back up: she lowers it and dances again
+        assert_eq!(knife(Knife::Away, 0.4, false), (Knife::Waiting, None));
+        assert_eq!((knife(Knife::Waiting, 0.4, false), knife(Knife::Waiting, 0.6, false)), ((Knife::Waiting, None), (Knife::Away, None)));
+        assert_eq!(knife(Knife::Waiting, 0.5, true), (Knife::Raising, Some("raiseKnife")));
+        assert_eq!((knife(Knife::Raising, 0.4, true), knife(Knife::Up, 0.4, true)), ((Knife::Up, None), (Knife::Up, None)));
+        assert_eq!(knife(Knife::Up, 1.0, false), (Knife::Lowering, Some("lowerKnife")));
+        assert_eq!((knife(Knife::Lowering, 1.0, false), knife(Knife::Lowering, 1.0, true)), ((Knife::Lowering, None), (Knife::Away, None)));
+        // the shot: a frame as it was, a frame nearly black, then back to full over 1.4 s
+        assert_eq!((shot_shade(0.0), shot_shade(0.05), shot_shade(10.0)), (1.0, 0x11 as f32 / 255.0, 1.0));
+        assert!((shot_shade(2.0 / 24.0 + 0.7) - (0x22 as f32 / 255.0 + (1.0 - 0x22 as f32 / 255.0) / 2.0)).abs() < 1e-5);
+        // Pico's flicker: shown before and after, hidden every other thirtieth, then every other sixtieth
+        assert_eq!([-0.1, 0.01, 0.04, 0.07, 1.01, 1.02, 1.6].map(pico_shown), [true, true, false, true, true, false, true]);
+    }
+
     #[test]
     fn stage_scenes_cover_the_stage_and_hand_over_in_time() {
         use super::{stunt_at, Stunt};
