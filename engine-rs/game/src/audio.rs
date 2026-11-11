@@ -354,6 +354,10 @@ mod output {
 
         /// None until the first buffer of the song is on its way out.
         pub fn heard_ms(&self) -> Option<f64> {
+            // an output without tracks (the menus', or a song started part way in for a picture) has no position of its own
+            if self.length_ms == 0.0 {
+                return None;
+            }
             let Some((frame, at)) = *self.shared.anchor.lock().unwrap() else { return *self.shared.frozen.lock().unwrap() };
             let now = Instant::now();
             let since = if now >= at { (now - at).as_secs_f64() } else { -(at - now).as_secs_f64() };

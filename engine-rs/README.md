@@ -67,7 +67,7 @@ Done:
 - **HUD**: countdown with its sounds, rating and combo pictures, note splashes, hold end caps, time bar,
   miss sounds, the game over scene (fall, music, retry).
 - **Sound**: instrumental and vocals as separate tracks (the player's voice drops out on a miss), song
-  position from the sound card's sample count.
+  position from the sound card's sample count, evened out so that the notes move steadily.
 - **Menus**: the title screen with its opening lines, the main menu, story mode (week list, locked weeks,
   difficulties, the three characters, track list, week score; a week plays through song after song) and
   freeplay (bold song names, icons, song colours, difficulties, personal best), with the menu music and

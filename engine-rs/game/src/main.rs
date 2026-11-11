@@ -193,6 +193,9 @@ struct Playing {
     scene: Option<scene::Scene>,
     /// Ms spent on the play screen before the song starts.
     waited: f64,
+    /// The song position evened out, and when it was last asked.
+    clock: funkin_core::clock::Clock,
+    ticked: std::time::Instant,
     started: bool,
     /// The pause menu's selected row, while paused.
     paused: Option<usize>,
@@ -268,7 +271,7 @@ impl Playing {
         (play.health_gain, play.health_loss, play.instakill) = (settings.health_gain, settings.health_loss, settings.instakill);
         play.skip_to(start_at);
         atlas::forget_unused();
-        Ok(Playing { entry: entry.clone(), play, song, player_voice, scene, waited: 0.0, started: false, paused: None, start_at, position: -lead_in, settings: settings.clone(), held_keys: Vec::new(), flash_until: [[f64::MIN; 4]; 2], judgement: None, last_hit: f64::MIN, lanes_used: [false; 4], idled: false, idle_for: 0.0, sang_for: 0.0,
+        Ok(Playing { entry: entry.clone(), play, song, player_voice, scene, waited: 0.0, clock: Default::default(), ticked: std::time::Instant::now(), started: false, paused: None, start_at, position: -lead_in, settings: settings.clone(), held_keys: Vec::new(), flash_until: [[f64::MIN; 4]; 2], judgement: None, last_hit: f64::MIN, lanes_used: [false; 4], idled: false, idle_for: 0.0, sang_for: 0.0,
             paths, cutscene, lead_in, counted: i64::MIN, popups: Vec::new(), splashes: Vec::new(), dead: None, next_event: 0, speed, speed_change: None })
     }
 
@@ -383,8 +386,10 @@ impl Playing {
             self.song.start();
             self.started = true;
         }
-        // The sound card's clock wobbles by a buffer between callbacks; the song never runs backwards.
-        let now = if self.started { self.start_at + self.song.position_ms() } else { self.waited - lead_in };
+        // The sound card's clock wobbles by a few ms between callbacks: the notes move by an even one that follows it.
+        // The song never runs backwards.
+        let elapsed = std::mem::replace(&mut self.ticked, std::time::Instant::now()).elapsed().as_secs_f64() * 1000.0 * rate;
+        let now = if self.started { self.clock.advance(elapsed, self.start_at + self.song.position_ms()) } else { self.waited - lead_in };
         self.position = self.position.max(now);
 
         // the countdown: a sound on each of the four beats before the song, a picture on the last three
