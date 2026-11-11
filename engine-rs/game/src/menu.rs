@@ -614,9 +614,8 @@ impl Menus {
         }
     }
 
-    /// Runs and draws one frame of a menu.
-    pub fn run(&mut self, page: Page, skin: &Skin, weeks: &[Week], songs: &[SongEntry], save: &Save, flashing: bool) -> Go {
-        self.flashing = flashing;
+    /// Starts the menu music, unless it plays.
+    pub fn music(&mut self) {
         if self.audio.is_none() {
             let audio = Song::load(&[]);
             if let Some(path) = self.paths.find("music/freakyMenu.ogg") {
@@ -625,6 +624,12 @@ impl Menus {
             self.audio = Some(audio);
             self.music_at = get_time();
         }
+    }
+
+    /// Runs and draws one frame of a menu.
+    pub fn run(&mut self, page: Page, skin: &Skin, weeks: &[Week], songs: &[SongEntry], save: &Save, flashing: bool) -> Go {
+        self.flashing = flashing;
+        self.music();
         if let (Some((since, from, to, seconds)), Some(audio)) = (self.fade, &self.audio) {
             let part = ((get_time() - since) / seconds).min(1.0) as f32;
             audio.set_music_volume(from + (to - from) * part);

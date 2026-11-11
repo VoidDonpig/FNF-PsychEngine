@@ -5,6 +5,7 @@
 //! For checking a build without a screen: `--at <seconds>` starts at that point of the song, `--options`
 //! opens the options, and `--shot <file.png>` saves the picture after a few frames (or `--after <seconds>`, or
 //! once the song has reached `--when <seconds>`) and quits.
+mod adjust;
 mod animate;
 mod atlas;
 mod audio;
@@ -1117,7 +1118,16 @@ fn main() {
                         skin.note(lane, x, y);
                     }
                 };
-                let left = menu.run(&mut settings, &plain, &note, keyboard.raw, &bindable, &languages);
+                let adjusting = menu.adjusting();
+                let left = menu.run(&mut settings, &plain, &note, keyboard.raw, &bindable, &languages, &base);
+                // the screen for the delay brings its own music: everything else is quiet meanwhile
+                match (adjusting, menu.adjusting(), &held) {
+                    (false, true, None) => menus.quiet(),
+                    // shortcut: a paused song's pause music does not come back afterwards; start it again if that is missed.
+                    (false, true, Some(held)) => held.song.stop_sounds(),
+                    (true, false, None) => menus.music(),
+                    _ => {}
+                }
                 skin.iter().for_each(|skin| skin.recolor(&settings.note_colors));
                 pixel_skin.iter().for_each(|skin| skin.recolor(&settings.pixel_note_colors));
                 if left {

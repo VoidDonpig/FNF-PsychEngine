@@ -17,6 +17,8 @@ pub struct OptionsMenu {
     /// Note colours: those of pixel stages are shown, and the colour code being typed.
     pixel: bool,
     typing: Option<String>,
+    /// The screen for the note delay and the place of rating and combo, while it is open.
+    adjust: Option<Box<crate::adjust::Adjust>>,
 }
 
 /// The colour with its hue turned by `degrees`. Greys have none and stay as they are.
@@ -73,8 +75,20 @@ impl OptionsMenu {
 
     /// Runs and draws one frame. `text` writes a line with its baseline at (x, y). Returns true when the player leaves the options.
     /// `note` draws a lane's note (of pixel stages or not) centred on (x, y).
-    /// `languages`: the languages there are, as (file, name).
-    pub fn run(&mut self, settings: &mut Settings, text: &dyn Fn(&str, f32, f32, u16, Color), note: &dyn Fn(usize, bool, f32, f32), raw_input: bool, bindable: &[KeyCode], languages: &[(String, String)]) -> bool {
+    /// Whether the screen with its own music (delay and combo) is open.
+    pub fn adjusting(&self) -> bool {
+        self.adjust.is_some()
+    }
+
+    /// `languages`: the languages there are, as (file, name). `base`: the game's folder.
+    #[allow(clippy::too_many_arguments)]
+    pub fn run(&mut self, settings: &mut Settings, text: &dyn Fn(&str, f32, f32, u16, Color), note: &dyn Fn(usize, bool, f32, f32), raw_input: bool, bindable: &[KeyCode], languages: &[(String, String)], base: &std::path::Path) -> bool {
+        if let Some(adjust) = &mut self.adjust {
+            if adjust.run(settings, text) {
+                self.adjust = None;
+            }
+            return false;
+        }
         let named = |page: usize| phrase(&format!("options_{}", PAGES[page]), PAGES[page]);
         let title = self.page.map_or("Options".to_owned(), |page| format!("Options - {}", named(page)));
         text(&title, 40.0, 60.0, 36, WHITE);
@@ -86,17 +100,22 @@ impl OptionsMenu {
 
         let Some(page) = self.page else {
             text("Up/Down: choose   Enter: open   Esc: save and back", 40.0, 96.0, 18, GRAY);
-            // the pages, and below them the language: it is chosen in place
-            self.row = (self.row + step(PAGES.len() + 1)) % (PAGES.len() + 1);
+            // the pages, the screen for delay and combo, and below them the language: it is chosen in place
+            self.row = (self.row + step(PAGES.len() + 2)) % (PAGES.len() + 2);
             for index in 0..PAGES.len() {
                 line(index, self.row, &named(index), 150.0 + index as f32 * 30.0);
             }
+            line(PAGES.len(), self.row, &phrase("options_adjust_delay_and_combo", "Adjust Delay and Combo"), 150.0 + PAGES.len() as f32 * 30.0);
             let language = languages.get(next_language(languages, &settings.language, 0)).map_or(settings.language.as_str(), |(_, name)| name);
-            line(PAGES.len(), self.row, &format!("{}: {language}", phrase("options_language", "Language")), 160.0 + PAGES.len() as f32 * 30.0);
+            line(PAGES.len() + 1, self.row, &format!("{}: {language}", phrase("options_language", "Language")), 190.0 + PAGES.len() as f32 * 30.0);
             let turn = pressed(Ui::Right) as usize + pressed(Ui::Accept) as usize + pressed(Ui::Left) as usize * (languages.len().max(1) - 1);
             if self.row < PAGES.len() {
                 if pressed(Ui::Accept) {
                     (self.page, self.row) = (Some(self.row), 0);
+                }
+            } else if self.row == PAGES.len() {
+                if pressed(Ui::Accept) {
+                    self.adjust = Some(Box::new(crate::adjust::Adjust::open(base, settings)));
                 }
             } else if let Some((file, _)) = languages.get(next_language(languages, &settings.language, turn)).filter(|_| turn != 0) {
                 settings.language = file.clone();

@@ -117,7 +117,8 @@ Done:
   (`data/<language>.lang` of the game and of mods: the words the Haxe engine translates, and the pictures
   and sounds a language brings in place of the usual ones), chosen at the bottom of the options; the
   stages' own scenes in story mode: lightning before Monster, the lights coming on before Winter Horrorland
-  and going out after the song before it.
+  and going out after the song before it; the options' screen for the note delay (its own music, a bar,
+  "Beat Hit!" on the beat as it will be judged) and for placing the rating and the combo count.
 
 Not there yet:
 
@@ -130,8 +131,8 @@ Not there yet:
   colour names and the story-mode/freeplay filters of stage objects.
 - **Menus**: the mods menu's
   mouse buttons and per-mod settings; achievements of mods; the options menu's look (it is a plain list)
-  and its Shaders and GPU Caching switches (nothing to switch here); the screen for adjusting delay and
-  placing the rating by dragging; Discord presence; update check; the mouse anywhere.
+  and its Shaders and GPU Caching switches (nothing to switch here); Discord presence; update check;
+  the mouse anywhere (so the rating is placed with keys, not by dragging).
 - **Saved data**: scores of the Haxe engine are not read (it keeps them in its own binary save).
 - **Cutscenes**: week 7's three, weekend 1's;
   videos; dialogue from a song's `dialogue.json` (the kind scripts start).
