@@ -36,7 +36,8 @@ pub struct Opt {
 }
 
 /// The pages of the options menu. The first holds the key binds; the others list `OPTIONS`.
-pub const PAGES: [&str; 3] = ["Controls", "Gameplay", "Visuals"];
+pub const PAGES: [&str; 4] = ["Controls", "Gameplay", "Visuals", "Gameplay Changers"];
+pub const SCROLL_TYPES: [&str; 2] = ["multiplicative", "constant"];
 pub const TIME_BARS: [&str; 4] = ["Time Left", "Time Elapsed", "Song Name", "Disabled"];
 pub const PAUSE_MUSIC: [&str; 4] = ["None", "Tea Time", "Breakfast", "Breakfast (Pico)"];
 
@@ -54,7 +55,6 @@ pub const OPTIONS: &[Opt] = &[
     Opt { page: 1, key: "bad_window", name: "Bad Hit Window", about: "Changes the amount of time you have for hitting a \"Bad\" in milliseconds.", kind: Kind::Number(|s| &mut s.bad_window, 15.0, 135.0, 1.0, "ms") },
     Opt { page: 1, key: "safe_frames", name: "Safe Frames", about: "Changes how many frames you have for hitting a note earlier or late.", kind: Kind::Number(|s| &mut s.safe_frames, 2.0, 10.0, 0.1, "") },
     Opt { page: 1, key: "offset_ms", name: "Note Offset", about: "Notes are judged and drawn this much later, for sound that arrives late (Bluetooth).", kind: Kind::Number(|s| &mut s.offset_ms, -500.0, 500.0, 1.0, "ms") },
-    Opt { page: 1, key: "botplay", name: "Botplay", about: "The game plays the player's notes itself. Scores are not kept.", kind: Kind::Flag(|s| &mut s.botplay) },
     Opt { page: 2, key: "splash_alpha", name: "Note Splash Opacity", about: "How much transparent should the Note Splashes be.", kind: Kind::Number(|s| &mut s.splash_alpha, 0.0, 1.0, 0.1, "%") },
     Opt { page: 2, key: "hide_hud", name: "Hide HUD", about: "If checked, hides most HUD elements.", kind: Kind::Flag(|s| &mut s.hide_hud) },
     Opt { page: 2, key: "time_bar", name: "Time Bar", about: "What should the Time Bar display?", kind: Kind::Choice(|s| &mut s.time_bar, &TIME_BARS) },
@@ -66,6 +66,14 @@ pub const OPTIONS: &[Opt] = &[
     Opt { page: 2, key: "pause_music", name: "Pause Music", about: "What song do you prefer for the Pause Screen?", kind: Kind::Choice(|s| &mut s.pause_music, &PAUSE_MUSIC) },
     Opt { page: 2, key: "combo_stacking", name: "Combo Stacking", about: "If unchecked, Ratings and Combo won't stack, saving on System Memory and making them easier to read.", kind: Kind::Flag(|s| &mut s.combo_stacking) },
     Opt { page: 2, key: "show_ms", name: "Hit Timing (ms)", about: "If checked, shows how many milliseconds early or late each hit was.", kind: Kind::Flag(|s| &mut s.show_ms) },
+    Opt { page: 3, key: "scroll_type", name: "Scroll Type", about: "Multiplicative: the chart's speed times Scroll Speed. Constant: Scroll Speed itself, for every song.", kind: Kind::Choice(|s| &mut s.scroll_type, &SCROLL_TYPES) },
+    Opt { page: 3, key: "scroll_speed", name: "Scroll Speed", about: "How fast the notes travel (up to 3X when multiplicative, up to 6 when constant).", kind: Kind::Number(|s| &mut s.scroll_speed, 0.35, 6.0, 0.05, "X") },
+    Opt { page: 3, key: "playback_rate", name: "Playback Rate", about: "How fast the song plays. Its pitch follows.", kind: Kind::Number(|s| &mut s.playback_rate, 0.5, 3.0, 0.05, "X") },
+    Opt { page: 3, key: "health_gain", name: "Health Gain Multiplier", about: "How much more health a hit gives.", kind: Kind::Number(|s| &mut s.health_gain, 0.0, 5.0, 0.1, "X") },
+    Opt { page: 3, key: "health_loss", name: "Health Loss Multiplier", about: "How much more health a miss takes.", kind: Kind::Number(|s| &mut s.health_loss, 0.5, 5.0, 0.1, "X") },
+    Opt { page: 3, key: "instakill", name: "Instakill on Miss", about: "One miss ends the song.", kind: Kind::Flag(|s| &mut s.instakill) },
+    Opt { page: 3, key: "practice", name: "Practice Mode", about: "You cannot lose. Scores are not kept.", kind: Kind::Flag(|s| &mut s.practice) },
+    Opt { page: 3, key: "botplay", name: "Botplay", about: "The game plays the player's notes itself. Scores are not kept.", kind: Kind::Flag(|s| &mut s.botplay) },
 ];
 
 #[derive(Clone, Debug, PartialEq)]
@@ -98,6 +106,14 @@ pub struct Settings {
     pub pause_music: usize,
     pub combo_stacking: bool,
     pub show_ms: bool,
+    /// Index into `SCROLL_TYPES`.
+    pub scroll_type: usize,
+    pub scroll_speed: f64,
+    pub playback_rate: f64,
+    pub health_gain: f64,
+    pub health_loss: f64,
+    pub instakill: bool,
+    pub practice: bool,
     /// Two keys per lane.
     pub keys: [[Option<KeyCode>; 2]; 4],
 }
@@ -110,6 +126,7 @@ impl Default for Settings {
             hitsound_volume: 0.0, rating_offset: 0.0, sick_window: 45.0, good_window: 90.0, bad_window: 135.0, safe_frames: 10.0, offset_ms: 0.0,
             splash_alpha: 0.6, hide_hud: false, time_bar: 0, flashing: true, cam_zooms: true, score_zoom: true, health_bar_alpha: 1.0, show_fps: true,
             pause_music: 1, combo_stacking: true, show_ms: false,
+            scroll_type: 0, scroll_speed: 1.0, playback_rate: 1.0, health_gain: 1.0, health_loss: 1.0, instakill: false, practice: false,
             keys: [[Some(A), Some(Left)], [Some(S), Some(Down)], [Some(W), Some(Up)], [Some(D), Some(Right)]],
         }
     }
@@ -168,7 +185,17 @@ impl Settings {
 
     /// How strictly the song judges, from the windows chosen.
     pub fn timing(&self) -> funkin_core::play::Timing {
-        funkin_core::play::Timing { sick: self.sick_window, good: self.good_window, bad: self.bad_window, safe: self.safe_frames / 60.0 * 1000.0, rating_offset: self.rating_offset }
+        funkin_core::play::Timing { sick: self.sick_window, good: self.good_window, bad: self.bad_window, safe: self.safe_frames / 60.0 * 1000.0, rating_offset: self.rating_offset, rate: self.playback_rate }
+    }
+
+    /// How fast the notes of a chart written for `chart_speed` travel.
+    pub fn note_speed(&self, chart_speed: f64) -> f64 {
+        if self.scroll_type == 1 { self.scroll_speed } else { chart_speed * self.scroll_speed.min(3.0) }
+    }
+
+    /// Whether a finished run counts for the high scores.
+    pub fn keeps_scores(&self) -> bool {
+        !self.botplay && !self.practice
     }
 
     /// Puts `key` on a slot; a key sits on one slot only.
@@ -207,6 +234,9 @@ mod tests {
         assert!(OPTIONS.iter().all(|option| (1..PAGES.len()).contains(&option.page)));
         assert_eq!(Settings::from_json(r#"{"time_bar":"Disabled","pause_music":"Nothing known","sick_window":1}"#), Settings { time_bar: 3, sick_window: 15.0, ..Default::default() });
         assert_eq!(Settings { safe_frames: 6.0, ..Default::default() }.timing().safe, 100.0);
+        let fast = Settings { scroll_speed: 4.0, ..Default::default() };
+        assert_eq!((fast.note_speed(2.0), Settings { scroll_type: 1, ..fast.clone() }.note_speed(2.0)), (6.0, 4.0), "multiplied up to 3X, or the same for every song");
+        assert!(!Settings { practice: true, ..Default::default() }.keeps_scores() && Settings::default().keeps_scores());
     }
 
     #[test]

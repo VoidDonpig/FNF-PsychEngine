@@ -24,6 +24,8 @@ pub enum Go {
     Stay,
     Page(Page),
     Options,
+    /// The gameplay changers, opened from story mode or freeplay with Ctrl.
+    Changers,
     Quit,
     /// Songs to play in a row (indices into the song list), and the week they are played for in story mode.
     Play(Vec<usize>, Option<usize>),
@@ -696,6 +698,7 @@ impl Menus {
         match since {
             Some(t) if t >= 1.0 => playlist().map_or(Go::Stay, |list| Go::Play(list, Some(shown[self.week]))),
             Some(_) => Go::Stay,
+            None if is_key_pressed(KeyCode::LeftControl) || is_key_pressed(KeyCode::RightControl) => Go::Changers,
             None if pressed(&ACCEPT) => {
                 let ready = !locked && playlist().is_some();
                 self.sound(if ready { "confirmMenu" } else { "cancelMenu" }, 1.0);
@@ -774,10 +777,12 @@ impl Menus {
         let name = if row.entries.len() > 1 { format!("< {name} >") } else { name };
         label(skin, &name, (left - 6.0 + WIDTH) / 2.0 - measure_text(&name, skin.font.as_ref(), 24, 1.0).width / 2.0, 41.0, 24, WHITE, false);
         draw_rectangle(0.0, HEIGHT - 26.0, WIDTH, 26.0, Color::new(0.0, 0.0, 0.0, 0.6));
-        let tip = "Up/Down: song / Left/Right: difficulty / Enter: play / Esc: back";
+        let tip = "Up/Down: song / Left/Right: difficulty / Enter: play / Ctrl: Gameplay Changers / Esc: back";
         label(skin, tip, (WIDTH - measure_text(tip, skin.font.as_ref(), 16, 1.0).width) / 2.0, HEIGHT - 22.0, 16, WHITE, false);
 
-        if pressed(&ACCEPT) {
+        if is_key_pressed(KeyCode::LeftControl) || is_key_pressed(KeyCode::RightControl) {
+            Go::Changers
+        } else if pressed(&ACCEPT) {
             Go::Play(vec![chosen], None)
         } else if pressed(&BACK) {
             self.sound("cancelMenu", 1.0);

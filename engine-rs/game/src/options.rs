@@ -10,6 +10,8 @@ pub struct OptionsMenu {
     row: usize,
     /// The selected key slot waits for a key.
     binding: bool,
+    /// Opened straight at a page: leaving the page leaves the options.
+    direct: bool,
 }
 
 /// How an option's value reads in the menu.
@@ -19,8 +21,9 @@ fn shown(kind: &Kind, settings: &mut Settings) -> String {
         Kind::Number(get, .., "%") => format!("{:.0}%", *get(settings) * 100.0),
         Kind::Number(get, low, _, step, unit) => {
             // only what can go below zero shows its sign
-            let (decimals, value) = (if step < 1.0 { 1 } else { 0 }, *get(settings));
-            if low < 0.0 { format!("{value:+.decimals$} {unit}") } else { format!("{value:.decimals$} {unit}") }.trim_end().to_owned()
+            let (decimals, value) = (if step >= 1.0 { 0 } else if step >= 0.1 { 1 } else { 2 }, *get(settings));
+            let unit = if unit == "X" { "X".to_owned() } else { format!(" {unit}") };
+            if low < 0.0 { format!("{value:+.decimals$}{unit}") } else { format!("{value:.decimals$}{unit}") }.trim_end().to_owned()
         }
         Kind::Choice(get, names) => names[*get(settings)].to_owned(),
     }
@@ -46,7 +49,8 @@ fn change(kind: &Kind, settings: &mut Settings, steps: f64) {
 impl OptionsMenu {
     /// Opened at the page of that name, if there is one.
     pub fn at(page: &str) -> OptionsMenu {
-        OptionsMenu { page: PAGES.iter().position(|name| name.eq_ignore_ascii_case(page)), ..Default::default() }
+        let page = PAGES.iter().position(|name| name.eq_ignore_ascii_case(page));
+        OptionsMenu { page, direct: page.is_some(), ..Default::default() }
     }
 
     /// Runs and draws one frame. `text` writes a line with its baseline at (x, y). Returns true when the player leaves the options.
@@ -102,6 +106,7 @@ impl OptionsMenu {
                 settings.bind(lane, slot, None);
             } else if is_key_pressed(KeyCode::Escape) {
                 (self.page, self.row) = (None, page);
+                return self.direct;
             }
             return false;
         }
@@ -125,7 +130,7 @@ impl OptionsMenu {
         if back {
             (self.page, self.row) = (None, page);
         }
-        false
+        back && self.direct
     }
 }
 
@@ -151,5 +156,7 @@ mod tests {
         assert_eq!(shown(option("time_bar"), &mut settings), "Disabled");
         change(option("time_bar"), &mut settings, 1.0);
         assert_eq!(settings.time_bar, 0);
+        change(option("playback_rate"), &mut settings, 10.0);
+        assert_eq!(shown(option("playback_rate"), &mut settings), "1.50X");
     }
 }

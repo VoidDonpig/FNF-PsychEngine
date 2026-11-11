@@ -54,23 +54,25 @@ Done:
   (which unlock the weeks after them). Runs on botplay are not kept.
 - **Options**: key binds (two per lane); gameplay: downscroll, middlescroll, opponent notes, ghost
   tapping, reset button (R), hitsound volume, rating offset, the sick/good/bad hit windows, safe frames,
-  note offset, botplay; visuals: note splash opacity, hide HUD, time bar (left, elapsed, song name, off),
+  note offset; visuals: note splash opacity, hide HUD, time bar (left, elapsed, song name, off),
   flashing lights, camera zooms, score text growing on a hit, health bar opacity, FPS counter, pause
   music, combo stacking, hit timing in ms.
+- **Gameplay changers** (an options page, also Ctrl in story mode and freeplay): scroll type and speed,
+  playback rate (the pitch follows), health gain and loss, instakill on miss, practice mode, botplay.
+  Runs in practice mode or on botplay keep no scores.
 - **Input**: on Windows key presses are timed by the raw input thread of `native/psych_input`.
 
 Not there yet:
 
 - **Play screen**: the events and note types that belong to one stage or to scripts (Set Property,
-  Philly Glow, the weekend 1 fight notes, custom ones), gameplay changers (speed, playback rate, health
-  gain/loss, instakill, practice), the rest of what stages do by themselves (the limo's henchmen, the
+  Philly Glow, the weekend 1 fight notes, custom ones), the rest of what stages do by themselves (the limo's henchmen, the
   running soldiers of Stress, crowd reactions to events, the speaker and lighting of weekend 1), the weekend 1
   fight stage, the pixel look of notes and HUD on pixel stages, characters made of several sheets or of
   Animate atlases, other note and splash skins.
 - **Menus**: the mods menu's mouse buttons, per-mod settings and restart flag, achievements, the rest of the options (graphics, note
   colours and skins, delay and combo placement, auto pause, gamepad, languages; the options menu is a plain
-  list, not the Haxe engine's look), in freeplay the song preview, score reset and gameplay
-  changers, transitions between screens, loading screen, a mod's own title screen (`gfDanceTitle.json`).
+  list, not the Haxe engine's look), in freeplay the song preview and score reset,
+  transitions between screens, loading screen, a mod's own title screen (`gfDanceTitle.json`).
 - **Saved data**: achievements, translations. Scores of the Haxe engine are
   not read (it keeps them in its own binary save).
 - **Cutscenes**: dialogue, videos.

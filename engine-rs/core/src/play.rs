@@ -12,11 +12,13 @@ pub struct Timing {
     pub safe: f64,
     /// Hits are rated as if they came this much earlier (for players who press late throughout).
     pub rating_offset: f64,
+    /// How fast the song plays (1 = as written). Hits are rated by real time, so a faster song is no stricter.
+    pub rate: f64,
 }
 
 impl Default for Timing {
     fn default() -> Timing {
-        Timing { sick: 45.0, good: 90.0, bad: 135.0, safe: 10.0 / 60.0 * 1000.0, rating_offset: 0.0 }
+        Timing { sick: 45.0, good: 90.0, bad: 135.0, safe: 10.0 / 60.0 * 1000.0, rating_offset: 0.0, rate: 1.0 }
     }
 }
 // shortcut: one fixed release tolerance; the Haxe engine frees the tail one step (tempo dependent) early.
@@ -29,7 +31,7 @@ pub enum Rating { Sick, Good, Bad, Shit }
 
 impl Rating {
     pub fn of(diff_ms: f64, timing: &Timing) -> Rating {
-        match (diff_ms - timing.rating_offset).abs() {
+        match ((diff_ms - timing.rating_offset) / timing.rate).abs() {
             d if d <= timing.sick => Rating::Sick,
             d if d <= timing.good => Rating::Good,
             d if d <= timing.bad => Rating::Bad,
@@ -63,6 +65,11 @@ pub struct Play {
     /// Off: a press with nothing to hit counts as a miss.
     pub ghost_tapping: bool,
     pub timing: Timing,
+    /// Multipliers on the health a hit gives and a miss takes.
+    pub health_gain: f64,
+    pub health_loss: f64,
+    /// One miss empties the health bar.
+    pub instakill: bool,
     pub score: i64,
     pub misses: u32,
     pub combo: u32,
@@ -77,7 +84,7 @@ pub struct Play {
 impl Play {
     pub fn new(chart: Chart, botplay: bool) -> Play {
         let state = vec![NoteState::Pending; chart.notes.len()];
-        Play { chart, state, held: [false; 4], botplay, ghost_tapping: true, timing: Timing::default(), score: 0, misses: 0, combo: 0, health: 1.0, rated: 0, weight: 0.0, first_open: 0 }
+        Play { chart, state, held: [false; 4], botplay, ghost_tapping: true, timing: Timing::default(), health_gain: 1.0, health_loss: 1.0, instakill: false, score: 0, misses: 0, combo: 0, health: 1.0, rated: 0, weight: 0.0, first_open: 0 }
     }
 
     /// Accuracy from 0 to 1, once anything was rated.
@@ -113,7 +120,6 @@ impl Play {
                 return None;
             }
             self.score -= 10;
-            self.health += MISS_HEALTH / 2.0; // a stray press costs half of what a missed note does
             return Some(self.miss(lane, None));
         };
         let (time, sustain, hurt) = { let n = &self.chart.notes[index]; (n.time, n.sustain, n.kind == NoteKind::Hurt) };
@@ -180,7 +186,7 @@ impl Play {
         self.combo += 1;
         self.rated += 1;
         self.weight += rating.weight();
-        self.health = (self.health + HIT_HEALTH).min(2.0);
+        self.health = (self.health + HIT_HEALTH * self.health_gain).min(2.0);
         Event::Hit { lane, rating, diff_ms, note }
     }
 
@@ -188,8 +194,9 @@ impl Play {
         self.misses += 1;
         self.combo = 0;
         self.rated += 1;
-        self.health -= MISS_HEALTH;
-        if self.health < 1e-9 {
+        // a stray press costs half of what a missed note does
+        self.health -= MISS_HEALTH * self.health_loss * if note.is_some() { 1.0 } else { 0.5 };
+        if self.health < 1e-9 || self.instakill {
             self.health = 0.0; // ten misses from full must empty the bar, whatever the rounding says
         }
         Event::Miss { lane, note }
@@ -211,6 +218,8 @@ mod tests {
         let of = |diff| Rating::of(diff, &Timing::default());
         assert_eq!([of(-45.0), of(45.1), of(90.0), of(135.0), of(-140.0)], [Rating::Sick, Rating::Good, Rating::Good, Rating::Bad, Rating::Shit]);
         // narrower windows, and a player who always presses 20 ms late
+        // at double speed 60 ms of song pass in 30 ms of the player's time
+        assert_eq!(Rating::of(60.0, &Timing { rate: 2.0, ..Timing::default() }), Rating::Sick);
         let strict = Timing { sick: 20.0, rating_offset: 20.0, ..Timing::default() };
         assert_eq!([Rating::of(40.0, &strict), Rating::of(0.0, &strict), Rating::of(41.0, &strict)], [Rating::Sick, Rating::Sick, Rating::Good]);
     }
@@ -270,6 +279,19 @@ mod tests {
         assert_eq!(p.press(0, 100.0), Some(Event::Miss { lane: 0, note: None }));
         assert_eq!((p.misses, p.score), (1, -10));
         assert!((p.health - 0.95).abs() < 1e-9);
+    }
+
+    #[test]
+    fn health_changers_scale_hits_and_misses_and_instakill_ends_it() {
+        let mut p = play(&[(1000.0, 0, true, 0.0), (2000.0, 1, true, 0.0), (3000.0, 2, true, 0.0)], false);
+        (p.health_gain, p.health_loss) = (2.0, 3.0);
+        p.press(0, 1000.0);
+        assert!((p.health - 1.04).abs() < 1e-9);
+        p.update(2500.0);
+        assert!((p.health - 0.74).abs() < 1e-9);
+        p.instakill = true;
+        p.update(3500.0);
+        assert_eq!(p.health, 0.0);
     }
 
     #[test]

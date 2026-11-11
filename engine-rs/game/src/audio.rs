@@ -7,6 +7,8 @@ pub struct Song {
     /// Silent clock: ms played before the current run, and when that run began.
     played: f64,
     started: Option<Instant>,
+    /// How fast it plays: 2 is twice as fast (and an octave up).
+    speed: f64,
     #[cfg(feature = "audio")]
     output: Option<output::Output>,
 }
@@ -14,15 +16,20 @@ pub struct Song {
 impl Song {
     /// Loads the tracks (instrumental, vocals) to play together, each with its own volume. Without a usable sound device the song runs silently.
     pub fn load(tracks: &[&Path]) -> Song {
+        Song::load_at(tracks, 1.0)
+    }
+
+    /// The same, played `speed` times as fast.
+    pub fn load_at(tracks: &[&Path], speed: f64) -> Song {
         #[cfg(feature = "audio")]
         {
-            let output = output::Output::open(tracks).map_err(|e| eprintln!("No sound: {e}")).ok();
-            Song { played: 0.0, started: None, output }
+            let output = output::Output::open(tracks, speed).map_err(|e| eprintln!("No sound: {e}")).ok();
+            Song { played: 0.0, started: None, speed, output }
         }
         #[cfg(not(feature = "audio"))]
         {
             let _ = tracks;
-            Song { played: 0.0, started: None }
+            Song { played: 0.0, started: None, speed }
         }
     }
 
@@ -60,7 +67,7 @@ impl Song {
         if let Some(heard) = self.output.as_ref().and_then(|o| o.heard_ms()) {
             return heard;
         }
-        self.played + self.started.map_or(0.0, |s| s.elapsed().as_secs_f64() * 1000.0)
+        self.played + self.started.map_or(0.0, |s| s.elapsed().as_secs_f64() * 1000.0 * self.speed)
     }
 
     /// Plays a short sound (or, looped, a piece of music) on top of the song, whether the song runs or not.
@@ -123,6 +130,7 @@ mod output {
         /// One per track, an f32 as bits.
         pub volumes: Arc<Vec<AtomicU32>>,
         rate: f64,
+        speed: f64,
         pub length_ms: f64,
     }
 
@@ -142,7 +150,7 @@ mod output {
     }
 
     impl Output {
-        pub fn open(tracks: &[&Path]) -> Result<Output, String> {
+        pub fn open(tracks: &[&Path], speed: f64) -> Result<Output, String> {
             let (first, rate) = decode(tracks.first().ok_or("no track")?)?;
             let mut loaded = vec![first];
             for track in &tracks[1..] {
@@ -165,7 +173,7 @@ mod output {
                 return Err(format!("output device wants {:?} samples", config.sample_format()));
             }
             let channels = config.channels() as usize;
-            let step = rate as f64 / config.sample_rate().0 as f64;
+            let step = rate as f64 / config.sample_rate().0 as f64 * speed;
             let frames = loaded[0].len() / 2;
             let shared = Arc::new(Shared { playing: AtomicBool::new(false), anchor: Mutex::new(None), frozen: Mutex::new(None) });
             let for_callback = shared.clone();
@@ -219,7 +227,7 @@ mod output {
                 None,
             ).map_err(|e| e.to_string())?;
             stream.play().map_err(|e| e.to_string())?;
-            Ok(Output { _stream: stream, shared, sounds, device_rate, volumes, rate: rate as f64, length_ms: frames as f64 / rate as f64 * 1000.0 })
+            Ok(Output { _stream: stream, shared, sounds, device_rate, volumes, rate: rate as f64, speed, length_ms: frames as f64 / rate as f64 * 1000.0 })
         }
 
         pub fn play(&self) {
@@ -246,7 +254,7 @@ mod output {
             let Some((frame, at)) = *self.shared.anchor.lock().unwrap() else { return *self.shared.frozen.lock().unwrap() };
             let now = Instant::now();
             let since = if now >= at { (now - at).as_secs_f64() } else { -(at - now).as_secs_f64() };
-            Some(((frame / self.rate + since) * 1000.0).min(self.length_ms))
+            Some(((frame / self.rate + since * self.speed) * 1000.0).min(self.length_ms))
         }
     }
 }

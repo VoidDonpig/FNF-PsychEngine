@@ -219,13 +219,14 @@ impl Playing {
             (scene.cam_zooms, scene.flashing) = (settings.cam_zooms, settings.flashing);
         }
         // shortcut: --at only moves the silent clock (it exists for screenshots); seek the audio too to make it a practice feature.
-        let song = audio::Song::load(if start_at > 0.0 { &[] } else { &tracks });
+        let song = audio::Song::load_at(if start_at > 0.0 { &[] } else { &tracks }, settings.playback_rate);
         // five beats of countdown, as the Haxe engine does
         let lead_in = if start_at > 0.0 { 0.0 } else { 5.0 * 60000.0 / chart.bpm };
-        let speed = chart.speed as f32;
+        let speed = settings.note_speed(chart.speed) as f32;
         let mut play = Play::new(chart, settings.botplay);
         play.ghost_tapping = settings.ghost_tapping;
         play.timing = settings.timing();
+        (play.health_gain, play.health_loss, play.instakill) = (settings.health_gain, settings.health_loss, settings.instakill);
         play.skip_to(start_at);
         Ok(Playing { entry: entry.clone(), play, song, player_voice, scene, waited: 0.0, started: false, paused: None, start_at, position: -lead_in, settings: settings.clone(), held_keys: Vec::new(), flash_until: [[f64::MIN; 4]; 2], judgement: None, last_hit: f64::MIN,
             paths: Paths::new(base, &entry.source, ""), lead_in, counted: i64::MIN, popups: Vec::new(), splashes: Vec::new(), dead: None, next_event: 0, speed, speed_change: None })
@@ -303,7 +304,9 @@ impl Playing {
         // a frame that took long (loading) does not eat the countdown; the Haxe engine caps frames the same way
         let dt = get_frame_time().min(0.1);
         let lead_in = self.lead_in;
-        self.waited += dt as f64 * 1000.0;
+        // everything follows the song's speed: the countdown, the stage, the notes
+        let rate = self.settings.playback_rate;
+        self.waited += dt as f64 * 1000.0 * rate;
         if !self.started && self.waited >= lead_in {
             self.song.start();
             self.started = true;
@@ -329,8 +332,10 @@ impl Playing {
             self.next_event += 1;
             let number = |value: &str| value.trim().parse::<f32>().ok();
             match event.name.as_str() {
+                // a constant scroll speed is the player's choice against exactly this
+                "Change Scroll Speed" if self.settings.scroll_type == 1 => {}
                 "Change Scroll Speed" => {
-                    let to = self.play.chart.speed as f32 * number(&event.value1).unwrap_or(1.0);
+                    let to = self.settings.note_speed(self.play.chart.speed) as f32 * number(&event.value1).unwrap_or(1.0);
                     self.speed_change = Some((self.speed, to, event.time, number(&event.value2).unwrap_or(0.0) as f64 * 1000.0));
                 }
                 "Play Sound" => self.sound(&event.value1, number(&event.value2).unwrap_or(1.0), false),
@@ -413,7 +418,7 @@ impl Playing {
             for (note, state) in self.play.chart.notes.iter().zip(&self.play.state).take_while(|(note, _)| note.time <= judged) {
                 held[note.player as usize][note.lane] |= *state == NoteState::Held;
             }
-            scene.update(dt, judged, &self.play.chart, &events, held);
+            scene.update(dt * rate as f32, judged, &self.play.chart, &events, held);
             for (path, volume) in scene.sounds.drain(..) {
                 self.song.play_sound(&path, volume, false);
             }
@@ -424,7 +429,7 @@ impl Playing {
 
         // the reset key gives up the run, unless a lane uses that key
         let reset = is_key_pressed(KeyCode::R) && !self.settings.no_reset && self.settings.lane_of(KeyCode::R).is_none() && !self.play.botplay && self.started;
-        if self.play.health <= 0.0 || reset {
+        if (self.play.health <= 0.0 || reset) && !self.settings.practice {
             self.dead = Some((0.0, None));
             self.song.pause();
             self.sound("fnf_loss_sfx", 1.0, false);
@@ -456,7 +461,8 @@ impl Playing {
             skin.centered("Enter: retry    Esc: back to the song list", HEIGHT - 30.0, 18, GRAY);
             return;
         }
-        let speed = self.speed;
+        // a faster song does not make the notes travel faster: they are spread out to match
+        let speed = self.speed / settings.playback_rate as f32;
         let strum_y = strum_y(settings);
         // notes come up from below, or with downscroll down from above
         let direction = if settings.downscroll { -1.0 } else { 1.0 };
@@ -602,7 +608,8 @@ enum Flow {
 
 enum Screen {
     Menu(Page),
-    Options(options::OptionsMenu),
+    /// The options, and the menu they were opened from.
+    Options(options::OptionsMenu, Page),
     Playing(Box<Playing>),
     /// The finished run, and whether the player survived it.
     Results(Box<Playing>, bool),
@@ -654,7 +661,7 @@ async fn main() {
         Err(error) => (None, Screen::Failed(format!("Could not load the note skin.\n{error}\nRun the game from the folder that holds \"assets\", or pass --base <folder>."))),
     };
     if flag("--options") && matches!(screen, Screen::Menu(_)) {
-        screen = Screen::Options(options::OptionsMenu::at(&value("--options").unwrap_or_default()));
+        screen = Screen::Options(options::OptionsMenu::at(&value("--options").unwrap_or_default()), Page::Main);
     }
     if let (Some(wanted), Screen::Menu(_)) = (value("--play"), &screen) {
         // compared as file names are, so that spaces, hyphens and capitals do not matter
@@ -692,7 +699,8 @@ async fn main() {
             Screen::Menu(page) => match skin.as_ref().map(|skin| menus.run(page, skin, &weeks, &songs, &save, settings.flashing)) {
                 Some(Go::Stay) => Screen::Menu(page),
                 Some(Go::Page(page)) => Screen::Menu(page),
-                Some(Go::Options) => Screen::Options(Default::default()),
+                Some(Go::Options) => Screen::Options(Default::default(), Page::Main),
+                Some(Go::Changers) => Screen::Options(options::OptionsMenu::at("Gameplay Changers"), page),
                 Some(Go::Play(mut list, week)) => {
                     menus.quiet();
                     let entry = &songs[list.remove(0)];
@@ -701,12 +709,12 @@ async fn main() {
                 }
                 Some(Go::Quit) | None => break,
             },
-            Screen::Options(mut menu) => {
+            Screen::Options(mut menu, back) => {
                 if menu.run(&mut settings, &plain, keyboard.raw, &bindable) {
                     settings.save(&base);
-                    Screen::Menu(Page::Main)
+                    Screen::Menu(back)
                 } else {
-                    Screen::Options(menu)
+                    Screen::Options(menu, back)
                 }
             }
             Screen::Playing(mut playing) => {
@@ -724,7 +732,7 @@ async fn main() {
                     Flow::Finished => {
                         let (play, entry) = (&playing.play, &playing.entry);
                         // a run the game played itself is not the player's score
-                        if !play.botplay {
+                        if playing.settings.keeps_scores() {
                             save.record_song(&entry.title, &entry.difficulty, play.score, play.accuracy().unwrap_or(0.0));
                         }
                         match story.take() {
@@ -736,7 +744,7 @@ async fn main() {
                                 Playing::open(&base, next, &settings, start_at).map_or_else(Screen::Failed, |p| Screen::Playing(Box::new(p)))
                             }
                             Some((week, _, score)) => {
-                                if !play.botplay {
+                                if playing.settings.keeps_scores() {
                                     save.record_week(&weeks[week].file, &entry.difficulty, score + play.score);
                                 }
                                 save.save(&base);
