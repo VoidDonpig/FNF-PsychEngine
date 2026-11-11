@@ -52,10 +52,16 @@ struct LayerDef {
     centered: bool,
     /// Left out on low quality.
     detail: bool,
+    /// Its colour and opacity, how far it is turned (radians, about its middle), and how much wider and taller it is drawn.
+    tint: Color,
+    angle: f32,
+    stretch: Vec2,
+    /// The frames of its animation to play, when not all of them.
+    indices: &'static [u32],
 }
 
 fn layer(image: &'static str, x: f32, y: f32, scroll_x: f32, scroll_y: f32) -> LayerDef {
-    LayerDef { image, at: vec2(x, y), scroll: vec2(scroll_x, scroll_y), size: Size::Times(1.0), flip: false, anim: None, fps: 24.0, front: false, pixel: false, centered: false, detail: false }
+    LayerDef { image, at: vec2(x, y), scroll: vec2(scroll_x, scroll_y), size: Size::Times(1.0), flip: false, anim: None, fps: 24.0, front: false, pixel: false, centered: false, detail: false, tint: WHITE, angle: 0.0, stretch: Vec2::ONE, indices: &[] }
 }
 
 /// The backdrop of a stage, back to front. The numbers are those of source/states/stages.
@@ -188,6 +194,57 @@ fn backdrop(stage: &str, low: bool) -> Vec<LayerDef> {
     };
     layers.retain(|def| !(low && def.detail));
     layers
+}
+
+/// A name from a stage file, kept for as long as the program runs: layers name their pictures by `&'static str`.
+fn kept(name: &str) -> &'static str {
+    thread_local!(static NAMES: std::cell::RefCell<std::collections::HashSet<&'static str>> = Default::default());
+    NAMES.with(|names| {
+        let mut names = names.borrow_mut();
+        names.get(name).copied().unwrap_or_else(|| {
+            let name: &'static str = Box::leak(name.into());
+            names.insert(name);
+            name
+        })
+    })
+}
+
+/// The backdrop a stage file describes itself (its "objects", as the Haxe engine's stage editor writes them): pictures, animated
+/// pictures and plain squares, in the order they are drawn. What comes after the three characters is drawn over them.
+// shortcut: characters are drawn together, so an object listed between two of them is drawn behind all three; flipY, colour
+// names and the story-mode/freeplay filters are not read. Add them when a stage needs them.
+fn objects(stage: &Value, low: bool) -> Vec<LayerDef> {
+    let list = stage["objects"].as_array().map_or(&[][..], Vec::as_slice);
+    let is_character = |object: &Value| matches!(object["type"].as_str(), Some("gf" | "gfGroup" | "dad" | "dadGroup" | "boyfriend" | "boyfriendGroup"));
+    let last_character = list.iter().rposition(is_character);
+    let number = |value: &Value, or: f32| value.as_f64().map_or(or, |n| n as f32);
+    let pair = |value: &Value, or: f32| vec2(number(&value[0], or), number(&value[1], or));
+    list.iter().enumerate().filter_map(|(place, object)| {
+        let kind = object["type"].as_str().filter(|kind| ["square", "sprite", "animatedSprite"].contains(kind))?;
+        // 1: shown on low quality, 2: shown otherwise
+        let filters = object["filters"].as_u64().unwrap_or(3);
+        if filters & if low { 1 } else { 2 } == 0 {
+            return None;
+        }
+        let mut def = layer(if kind == "square" { "" } else { kept(object["image"].as_str()?) }, number(&object["x"], 0.0), number(&object["y"], 0.0), 1.0, 1.0);
+        (def.scroll, def.stretch) = (pair(&object["scroll"], 1.0), pair(&object["scale"], 1.0));
+        (def.flip, def.pixel, def.front) = (object["flipX"] == true, object["antialiasing"] == false, last_character.is_some_and(|last| place > last));
+        let color = object["color"].as_str().and_then(|code| crate::settings::hex(code.trim_start_matches("0x")));
+        def.tint = Color { a: number(&object["alpha"], 1.0), ..color.map_or(WHITE, Color::from_hex) };
+        def.angle = number(&object["angle"], 0.0).to_radians();
+        if kind == "animatedSprite" {
+            // the animation it starts on: the one named first, else the first of the list
+            let animations = object["animations"].as_array().map_or(&[][..], Vec::as_slice);
+            let first = animations.iter().find(|animation| animation["anim"] == object["firstAnimation"]).or(animations.first())?;
+            def.anim = Some((kept(first["name"].as_str()?), if first["loop"] == true { Motion::Loop } else { Motion::Once }));
+            def.fps = number(&first["fps"], 24.0);
+            def.at -= pair(&first["offsets"], 0.0);
+            let indices: Vec<u32> = first["indices"].as_array().into_iter().flatten().filter_map(|index| Some(index.as_u64()? as u32)).collect();
+            // shortcut: kept for good each time the stage is loaded (a handful of numbers); keep them by content if stages come with many
+            def.indices = Vec::leak(indices);
+        }
+        Some(def)
+    }).collect()
 }
 
 /// The pictures of a stage as read from disk, by name and by whether their sheet was read with them.
@@ -465,6 +522,10 @@ impl Layer {
     /// `loaded` keeps the pictures read so far: layers of one picture share it.
     fn load(paths: &Paths, def: LayerDef, loaded: &mut Pictures) -> Option<Layer> {
         let key = (def.image, def.anim.is_some());
+        if def.image.is_empty() && !loaded.contains_key(&key) {
+            // a plain square: one white dot, stretched
+            loaded.insert(key, (Texture2D::from_image(&Image::gen_image_color(1, 1, WHITE)), Default::default()));
+        }
         if !loaded.contains_key(&key) {
             let image = paths.find(&format!("images/{}.png", def.image))?;
             let picture = match def.anim {
@@ -480,9 +541,9 @@ impl Layer {
         if def.pixel {
             texture.set_filter(FilterMode::Nearest);
         }
-        let frames = def.anim.map_or(Vec::new(), |(prefix, _)| crate::atlas::animation(&sheet, prefix, &[]));
+        let frames = def.anim.map_or(Vec::new(), |(prefix, _)| crate::atlas::animation(&sheet, prefix, def.indices));
         let time = if matches!(def.anim, Some((_, Motion::Once | Motion::Flash))) { 1e9 } else { 0.0 };
-        Some(Layer { def, texture, frames, sheet, time, swayed: false, tint: WHITE, angle: 0.0 })
+        Some(Layer { def, texture, frames, sheet, time, swayed: false, tint: def.tint, angle: def.angle })
     }
 
     /// Changes to another animation of its sheet, from its start.
@@ -537,13 +598,21 @@ impl Layer {
             return;
         }
         // a turned layer is drawn upright with everything turned around its middle
+        let (stretch, corner) = (self.def.stretch, at.extend(0.0));
         if self.angle != 0.0 {
-            let middle = (at + size * scale / 2.0).extend(0.0);
+            let middle = (at + size * scale * stretch / 2.0).extend(0.0);
             push_model_matrix(Mat4::from_translation(middle) * Mat4::from_rotation_z(self.angle) * Mat4::from_translation(-middle));
+        }
+        // wider or taller than it is, from its top left corner
+        if stretch != Vec2::ONE {
+            push_model_matrix(Mat4::from_translation(corner) * Mat4::from_scale(stretch.extend(1.0)) * Mat4::from_translation(-corner));
         }
         match frame {
             Some(f) => crate::atlas::draw_frame(&self.texture, self.frames[f], at.x, at.y, scale, self.def.flip, tint),
             None => draw_texture_ex(&self.texture, at.x, at.y, tint, DrawTextureParams { dest_size: Some(size * scale), flip_x: self.def.flip, ..Default::default() }),
+        }
+        if stretch != Vec2::ONE {
+            pop_model_matrix();
         }
         if self.angle != 0.0 {
             pop_model_matrix();
@@ -840,7 +909,7 @@ impl Scene {
         let stage = read_json(&Paths::new(base, source, ""), &format!("stages/{}.json", chart.stage))?;
         let paths = Paths::new(base, source, stage["directory"].as_str().unwrap_or(""));
         let mut loaded = Pictures::new();
-        let mut backdrop: Vec<Layer> = backdrop(&chart.stage, low).into_iter().filter_map(|def| Layer::load(&paths, def, &mut loaded)).collect();
+        let mut backdrop: Vec<Layer> = Some(backdrop(&chart.stage, low)).filter(|known| !known.is_empty()).unwrap_or_else(|| objects(&stage, low)).into_iter().filter_map(|def| Layer::load(&paths, def, &mut loaded)).collect();
         // what only shows when its moment comes
         for hidden in backdrop.iter_mut().filter(|layer| ["philly/window", "gore/metalPole", "gore/coldHeartKiller"].contains(&layer.def.image) || matches!(layer.def.anim, Some(("Henchmen on rail" | "henchmen death", _)))) {
             hidden.tint.a = 0.0;
@@ -1692,6 +1761,30 @@ impl Scene {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn a_stage_file_can_describe_its_own_backdrop() {
+        let stage: serde_json::Value = serde_json::from_str(r##"{"objects": [
+            {"type": "square", "x": -800, "y": -500, "scale": [3000, 1800], "scroll": [0.1, 0.2], "color": "#203060", "filters": 3},
+            {"type": "sprite", "image": "detail", "x": 1, "y": 2, "scroll": [1, 1], "angle": 90, "filters": 2},
+            {"type": "animatedSprite", "image": "crowd", "x": 300, "y": 300, "scroll": [1, 1], "flipX": true, "antialiasing": false,
+             "animations": [{"anim": "idle", "name": "crowd idle", "fps": 12, "loop": true}, {"anim": "cheer", "name": "crowd cheer", "loop": false, "offsets": [10, 20], "indices": [0, 2]}], "firstAnimation": "cheer"},
+            {"type": "gf"}, {"type": "dad"}, {"type": "boyfriend"},
+            {"type": "sprite", "image": "curtains", "x": 0, "y": 0, "scroll": [1.3, 1.3], "alpha": 0.5, "filters": 1},
+            {"type": "something else"}
+        ]}"##).unwrap();
+        let high = super::objects(&stage, false);
+        assert_eq!(high.iter().map(|def| def.image).collect::<Vec<_>>(), ["", "detail", "crowd"]);
+        let (square, detail, crowd) = (high[0], high[1], high[2]);
+        assert_eq!((square.stretch, square.scroll, square.tint), (super::vec2(3000.0, 1800.0), super::vec2(0.1, 0.2), super::Color::from_hex(0x203060)));
+        assert!((detail.angle - std::f32::consts::FRAC_PI_2).abs() < 1e-6 && !detail.front);
+        // the animation it starts on, with its offset taken off and only the frames it names
+        assert!(crowd.anim == Some(("crowd cheer", super::Motion::Once)) && crowd.at == super::vec2(290.0, 280.0) && crowd.indices == [0, 2] && crowd.flip && crowd.pixel);
+        // low quality: what is marked for it, here the one in front of the characters
+        let low = super::objects(&stage, true);
+        assert_eq!(low.iter().map(|def| (def.image, def.front, def.tint.a)).collect::<Vec<_>>(), [("", false, 1.0), ("crowd", false, 1.0), ("curtains", true, 0.5)]);
+        assert!(super::objects(&serde_json::Value::Null, false).is_empty());
+    }
+
     #[test]
     fn low_quality_leaves_out_details_only() {
         let images = |stage: &str, low: bool| super::backdrop(stage, low).into_iter().map(|def| def.image).collect::<Vec<_>>();
