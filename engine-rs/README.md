@@ -144,7 +144,7 @@ Not there yet:
 - **Play screen**: the events and note types that belong to scripts (Set Property beyond the camera, custom
   ones); the rain of weekend 1 is drawn as falling streaks, growing heavier through the song, not with the Haxe
   engine's shader; the charting mode entries of the pause menu.
-- **Menus**: the mods menu's buttons (enable, disable, move: here they are keys) and per-mod settings;
+- **Menus**: per-mod settings (the mods menu's settings button stays off);
   achievements of mods; the note colours' copy and paste buttons (no clipboard here); the key binds' gamepad
   side (no gamepads yet) and debug keys (no editors yet); the Shaders and GPU Caching switches (nothing to switch here); update check.
 - **Cutscenes**: weekend 1's;

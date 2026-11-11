@@ -229,9 +229,12 @@ impl Art {
     }
 
     /// A mod's own picture, the "pack.png" in its folder.
-    fn pack(&mut self, folder: &str) -> Option<Texture2D> {
-        let path = self.base.join("mods").join(folder).join("pack.png");
-        self.images.entry(format!("{folder}/pack.png")).or_insert_with(|| crate::atlas::picture(&path)).clone()
+    /// A mod's picture, and whether it is the pixel one (`pack-pixel.png`, drawn hard edged).
+    fn pack(&mut self, folder: &str) -> Option<(Texture2D, bool)> {
+        ["pack.png", "pack-pixel.png"].into_iter().enumerate().find_map(|(pixel, file)| {
+            let path = self.base.join("mods").join(folder).join(file);
+            self.images.entry(format!("{folder}/{file}")).or_insert_with(|| crate::atlas::picture(&path)).clone().map(|picture| (picture, pixel == 1))
+        })
     }
 
     fn sheet(&mut self, source: &str, name: &str) -> Option<Rc<Sheet>> {
@@ -365,6 +368,8 @@ struct ModRow {
     name: String,
     text: String,
     color: Vec3,
+    /// Frames a second of its picture.
+    fps: f32,
 }
 
 pub struct Menus {
@@ -416,6 +421,13 @@ pub struct Menus {
     mods: Vec<ModRow>,
     mod_row: usize,
     mods_changed: bool,
+    /// The mods menu: the row in the middle of the list, the button chosen with the keys (none: the list), the one the
+    /// mouse is on, whether the selected mod is being dragged, when to look for mods again.
+    mod_center: usize,
+    mod_focus: Option<i32>,
+    mod_hover: Option<i32>,
+    mod_dragging: bool,
+    mods_scan: f64,
     /// The mods were switched or moved: the weeks and songs have to be found again.
     pub reload: bool,
     /// The player's choice on flashing lights: without them nothing flashes or blinks.
@@ -523,7 +535,7 @@ impl Menus {
             art, look: None, letters: String::new(), secret: None, jingle: None, fade: None, hue: 0.0,
             alphabet: Alphabet::load(&paths), paths, audio: None, music_at: 0.0, intro: true, wacky: [wacky.0.to_owned(), wacky.1.to_owned()], flash: (f64::MIN, 1.0), chosen: None,
             main_row: 0, main_side: 0, main_slide: 0.0, main_spots: Vec::new(), main_pointed: false, week: 0, week_scroll: 0.0, difficulty: "Normal".to_owned(), rows: Vec::new(), song: 0, song_scroll: 0.0, tint: Vec3::ONE, shown: (0.0, 0.0),
-            credits: Vec::new(), credit: 0, credit_scroll: 0.0, mods: Vec::new(), mod_row: 0, mods_changed: false, reload: false, flashing: true, achievement: 0, achievement_scroll: 0.0, chime: false, held: 0.0, preview: false, asking: None, player: Player::default(), restart: false,
+            credits: Vec::new(), credit: 0, credit_scroll: 0.0, mods: Vec::new(), mod_row: 0, mods_changed: false, mod_center: 2, mod_focus: None, mod_hover: None, mod_dragging: false, mods_scan: 0.0, reload: false, flashing: true, achievement: 0, achievement_scroll: 0.0, chime: false, held: 0.0, preview: false, asking: None, player: Player::default(), restart: false,
         }
     }
 
@@ -1386,117 +1398,306 @@ impl Menus {
         Go::Stay
     }
 
+    /// Moves the selected mod to row `to`: mods higher up are looked in first.
+    fn move_mod(&mut self, to: usize) {
+        if to == self.mod_row || to >= self.mods.len() {
+            return;
+        }
+        self.restart |= self.mods[self.mod_row].restart || self.mods[to].restart;
+        let moved = self.mods.remove(self.mod_row);
+        self.mods.insert(to, moved);
+        (self.mod_row, self.mods_changed) = (to, true);
+        self.mod_center = self.mod_center.clamp(to.saturating_sub(2), to + 2);
+        self.sound("scrollMenu", 0.6);
+    }
+
     fn mods_menu(&mut self, skin: &Skin) -> Go {
         let dt = get_frame_time().min(0.1);
         let base = self.art.base.clone();
-        if self.mods.is_empty() {
+        // with none found, the folder is looked at again every second
+        if self.mods.is_empty() && get_time() >= self.mods_scan {
+            self.mods_scan = get_time() + 1.0;
             for (folder, on) in find_mods(&base) {
                 let pack: serde_json::Value = std::fs::read_to_string(base.join("mods").join(&folder).join("pack.json")).ok().and_then(|text| serde_json::from_str(&text).ok()).unwrap_or_default();
                 let text = |key: &str, or: &str| pack[key].as_str().filter(|text| !text.trim().is_empty()).unwrap_or(or).to_owned();
-                let color = [0, 1, 2].map(|i| pack["color"][i].as_f64().map(|c| c as f32 / 255.0));
-                let color = if color.contains(&None) { vec3(0.4, 0.353, 1.0) } else { Vec3::from(color.map(Option::unwrap_or_default)) };
-                self.mods.push(ModRow { name: text("name", &folder), text: text("description", "No description provided."), color, restart: pack["restart"] == true, folder, on });
+                let color = match pack["color"].as_array() {
+                    Some(color) => Vec3::from([(0, 170.0), (1, 0.0), (2, 255.0)].map(|(i, or)| color.get(i).and_then(|c| c.as_f64()).unwrap_or(or) as f32 / 255.0)),
+                    None => vec3(0.4, 0.353, 1.0),
+                };
+                let fps = pack["iconFramerate"].as_f64().unwrap_or(10.0) as f32;
+                self.mods.push(ModRow { name: text("name", &folder), text: text("description", "No description provided."), color, restart: pack["restart"] == true, fps, folder, on });
             }
             self.mod_row = self.mod_row.min(self.mods.len().saturating_sub(1));
+            self.mod_center = self.mod_center.clamp(self.mod_row.saturating_sub(2), self.mod_row + 2);
         }
-        let panel = Color::new(0.0, 0.0, 0.0, 0.6);
-        if self.mods.is_empty() {
-            self.backdrop(vec3(0.4, 0.353, 1.0), dt);
-            draw_rectangle(40.0, 40.0, 340.0, 440.0, panel);
-            label(skin, &phrase("no_mods_found", "No Mods found."), 55.0, 55.0, 16, WHITE, false);
-            for (row, line) in phrase("no_mods_installed", "NO MODS INSTALLED\nPRESS BACK TO EXIT OR INSTALL A MOD").lines().enumerate() {
-                label(skin, line, 400.0 + (860.0 - measure_text(line, skin.font.as_ref(), 32, 1.0).width) / 2.0, 320.0 + row as f32 * 40.0, 32, WHITE, false);
-            }
-            return if pressed(&BACK) { Go::Page(Page::Main) } else { Go::Stay };
-        }
-
         let count = self.mods.len();
-        // a click picks a row of the list, whose middle row is the selected mod; the wheel goes through it like Up and Down
+        let leaving = pressed(&BACK) && self.mod_focus.is_none();
         let point = mouse();
-        let clicked = if is_mouse_pressed() && (45.0..375.0).contains(&point.x) && (45.0..475.0).contains(&point.y) { ((point.y - 45.0) / 86.0) as i64 - 2 } else { 0 };
-        let row = self.mod_row as i64 + clicked;
-        let clicked = if (0..count as i64).contains(&row) { clicked } else { 0 };
-        let off = pressed(&DOWN) as i64 - pressed(&UP) as i64 + wheel_steps() as i64;
-        let step = (off + clicked).rem_euclid(count as i64) as usize;
-        if step != 0 {
-            let next = (self.mod_row + step) % count;
-            // with Shift the selected mod moves through the list: mods higher up are looked in first
-            if clicked == 0 && (is_key_down(KeyCode::LeftShift) || is_key_down(KeyCode::RightShift)) {
-                let moved = self.mods.remove(self.mod_row);
-                self.restart |= moved.restart;
-                self.mods.insert(next, moved);
-                self.mods_changed = true;
-            }
-            self.mod_row = next;
-            self.sound("scrollMenu", 0.6);
+        let clicked = is_mouse_pressed();
+        let shift = is_key_down(KeyCode::LeftShift) || is_key_down(KeyCode::RightShift);
+        // the buttons: reload, all on or all off, and the selected mod's: to the top, up, down, its settings, on/off
+        let all_on = self.mods.iter().all(|row| row.on);
+        let enabled = |button: i32| match button {
+            0..=2 => count > 1,
+            // shortcut: no mod settings page yet (they are read by Lua scripts, which do not run here either)
+            3 => false,
+            4 => count > 0,
+            _ => true,
+        };
+        let spot = |button: i32| match button {
+            -2 => (vec2(40.0, 500.0), vec2(340.0, 80.0)),
+            -1 => (vec2(40.0, 600.0), vec2(340.0, 80.0)),
+            _ => (vec2(720.0 + 100.0 * button as f32, 600.0), vec2(80.0, 80.0)),
+        };
+        let pointed = (-2..5).find(|&button| (button < 0 || count > 0) && enabled(button) && on(point, spot(button).0, spot(button).1));
+        if mouse_moved() || clicked {
+            self.mod_hover = pointed;
         }
-        let (shift, control) = (is_key_down(KeyCode::LeftShift) || is_key_down(KeyCode::RightShift), is_key_down(KeyCode::LeftControl) || is_key_down(KeyCode::RightControl));
-        if shift && is_key_pressed(KeyCode::Home) {
-            // to the top of the list: looked in before all others
-            let moved = self.mods.remove(self.mod_row);
-            self.restart |= moved.restart;
-            self.mods.insert(0, moved);
-            (self.mod_row, self.mods_changed) = (0, true);
-            self.sound("scrollMenu", 0.6);
-        } else if control && pressed(&ACCEPT) {
-            // all on; or, when they all are, all off
-            let on = !self.mods.iter().all(|row| row.on);
-            self.restart |= self.mods.iter().any(|row| row.restart && row.on != on);
-            self.mods.iter_mut().for_each(|row| row.on = on);
-            self.mods_changed = true;
-            self.sound("scrollMenu", 0.6);
-        } else if pressed(&ACCEPT) {
-            self.mods[self.mod_row].on ^= true;
-            self.restart |= self.mods[self.mod_row].restart;
-            self.mods_changed = true;
-            self.sound("scrollMenu", 0.6);
-        }
+        // the list shows five rows at once, the selected one always among them
+        let (first, last) = (self.mod_center.saturating_sub(2), (self.mod_center + 2).max(4));
+        let row_at = |index: usize, center: usize| vec2(45.0, 45.0 + 86.0 * (index as f32 - center as f32 + 2.0));
+        let row_pointed = (first..=last.min(count.saturating_sub(1))).find(|&index| count > 0 && on(point, row_at(index, self.mod_center), vec2(330.0, 85.0)));
 
-        self.backdrop(self.mods[self.mod_row].color, dt);
-        let icon = |art: &mut Art, folder: &str, x: f32, y: f32, size: f32, alpha: f32| {
-            if let Some(picture) = art.pack(folder).or_else(|| art.own("unknownMod")) {
-                // a pack picture may hold several frames of 150 px; the first is shown
-                let params = DrawTextureParams { dest_size: Some(vec2(size, size)), source: Some(Rect::new(0.0, 0.0, picture.width().min(150.0), picture.height().min(150.0))), ..Default::default() };
-                draw_texture_ex(&picture, x, y, white(alpha), params);
+        let mut press: Option<i32> = None;
+        let select = |menus: &mut Menus, row: usize| {
+            if row != menus.mod_row {
+                menus.sound("scrollMenu", 0.6);
+            }
+            menus.mod_row = row;
+            if menus.mod_row.abs_diff(menus.mod_center) > 2 {
+                menus.mod_center = if menus.mod_center < menus.mod_row { menus.mod_row - 2 } else { menus.mod_row + 2 };
             }
         };
-        // the list, with the selected mod on its middle row
-        draw_rectangle(40.0, 40.0, 340.0, 440.0, panel);
-        for (index, row) in self.mods.iter().enumerate() {
-            let slot = index as i64 - self.mod_row as i64 + 2;
-            if !(0..5).contains(&slot) {
-                continue;
+        if clicked {
+            if let Some(button) = pointed {
+                press = Some(button);
+            } else if let Some(row) = row_pointed {
+                self.mod_focus = None;
+                select(self, row);
+                self.mod_dragging = false;
             }
-            let (y, alpha) = (45.0 + 86.0 * slot as f32, if row.on { 1.0 } else { 0.4 });
-            if index == self.mod_row {
-                draw_rectangle(45.0, y, 330.0, 85.0, white(0.25));
-            }
-            icon(&mut self.art, &row.folder, 50.0, y + 5.0, 75.0, alpha);
-            let name: String = row.name.chars().take(22).collect();
-            label(skin, &name, 140.0, y + 22.0, 16, white(alpha), false);
-            label(skin, if row.on { "ON" } else { "OFF" }, 140.0, y + 46.0, 16, if row.on { GREEN } else { GRAY }, false);
         }
-        for (line, text) in ["Enter: on/off", "Ctrl+Enter: all on, or all off", "Shift+Up/Down: move up or down", "Shift+Home: move to the top", "Esc: save and go back"].iter().enumerate() {
-            label(skin, text, 55.0, 500.0 + line as f32 * 24.0, 16, WHITE, false);
+        match self.mod_focus {
+            _ if count == 0 => {
+                if pressed(&ACCEPT) {
+                    press = Some(-2);
+                }
+            }
+            None => {
+                let reach = if shift { 4 } else { 1 };
+                let held = |menus: &mut Menus| {
+                    let before = menus.held;
+                    menus.held += dt;
+                    menus.held > 0.5 && (before * 8.0).floor() != (menus.held * 8.0).floor()
+                };
+                let steps = if pressed(&DOWN) {
+                    self.held = 0.0;
+                    reach
+                } else if pressed(&UP) {
+                    self.held = 0.0;
+                    -reach
+                } else if wheel_steps() != 0 {
+                    wheel_steps() * reach
+                } else if crate::controls::down(UP) || crate::controls::down(DOWN) {
+                    if held(self) { if crate::controls::down(UP) { -reach } else { reach } } else { 0 }
+                } else {
+                    0
+                };
+                let wanted = self.mod_row as i64 + steps as i64;
+                if is_key_pressed(KeyCode::Home) {
+                    select(self, 0);
+                } else if is_key_pressed(KeyCode::End) {
+                    select(self, count - 1);
+                } else if steps.abs() == 1 && !(0..count as i64).contains(&wanted) && wheel_steps() == 0 {
+                    // Up past the first goes to the buttons under the list, and Down past the last to its top one
+                    self.mod_focus = Some(if steps < 0 { -1 } else { -2 });
+                    self.sound("scrollMenu", 0.6);
+                } else if steps != 0 {
+                    select(self, wanted.clamp(0, count as i64 - 1) as usize);
+                } else if pressed(&RIGHT) {
+                    self.mod_focus = Some(0);
+                    self.sound("scrollMenu", 0.6);
+                } else if pressed(&ACCEPT) {
+                    press = Some(4);
+                }
+                // the selected mod dragged onto another row takes its place
+                if is_mouse_down() && !clicked && mouse_moved() && row_pointed == Some(self.mod_row) {
+                    self.mod_dragging = true;
+                }
+                if !is_mouse_down() {
+                    self.mod_dragging = false;
+                } else if let Some(row) = row_pointed.filter(|&row| self.mod_dragging && row != self.mod_row) {
+                    self.move_mod(row);
+                }
+            }
+            Some(button) => {
+                let moved = if button < 0 && pressed(&UP) {
+                    Some(if button == -2 { None } else { Some(-2) })
+                } else if button < 0 && pressed(&DOWN) {
+                    Some(if button == -2 { Some(-1) } else { None })
+                } else if button < 0 && pressed(&RIGHT) {
+                    Some(Some(0))
+                } else if button >= 0 && pressed(&LEFT) {
+                    Some(Some(button - 1))
+                } else if button >= 0 && pressed(&RIGHT) {
+                    Some(Some((button + 1).min(4)))
+                } else {
+                    None
+                };
+                if pressed(&BACK) {
+                    self.mod_focus = None;
+                    self.sound("scrollMenu", 0.6);
+                } else if pressed(&ACCEPT) {
+                    press = Some(button);
+                } else if let Some(moved) = moved {
+                    if moved.is_none() {
+                        select(self, 0);
+                    }
+                    self.mod_focus = moved;
+                    self.sound("scrollMenu", 0.6);
+                }
+            }
+        }
+        match press.filter(|&button| enabled(button) || button < 0) {
+            Some(-2) => {
+                // saved, and everything looked at again
+                let list: Vec<(String, bool)> = self.mods.iter().map(|row| (row.folder.clone(), row.on)).collect();
+                if self.mods_changed {
+                    if let Err(error) = save_mods(&base, &list) {
+                        eprintln!("Could not save modsList.txt: {error}");
+                    }
+                }
+                // (the order kept, the selected mod stays selected)
+                (self.mods, self.mods_scan) = (Vec::new(), 0.0);
+                self.sound("scrollMenu", 0.6);
+                return Go::Stay;
+            }
+            Some(-1) => {
+                self.restart |= self.mods.iter().any(|row| row.restart && row.on == all_on);
+                self.mods.iter_mut().for_each(|row| row.on = !all_on);
+                self.mods_changed = true;
+                self.sound("scrollMenu", 0.6);
+            }
+            Some(button @ 0..=2) => {
+                let to = [0, self.mod_row as i64 - 1, self.mod_row as i64 + 1][button as usize];
+                // past either end, round to the other
+                self.move_mod(if to < 0 { count - 1 } else if to >= count as i64 { 0 } else { to as usize });
+            }
+            Some(4) => {
+                self.mods[self.mod_row].on ^= true;
+                self.restart |= self.mods[self.mod_row].restart;
+                self.mods_changed = true;
+                self.sound("scrollMenu", 0.6);
+            }
+            _ => {}
+        }
+
+        // drawing
+        let panel = Color::new(0.0, 0.0, 0.0, 0.6);
+        self.backdrop(self.mods.get(self.mod_row).map_or(vec3(0.4, 0.353, 1.0), |row| row.color), dt);
+        let (focus, hover) = (self.mod_focus, self.mod_hover);
+        let focused = |button: i32| focus == Some(button) || hover == Some(button);
+        let draw_button = |menus: &mut Menus, button: i32| {
+            let (at, size) = spot(button);
+            let (lit, usable) = (focused(button), enabled(button) || button < 0);
+            let idle = match button {
+                -1 if all_on => Color::new(1.0, 0.4, 0.4, 0.6),
+                -1 => Color::new(0.0, 1.0, 0.0, 0.6),
+                4 if menus.mods.get(menus.mod_row).is_some_and(|row| row.on) => Color::new(0.0, 1.0, 0.0, 0.6),
+                4 => Color::new(1.0, 0.4, 0.4, 0.6),
+                _ => panel,
+            };
+            let mut bg = if lit && usable { Color::new(1.0, 1.0, 1.0, 0.8) } else { idle };
+            if !usable {
+                bg.a *= 0.4;
+            }
+            draw_rectangle(at.x, at.y, size.x, size.y, bg);
+            let alpha = if !usable { 0.4 } else if lit { 1.0 } else { 0.6 };
+            let middle = at + size / 2.0;
+            if button < 0 {
+                let name = match button {
+                    -2 => phrase("reload_button", "RELOAD"),
+                    _ if all_on => phrase("disable_all_button", "DISABLE ALL"),
+                    _ => phrase("enable_all_button", "ENABLE ALL"),
+                };
+                // plain letters while focused, bold ones otherwise
+                let (bold, scale, height) = if lit { (false, 0.6, 78.0) } else { (true, 0.52, 35.0) };
+                push_model_matrix(Mat4::from_translation(vec3(middle.x - menus.width(skin, &name, bold) * scale / 2.0, middle.y - height * scale, 0.0)) * Mat4::from_scale(vec3(scale, scale, 1.0)));
+                menus.write(skin, &name, bold, 0.0, 0.0, 1.0, alpha);
+                pop_model_matrix();
+            } else if let Some(icons) = menus.art.own("modsMenuButtons") {
+                let tint = if lit && usable { Color::new(0.0, 0.0, 0.0, alpha) } else { white(alpha) };
+                let params = DrawTextureParams { source: Some(Rect::new(54.0 * button as f32, 0.0, 54.0, 54.0)), ..Default::default() };
+                draw_texture_ex(&icons, middle.x - 27.0, middle.y - 27.0, tint, params);
+            }
+        };
+        draw_rectangle(40.0, 40.0, 340.0, 440.0, panel);
+        for button in [-2, -1] {
+            draw_button(self, button);
+        }
+        if count == 0 {
+            label(skin, &phrase("no_mods_found", "No Mods found."), 55.0, 55.0, 16, WHITE, false);
+            let pulse = 1.0 - (get_time() as f32 * std::f32::consts::PI).sin();
+            for (row, line) in phrase("no_mods_installed", "NO MODS INSTALLED\nPRESS BACK TO EXIT OR INSTALL A MOD").lines().enumerate() {
+                label(skin, line, 400.0 + (860.0 - measure_text(line, skin.font.as_ref(), 32, 1.0).width) / 2.0, 320.0 + row as f32 * 40.0, 32, white(pulse.clamp(0.0, 1.0)), false);
+            }
+            return if leaving { Go::Page(Page::Main) } else { Go::Stay };
+        }
+
+        // a pack picture is frames of 150 px played at the pack's speed
+        let icon = |art: &mut Art, row: &ModRow, x: f32, y: f32, size: f32, tint: Color| {
+            let (picture, pixel) = match art.pack(&row.folder) {
+                Some(found) => found,
+                None => match art.own("unknownMod") {
+                    Some(picture) => (picture, false),
+                    None => return,
+                },
+            };
+            let (across, down) = ((picture.width() / 150.0).floor().max(1.0), (picture.height() / 150.0).floor().max(1.0));
+            let frame = (get_time() as f32 * row.fps) as usize % (across * down) as usize;
+            let source = Rect::new((frame % across as usize) as f32 * 150.0, (frame / across as usize) as f32 * 150.0, picture.width().min(150.0), picture.height().min(150.0));
+            picture.set_filter(if pixel { FilterMode::Nearest } else { FilterMode::Linear });
+            draw_texture_ex(&picture, x, y, tint, DrawTextureParams { dest_size: Some(vec2(size, size)), source: Some(source), ..Default::default() });
+        };
+        for index in first..=last.min(count - 1) {
+            let mut at = row_at(index, self.mod_center);
+            if index == self.mod_row && self.mod_dragging {
+                at = point - vec2(165.0, 42.0);
+            }
+            let row = &self.mods[index];
+            let alpha = if index == self.mod_row { 1.0 } else { 0.6 };
+            if index == self.mod_row && self.mod_focus.is_none() {
+                draw_rectangle(at.x, at.y, 330.0, 85.0, white(0.8));
+            }
+            let (tint, words) = if row.on { (white(alpha), white(alpha)) } else { (Color::new(1.0, 0.4, 0.4, alpha), Color::new(0.5, 0.5, 0.5, alpha)) };
+            icon(&mut self.art, row, at.x + 5.0, at.y + 5.0, 75.0, tint);
+            let name: String = row.name.chars().take(26).collect();
+            label(skin, &name, at.x + 95.0, at.y + 34.0, 16, words, false);
         }
 
         let row = &self.mods[self.mod_row];
         draw_rectangle(400.0, 40.0, 840.0, 180.0, panel);
-        icon(&mut self.art, &row.folder, 415.0, 55.0, 150.0, 1.0);
+        icon(&mut self.art, row, 415.0, 55.0, 150.0, WHITE);
         let width = self.width(skin, &row.name, true);
-        self.write(skin, &row.name, true, 580.0, 95.0, (640.0 / width).min(1.0), 1.0);
-        draw_rectangle(400.0, 240.0, 840.0, 450.0, panel);
+        let scale = (620.0 / width).min(0.8);
+        push_model_matrix(Mat4::from_translation(vec3(580.0, 135.0 - 70.0 * (scale * 1.35).min(0.8) / 2.0, 0.0)) * Mat4::from_scale(vec3(scale, (scale * 1.35).min(0.8), 1.0)));
+        self.write(skin, &row.name, true, 0.0, 0.0, 1.0, 1.0);
+        pop_model_matrix();
+        draw_rectangle(400.0, 240.0, 840.0, 350.0, panel);
         let measure = |text: &str| measure_text(text, skin.font.as_ref(), 24, 1.0).width;
-        for (line, text) in wrap(&row.text, 810.0, measure).iter().take(14).enumerate() {
+        for (line, text) in wrap(&row.text, 810.0, measure).iter().take(11).enumerate() {
             label(skin, text, 415.0, 255.0 + line as f32 * 28.0, 24, WHITE, false);
         }
         if row.restart {
-            label(skin, "* Moving or Toggling On/Off this Mod will restart the game.", 415.0, 660.0, 16, WHITE, false);
-        } else {
-            label(skin, "Mods higher in the list are looked in first. Changes take effect when you go back.", 415.0, 660.0, 16, GRAY, false);
+            label(skin, &phrase("mod_restart", "* Moving or Toggling On/Off this Mod will restart the game."), 1225.0, 565.0, 16, WHITE, true);
+        }
+        let lit = self.mod_focus.is_some_and(|button| button >= 0);
+        draw_rectangle(400.0, 590.0, 840.0, 100.0, if lit { white(0.8) } else { Color::new(0.0, 0.0, 0.0, 0.2) });
+        for button in 0..5 {
+            draw_button(self, button);
         }
 
-        if pressed(&BACK) {
+        if leaving {
             self.sound("cancelMenu", 1.0);
             if self.mods_changed {
                 let list: Vec<(String, bool)> = self.mods.iter().map(|row| (row.folder.clone(), row.on)).collect();

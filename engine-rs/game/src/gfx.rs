@@ -39,7 +39,6 @@ pub const WHITE: Color = Color::new(1.0, 1.0, 1.0, 1.0);
 pub const BLACK: Color = Color::new(0.0, 0.0, 0.0, 1.0);
 pub const GRAY: Color = Color::new(0.51, 0.51, 0.51, 1.0);
 pub const RED: Color = Color::new(0.90, 0.16, 0.22, 1.0);
-pub const GREEN: Color = Color::new(0.0, 0.89, 0.19, 1.0);
 pub const ORANGE: Color = Color::new(1.0, 0.63, 0.0, 1.0);
 
 #[derive(Clone, Copy, Debug, Default, PartialEq)]
