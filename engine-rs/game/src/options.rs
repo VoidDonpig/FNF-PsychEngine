@@ -58,6 +58,12 @@ fn change(kind: &Kind, settings: &mut Settings, steps: f64) {
     }
 }
 
+/// Which of `languages` (file, name) is chosen `steps` on from the one in `file`. A language that is gone counts as the game's own.
+fn next_language(languages: &[(String, String)], file: &str, steps: usize) -> usize {
+    let at = |file: &str| languages.iter().position(|(known, _)| known == file);
+    (at(file).or(at(funkin_core::lang::ENGLISH.0)).unwrap_or(0) + steps) % languages.len().max(1)
+}
+
 impl OptionsMenu {
     /// Opened at the page of that name, if there is one.
     pub fn at(page: &str) -> OptionsMenu {
@@ -85,15 +91,14 @@ impl OptionsMenu {
             for index in 0..PAGES.len() {
                 line(index, self.row, &named(index), 150.0 + index as f32 * 30.0);
             }
-            let spoken = languages.iter().position(|(file, _)| *file == settings.language).unwrap_or(0);
-            let language = languages.get(spoken).map_or(settings.language.as_str(), |(_, name)| name);
+            let language = languages.get(next_language(languages, &settings.language, 0)).map_or(settings.language.as_str(), |(_, name)| name);
             line(PAGES.len(), self.row, &format!("{}: {language}", phrase("options_language", "Language")), 160.0 + PAGES.len() as f32 * 30.0);
-            let turn = pressed(Ui::Right) as usize + pressed(Ui::Left) as usize * (languages.len().max(1) - 1);
+            let turn = pressed(Ui::Right) as usize + pressed(Ui::Accept) as usize + pressed(Ui::Left) as usize * (languages.len().max(1) - 1);
             if self.row < PAGES.len() {
                 if pressed(Ui::Accept) {
                     (self.page, self.row) = (Some(self.row), 0);
                 }
-            } else if let Some((file, _)) = languages.get((spoken + turn + pressed(Ui::Accept) as usize) % languages.len().max(1)) {
+            } else if let Some((file, _)) = languages.get(next_language(languages, &settings.language, turn)).filter(|_| turn != 0) {
                 settings.language = file.clone();
             }
             return back;
@@ -262,6 +267,15 @@ mod tests {
         assert_eq!(shown(option("playback_rate"), &mut settings), "1.50X");
         change(option("rating_y"), &mut settings, -2.0);
         assert_eq!((settings.combo_offset, shown(option("rating_y"), &mut settings).as_str()), ([0.0, -10.0, 0.0, 0.0], "-10 px"));
+    }
+
+    #[test]
+    fn a_language_that_is_gone_counts_as_english() {
+        let languages: Vec<(String, String)> = [("de", "Deutsch"), ("en-US", "English (US)"), ("pt-BR", "Português (Brasil)")].map(|(file, name)| (file.to_owned(), name.to_owned())).into();
+        assert_eq!([0, 1, 2].map(|steps| next_language(&languages, "pt-BR", steps)), [2, 0, 1]);
+        // its mod was switched off: English is shown, and nothing changes until a key is pressed
+        assert_eq!((next_language(&languages, "fr", 0), next_language(&languages, "fr", 1)), (1, 2));
+        assert_eq!(next_language(&[], "fr", 1), 0);
     }
 
     #[test]

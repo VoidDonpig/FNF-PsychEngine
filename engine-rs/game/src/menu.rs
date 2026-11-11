@@ -2,7 +2,7 @@
 use crate::atlas::{draw_frame, Frame, Sheet};
 use crate::audio::Song;
 use crate::{Skin, HEIGHT, WIDTH};
-use funkin_core::content::{mods as find_mods, save_mods, song_path, Paths, SongEntry, Week};
+use funkin_core::content::{mods as find_mods, save_mods, song_path, top_mod, Paths, SongEntry, Week};
 use funkin_core::achievements::{LIST as ACHIEVEMENTS, ROADKILL};
 use funkin_core::save::Save;
 use funkin_core::lang::{phrase, phrase_with};
@@ -179,7 +179,7 @@ struct MenuCharacter {
 /// Pictures of the menus, read from disk the first time they are shown.
 struct Art {
     base: PathBuf,
-    /// The first mod switched on: the menus look in it before the game's own files, as a song looks in its mod.
+    /// The first mod switched on: the menus' own pictures are looked for in it before the game's files.
     top: String,
     images: HashMap<String, Option<Texture2D>>,
     sheets: HashMap<String, Option<Rc<Sheet>>>,
@@ -188,17 +188,25 @@ struct Art {
 
 impl Art {
     fn new(base: &Path) -> Art {
-        let top = find_mods(base).into_iter().find(|(_, on)| *on).map_or(String::new(), |(name, _)| name);
-        Art { base: base.to_path_buf(), top, images: HashMap::new(), sheets: HashMap::new(), characters: HashMap::new() }
+        Art { base: base.to_path_buf(), top: top_mod(base), images: HashMap::new(), sheets: HashMap::new(), characters: HashMap::new() }
     }
 
     /// The picture "images/<name>.png" of a mod (`source`) or of the game.
     fn image(&mut self, source: &str, name: &str) -> Option<Texture2D> {
-        let (base, source) = (&self.base, if source.is_empty() { &self.top } else { source });
+        let base = &self.base;
         self.images.entry(format!("{source}/{name}")).or_insert_with(|| {
             let path = Paths::new(base, source, "").find(&format!("images/{name}.png"))?;
             crate::atlas::picture(&path)
         }).clone()
+    }
+
+    /// A picture of the menus themselves (not of a week or a song, which bring their own mod).
+    fn own(&mut self, name: &str) -> Option<Texture2D> {
+        self.image(&self.top.clone(), name)
+    }
+
+    fn own_sheet(&mut self, name: &str) -> Option<Rc<Sheet>> {
+        self.sheet(&self.top.clone(), name)
     }
 
     /// A mod's own picture, the "pack.png" in its folder.
@@ -208,7 +216,7 @@ impl Art {
     }
 
     fn sheet(&mut self, source: &str, name: &str) -> Option<Rc<Sheet>> {
-        let (base, source) = (&self.base, if source.is_empty() { &self.top } else { source });
+        let base = &self.base;
         self.sheets.entry(format!("{source}/{name}")).or_insert_with(|| {
             let path = Paths::new(base, source, "").find(&format!("images/{name}.png"))?;
             Sheet::load(&path).map_err(|e| eprintln!("{e}")).ok().map(Rc::new)
@@ -601,7 +609,7 @@ impl Menus {
     /// The menu background in a colour that follows `target`.
     fn backdrop(&mut self, target: Vec3, dt: f32) {
         self.tint += (target - self.tint) * (1.0 - (-dt * 5.0).exp());
-        if let Some(picture) = self.art.image("", "menuDesat") {
+        if let Some(picture) = self.art.own("menuDesat") {
             draw_texture(&picture, (WIDTH - picture.width()) / 2.0, (HEIGHT - picture.height()) / 2.0, Color::new(self.tint.x, self.tint.y, self.tint.z, 1.0));
         }
     }
@@ -692,7 +700,7 @@ impl Menus {
             for (row, line) in lines.iter().enumerate() {
                 self.write(skin, line, true, (WIDTH - self.width(skin, line, true)) / 2.0, row as f32 * 60.0 + 200.0 + shift, 1.0, 1.0);
             }
-            if let Some(picture) = self.art.image("", "newgrounds_logo").filter(|_| logo) {
+            if let Some(picture) = self.art.own("newgrounds_logo").filter(|_| logo) {
                 let size = picture.size() * 0.8;
                 draw_texture_ex(&picture, (WIDTH - size.x) / 2.0, HEIGHT * 0.52, WHITE, DrawTextureParams { dest_size: Some(size), ..Default::default() });
             }
@@ -700,6 +708,8 @@ impl Menus {
         }
 
         clear_background(BLACK);
+        // the achievement a jingle ends with, reported once this frame is drawn
+        let mut found = None;
         if let Some((since, wait)) = self.jingle {
             if now - since >= wait {
                 self.jingle = None;
@@ -707,15 +717,13 @@ impl Menus {
                     self.flash = (now, 0.6);
                 } else {
                     self.music_again();
-                    if egg == "PESSY" {
-                        return Go::Unlock("pessy_easter_egg");
-                    }
+                    found = (egg == "PESSY").then_some("pessy_easter_egg");
                 }
             } else if egg == "SHADOW" {
                 return Go::Stay;
             }
         }
-        if let Some(picture) = Some(&look.background).filter(|name| !name.is_empty()).and_then(|name| self.art.image("", name)) {
+        if let Some(picture) = Some(&look.background).filter(|name| !name.is_empty()).and_then(|name| self.art.own(name)) {
             draw_texture(&picture, 0.0, 0.0, WHITE);
         }
         // the dancer and the logo take the colours the player has turned them to
@@ -723,7 +731,7 @@ impl Menus {
             self.hue += get_frame_time() * 0.1 * (crate::controls::down(RIGHT) as i8 - crate::controls::down(LEFT) as i8) as f32;
         }
         recolor(Some(turned(self.hue)).filter(|_| self.hue != 0.0));
-        if let Some(sheet) = self.art.sheet("", look.image) {
+        if let Some(sheet) = self.art.own_sheet(look.image) {
             let frame = if look.idle {
                 // one bump over every two beats
                 once(&sheet.animation(&look.animation, &[]), beat % 2.0 * 60.0 / look.bpm)
@@ -735,13 +743,13 @@ impl Menus {
                 sheet.draw(frame, look.dancer.0, look.dancer.1, 1.0, false, WHITE);
             }
         }
-        if let Some(sheet) = self.art.sheet("", "logoBumpin") {
+        if let Some(sheet) = self.art.own_sheet("logoBumpin") {
             if let Some(frame) = once(&sheet.animation("logo bumpin", &[]), in_beat) {
                 sheet.draw(frame, look.logo.0, look.logo.1, 1.0, false, WHITE);
             }
         }
         recolor(None);
-        if let Some(sheet) = self.art.sheet("", "titleEnter") {
+        if let Some(sheet) = self.art.own_sheet("titleEnter") {
             // waiting, the words breathe between two blues over two seconds
             let wave = (now % 2.0 - 1.0).abs() as f32;
             let eased = if wave < 0.5 { 2.0 * wave * wave } else { 1.0 - 2.0 * (1.0 - wave) * (1.0 - wave) };
@@ -756,6 +764,9 @@ impl Menus {
         if let Some(since) = self.secret {
             draw_rectangle(0.0, 0.0, WIDTH, HEIGHT, Color::new(0.0, 0.0, 0.0, (now - since) as f32));
             return Go::Stay;
+        }
+        if let Some(id) = found {
+            return Go::Unlock(id);
         }
         if self.jingle.is_some() {
             return Go::Stay;
@@ -806,7 +817,7 @@ impl Menus {
         items.push(("options", vec2(WIDTH - 60.0, 490.0), self.main_side == 1));
         let mut drawn = Vec::new();
         for (index, (name, mut at, selected)) in items.into_iter().enumerate() {
-            let Some(sheet) = self.art.sheet("", &format!("mainmenu/menu_{name}")) else { continue };
+            let Some(sheet) = self.art.own_sheet(&format!("mainmenu/menu_{name}")) else { continue };
             let idle = sheet.animation(&format!("{name} idle"), &[]);
             let Some(resting) = idle.first().map(|frame| frame.size) else { continue };
             at.x = if index < MIDDLE.len() { (WIDTH - resting.x) / 2.0 } else if name == "options" { at.x - resting.x } else { at.x };
@@ -824,7 +835,7 @@ impl Menus {
 
         // once chosen, the background blinks pink and the chosen item flickers while the others fade away
         let pink = self.flashing && since.is_some_and(|t| t < 1.1 && (t / 0.15) as u32 % 2 == 0);
-        if let Some(picture) = self.art.image("", if pink { "menuDesat" } else { "menuBG" }) {
+        if let Some(picture) = self.art.own(if pink { "menuDesat" } else { "menuBG" }) {
             let size = picture.size() * 1.175;
             let color = if pink { Color::from_hex(0xFD719B) } else { WHITE };
             draw_texture_ex(&picture, (WIDTH - size.x) / 2.0, (HEIGHT - size.y) / 2.0 - self.main_slide, color, DrawTextureParams { dest_size: Some(size), ..Default::default() });
@@ -897,7 +908,7 @@ impl Menus {
         let heights: Vec<f32> = pictures.iter().map(|picture| picture.as_ref().map_or(89.0, Texture2D::height)).collect();
         let tops: Vec<f32> = heights.iter().scan(0.0, |top, height| Some(std::mem::replace(top, *top + height.max(110.0) + 10.0))).collect();
         self.week_scroll += (tops[self.week] - self.week_scroll) * (1.0 - (-dt * 10.2).exp());
-        let ui = self.art.sheet("", "campaign_menu_UI_assets");
+        let ui = self.art.own_sheet("campaign_menu_UI_assets");
         let mut locks = Vec::new();
         for (row, picture) in pictures.iter().enumerate() {
             let y = tops[row] - self.week_scroll + 480.0;
@@ -955,7 +966,7 @@ impl Menus {
                 draw_frame(&character.sheet.texture, frame, at.x, at.y, character.scale, character.flip, WHITE);
             }
         }
-        if let Some(picture) = self.art.image("", "Menu_Tracks") {
+        if let Some(picture) = self.art.own("Menu_Tracks") {
             draw_texture(&picture, WIDTH * 0.07 + 100.0 - picture.width() / 2.0, 481.0, WHITE);
         }
         for (row, (title, ..)) in week.songs.iter().enumerate() {
@@ -1178,9 +1189,9 @@ impl Menus {
     /// The picture of an achievement: its own, or the padlock while it is locked.
     fn badge(&mut self, id: &str, unlocked: bool) -> Option<Texture2D> {
         if !unlocked {
-            return self.art.image("", "achievements/lockedachievement");
+            return self.art.own("achievements/lockedachievement");
         }
-        [format!("achievements/{id}-pixel"), format!("achievements/{id}"), "unknownMod".to_owned()].iter().find_map(|name| self.art.image("", name))
+        [format!("achievements/{id}-pixel"), format!("achievements/{id}"), "unknownMod".to_owned()].iter().find_map(|name| self.art.own(name))
     }
 
     /// The notice that an achievement was unlocked, `age` seconds after it was. It drops in at the top left, stays, and leaves.
@@ -1201,7 +1212,7 @@ impl Menus {
 
     fn achievements(&mut self, skin: &Skin, save: &Save) -> Go {
         let dt = get_frame_time().min(0.1);
-        if let Some(picture) = self.art.image("", "menuBGBlue") {
+        if let Some(picture) = self.art.own("menuBGBlue") {
             let size = picture.size() * 1.1;
             draw_texture_ex(&picture, (WIDTH - size.x) / 2.0, (HEIGHT - size.y) / 2.0, WHITE, DrawTextureParams { dest_size: Some(size), ..Default::default() });
         }
@@ -1377,7 +1388,7 @@ impl Menus {
 
         self.backdrop(self.mods[self.mod_row].color, dt);
         let icon = |art: &mut Art, folder: &str, x: f32, y: f32, size: f32, alpha: f32| {
-            if let Some(picture) = art.pack(folder).or_else(|| art.image("", "unknownMod")) {
+            if let Some(picture) = art.pack(folder).or_else(|| art.own("unknownMod")) {
                 // a pack picture may hold several frames of 150 px; the first is shown
                 let params = DrawTextureParams { dest_size: Some(vec2(size, size)), source: Some(Rect::new(0.0, 0.0, picture.width().min(150.0), picture.height().min(150.0))), ..Default::default() };
                 draw_texture_ex(&picture, x, y, white(alpha), params);

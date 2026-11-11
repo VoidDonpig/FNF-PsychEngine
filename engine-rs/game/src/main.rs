@@ -833,8 +833,7 @@ fn difficulty_name(name: &str) -> String {
 
 /// Where the menus look for files: in the first mod switched on, then where every song looks.
 fn menu_paths(base: &Path) -> Paths {
-    let top = funkin_core::content::mods(base).into_iter().find(|(_, on)| *on).map_or(String::new(), |(name, _)| name);
-    Paths::new(base, &top, "")
+    Paths::new(base, &funkin_core::content::top_mod(base), "")
 }
 
 /// The words of the language chosen in the options, from its files in the game and the mods.
@@ -1234,7 +1233,6 @@ fn main() {
 
         // a dark edge slides down over the screen: black with a screen's height of fading edge, `fading` below it or above
         let cover = |edge: f32, fading: f32| {
-            set_camera(&Camera2D { target: vec2(WIDTH / 2.0, HEIGHT / 2.0), zoom: vec2(2.0 / WIDTH, 2.0 / HEIGHT), ..Default::default() });
             for strip in 0..36 {
                 draw_rectangle(0.0, edge + fading * (strip as f32 * 20.0 + if fading < 0.0 { 20.0 } else { 0.0 }), WIDTH, 20.0, Color::new(0.0, 0.0, 0.0, 1.0 - (strip as f32 + 0.5) / 36.0));
             }
@@ -1248,6 +1246,8 @@ fn main() {
                 closing = Some((Texture2D::from_image(&get_screen_data()), get_time()));
             }
         }
+        // (a song may have left its own view of things set)
+        set_camera(&Camera2D { target: vec2(WIDTH / 2.0, HEIGHT / 2.0), zoom: vec2(2.0 / WIDTH, 2.0 / HEIGHT), ..Default::default() });
         if let Some((picture, since)) = &closing {
             let covered = (get_time() - since) as f32 / 0.5;
             draw_texture_ex(picture, 0.0, 0.0, WHITE, DrawTextureParams { dest_size: Some(vec2(WIDTH, HEIGHT)), ..Default::default() });

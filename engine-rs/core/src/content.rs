@@ -109,6 +109,11 @@ pub fn mods(base: &Path) -> Vec<(String, bool)> {
     list
 }
 
+/// The first mod switched on: the menus look in it before the game's files. Empty when there is none.
+pub fn top_mod(base: &Path) -> String {
+    mods(base).into_iter().find(|(_, on)| *on).map_or(String::new(), |(name, _)| name)
+}
+
 pub fn save_mods(base: &Path, list: &[(String, bool)]) -> std::io::Result<()> {
     let lines: Vec<String> = list.iter().map(|(name, on)| format!("{name}|{}", *on as u8)).collect();
     std::fs::write(base.join("modsList.txt"), lines.join("\n"))
