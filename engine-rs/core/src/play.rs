@@ -21,8 +21,6 @@ impl Default for Timing {
         Timing { sick: 45.0, good: 90.0, bad: 135.0, safe: 10.0 / 60.0 * 1000.0, rating_offset: 0.0, rate: 1.0 }
     }
 }
-// shortcut: one fixed release tolerance; the Haxe engine frees the tail one step (tempo dependent) early.
-const HOLD_RELEASE_MS: f64 = 100.0;
 const HIT_HEALTH: f64 = 0.02;
 const MISS_HEALTH: f64 = 0.1;
 
@@ -217,7 +215,8 @@ impl Play {
                 }
                 NoteState::Held => {
                     let end = note.time + note.sustain;
-                    if pos >= end || (!auto && !self.held[note.lane] && pos >= end - HOLD_RELEASE_MS) {
+                    // let go within the hold's last step, it still counts as held through, as in the Haxe engine
+                    if pos >= end || (!auto && !self.held[note.lane] && pos >= end - self.chart.step_ms(end)) {
                         self.state[i] = NoteState::Done;
                     } else if !auto && !self.held[note.lane] {
                         // Letting go early loses the rest of the hold as one miss.
@@ -364,6 +363,17 @@ mod tests {
         dropped.release(3);
         assert_eq!(dropped.update(300.0), vec![Event::Miss { lane: 3, note: Some(0), combo: 1 }]);
         assert_eq!(dropped.update(600.0), vec![], "only once");
+
+        // the last step of the hold (125 ms at 120 BPM) forgives letting go; before it, the rest is a miss
+        for (let_go, misses) in [(880.0, 0), (860.0, 1)] {
+            let mut hold = play(&[(0.0, 3, true, 1000.0)], false);
+            hold.press(3, 0.0);
+            hold.update(let_go - 10.0);
+            hold.release(3);
+            hold.update(let_go);
+            hold.update(1100.0);
+            assert_eq!(hold.misses, misses, "let go at {let_go}");
+        }
     }
 
     #[test]
