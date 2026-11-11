@@ -14,6 +14,7 @@ mod scene;
 mod settings;
 
 use funkin_core::content::{songs as find_songs, weeks as find_weeks, Paths, SongEntry};
+use funkin_core::achievements::{earned, Run};
 use funkin_core::save::Save;
 use menu::{Go, Menus, Page};
 use funkin_core::chart::NoteKind;
@@ -183,6 +184,12 @@ struct Playing {
     judgement: Option<(String, Color, f64)>,
     /// When the player last hit a note: the score text swells for a moment.
     last_hit: f64,
+    /// For the achievements: the lanes the player pressed, whether the player's character ever went back to its
+    /// idle move (and for how long it has been there), and for how long it has been singing without a rest.
+    lanes_used: [bool; 4],
+    idled: bool,
+    idle_for: f32,
+    sang_for: f32,
     /// Where sounds and other shared files are found for this song.
     paths: Paths,
     /// Ms between opening the play screen and the song's first beat: the countdown.
@@ -228,7 +235,7 @@ impl Playing {
         play.timing = settings.timing();
         (play.health_gain, play.health_loss, play.instakill) = (settings.health_gain, settings.health_loss, settings.instakill);
         play.skip_to(start_at);
-        Ok(Playing { entry: entry.clone(), play, song, player_voice, scene, waited: 0.0, started: false, paused: None, start_at, position: -lead_in, settings: settings.clone(), held_keys: Vec::new(), flash_until: [[f64::MIN; 4]; 2], judgement: None, last_hit: f64::MIN,
+        Ok(Playing { entry: entry.clone(), play, song, player_voice, scene, waited: 0.0, started: false, paused: None, start_at, position: -lead_in, settings: settings.clone(), held_keys: Vec::new(), flash_until: [[f64::MIN; 4]; 2], judgement: None, last_hit: f64::MIN, lanes_used: [false; 4], idled: false, idle_for: 0.0, sang_for: 0.0,
             paths: Paths::new(base, &entry.source, ""), lead_in, counted: i64::MIN, popups: Vec::new(), splashes: Vec::new(), dead: None, next_event: 0, speed, speed_change: None })
     }
 
@@ -355,6 +362,7 @@ impl Playing {
             if key.pressed && !self.held_keys.contains(&key.key) {
                 self.held_keys.push(key.key);
                 if !self.play.botplay {
+                    self.lanes_used[lane] = true;
                     // judged where the song was when the key went down, not where it is this frame
                     events.extend(self.play.press(lane, judged - key.age_ms));
                 }
@@ -421,6 +429,17 @@ impl Playing {
             scene.update(dt * rate as f32, judged, &self.play.chart, &events, held);
             for (path, volume) in scene.sounds.drain(..) {
                 self.song.play_sound(&path, volume, false);
+            }
+        }
+        if self.started {
+            // a moment in the idle move is forgiven, as the Haxe engine forgives it
+            if self.scene.as_ref().is_none_or(|scene| scene.player_idle()) {
+                self.idle_for += dt;
+                self.idled |= self.idle_for >= 0.15;
+                self.sang_for = 0.0;
+            } else {
+                self.idle_for = 0.0;
+                self.sang_for += dt;
             }
         }
 
@@ -641,8 +660,12 @@ async fn main() {
     let mut songs = find_songs(&weeks);
     let mut save = Save::load(&base);
     let mut menus = Menus::new(&base);
-    // story mode: the week being played, the songs still to come, and the score so far
-    let mut story: Option<(usize, Vec<usize>, i64)> = None;
+    // story mode: the week being played, the songs still to come, and the score and the misses so far
+    let mut story: Option<(usize, Vec<usize>, i64, u32)> = None;
+    // achievements just unlocked, with the time each was, and whether their chime is still to play
+    let mut toasts: Vec<(&'static str, f64)> = Vec::new();
+    let mut chime = false;
+    let mut greeted = false;
     let mut settings = Settings::load(&base);
     settings.botplay |= flag("--bot");
     let keyboard = Keyboard::start();
@@ -654,6 +677,7 @@ async fn main() {
         Some("freeplay") => Page::Freeplay,
         Some("mods") => Page::Mods,
         Some("credits") => Page::Credits,
+        Some("achievements") => Page::Achievements,
         _ => Page::Title,
     };
     let (skin, mut screen) = match Skin::load(&base) {
@@ -677,7 +701,7 @@ async fn main() {
         screen = match list {
             Some((week, mut list)) => {
                 let entry = &songs[list.remove(0)];
-                story = Some((week, list, 0));
+                story = Some((week, list, 0, 0));
                 Playing::open(&base, entry, &settings, start_at).map_or_else(Screen::Failed, |p| Screen::Playing(Box::new(p)))
             }
             None => Screen::Failed(format!("No week \"{wanted}\" with a Normal difficulty.")),
@@ -704,7 +728,7 @@ async fn main() {
                 Some(Go::Play(mut list, week)) => {
                     menus.quiet();
                     let entry = &songs[list.remove(0)];
-                    story = week.map(|week| (week, list, 0));
+                    story = week.map(|week| (week, list, 0, 0));
                     Playing::open(&base, entry, &settings, 0.0).map_or_else(Screen::Failed, |p| Screen::Playing(Box::new(p)))
                 }
                 Some(Go::Quit) | None => break,
@@ -727,6 +751,12 @@ async fn main() {
                     }
                     None => Flow::Quit,
                 };
+                // ten seconds of singing without a rest
+                if playing.sang_for >= 10.0 && playing.settings.keeps_scores() && save.unlock("oversinging") {
+                    save.save(&base);
+                    toasts.push(("oversinging", get_time()));
+                    chime = true;
+                }
                 match flow {
                     Flow::Continue => Screen::Playing(playing),
                     Flow::Finished => {
@@ -735,15 +765,27 @@ async fn main() {
                         if playing.settings.keeps_scores() {
                             save.record_song(&entry.title, &entry.difficulty, play.score, play.accuracy().unwrap_or(0.0));
                         }
+                        let flawless_week = match &story {
+                            Some((week, rest, _, misses)) if rest.is_empty() && misses + play.misses == 0 && entry.difficulty.eq_ignore_ascii_case("hard") => Some(weeks[*week].file.as_str()),
+                            _ => None,
+                        };
+                        let run = Run { song: &entry.title, accuracy: play.accuracy().unwrap_or(0.0), practice: playing.settings.practice, botplay: play.botplay, idled: playing.idled,
+                            lanes_used: playing.lanes_used.iter().filter(|used| **used).count(), flawless_week };
+                        for id in earned(&run) {
+                            if save.unlock(id) {
+                                toasts.push((id, get_time()));
+                                chime = true;
+                            }
+                        }
                         match story.take() {
                             // story mode goes straight on to the next song of the week
-                            Some((week, mut rest, score)) if !rest.is_empty() => {
+                            Some((week, mut rest, score, misses)) if !rest.is_empty() => {
                                 save.save(&base);
                                 let next = &songs[rest.remove(0)];
-                                story = Some((week, rest, score + play.score));
+                                story = Some((week, rest, score + play.score, misses + play.misses));
                                 Playing::open(&base, next, &settings, start_at).map_or_else(Screen::Failed, |p| Screen::Playing(Box::new(p)))
                             }
-                            Some((week, _, score)) => {
+                            Some((week, _, score, _)) => {
                                 if playing.settings.keeps_scores() {
                                     save.record_week(&weeks[week].file, &entry.difficulty, score + play.score);
                                 }
@@ -780,6 +822,27 @@ async fn main() {
             }
         };
 
+        // the main menu greets whoever plays on a Friday night
+        if matches!(screen, Screen::Menu(Page::Main)) && !std::mem::replace(&mut greeted, true) {
+            if let Some(id) = menus.greeting().filter(|id| save.unlock(id)) {
+                save.save(&base);
+                toasts.push((id, get_time()));
+                chime = true;
+            }
+        }
+        if std::mem::take(&mut chime) {
+            match &screen {
+                Screen::Playing(playing) | Screen::Results(playing, _) => playing.sound("confirmMenu", 0.5, false),
+                _ => menus.chime = true,
+            }
+        }
+        toasts.retain(|(_, since)| get_time() - since < 4.0);
+        if let (Some(skin), false) = (&skin, toasts.is_empty()) {
+            set_camera(&Camera2D { target: vec2(WIDTH / 2.0, HEIGHT / 2.0), zoom: vec2(2.0 / WIDTH, 2.0 / HEIGHT), ..Default::default() });
+            for (slot, (id, since)) in toasts.iter().enumerate() {
+                menus.popup(skin, id, (get_time() - since) as f32, slot);
+            }
+        }
         if settings.show_fps {
             set_camera(&Camera2D { target: vec2(WIDTH / 2.0, HEIGHT / 2.0), zoom: vec2(2.0 / WIDTH, 2.0 / HEIGHT), ..Default::default() });
             plain(&format!("FPS: {}", get_fps()), 10.0, 17.0, 14, WHITE);

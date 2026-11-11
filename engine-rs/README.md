@@ -15,7 +15,7 @@ cargo run --release --manifest-path engine-rs/Cargo.toml
 
 `--base <folder>` points it at another folder, `--bot` plays by itself, `--play <text>` starts the first
 song whose name contains the text, `--story <week file>` a whole week,
-`--menu <main|story|freeplay|mods|credits>` opens at that menu, `--options [page]` at the options. Keys: A S W D or the arrows, Enter or Space, Esc or Backspace. The options are kept in
+`--menu <main|story|freeplay|mods|credits|achievements>` opens at that menu, `--options [page]` at the options. Keys: A S W D or the arrows, Enter or Space, Esc or Backspace. The options are kept in
 `funkin-rs-settings.json` in that folder, scores and finished weeks in `funkin-rs-save.json`.
 
 Without ALSA headers (Linux): add `--no-default-features` to build without sound.
@@ -50,6 +50,9 @@ Done:
   sounds. Week order follows `weekList.txt`. Credits (those of the mods first; Enter opens a link) and the
   mods menu: switch mods on and off and move them up and down, kept in `modsList.txt` as the Haxe engine
   keeps it. Mods switched off bring no weeks; mods that run globally lend their files to every song.
+- **Achievements**: the Haxe engine's list and rules (a week on Hard without a miss, a rating of 100% or
+  under 20%, no idling, two keys only, ten seconds of singing, Friday night), a notice when one is
+  unlocked, and the achievements menu.
 - **Saved data**: best score and accuracy of every song and difficulty, best week scores, finished weeks
   (which unlock the weeks after them). Runs on botplay are not kept.
 - **Options**: key binds (two per lane); gameplay: downscroll, middlescroll, opponent notes, ghost
@@ -69,11 +72,12 @@ Not there yet:
   running soldiers of Stress, crowd reactions to events, the speaker and lighting of weekend 1), the weekend 1
   fight stage, the pixel look of notes and HUD on pixel stages, characters made of several sheets or of
   Animate atlases, other note and splash skins.
-- **Menus**: the mods menu's mouse buttons, per-mod settings and restart flag, achievements, the rest of the options (graphics, note
+- **Menus**: the mods menu's mouse buttons, per-mod settings and restart flag, the achievements
+  that need features not here yet (the henchmen count, the toaster one, the title easter egg), those of mods, and resetting one, the rest of the options (graphics, note
   colours and skins, delay and combo placement, auto pause, gamepad, languages; the options menu is a plain
   list, not the Haxe engine's look), in freeplay the song preview and score reset,
   transitions between screens, loading screen, a mod's own title screen (`gfDanceTitle.json`).
-- **Saved data**: achievements, translations. Scores of the Haxe engine are
+- **Saved data**: translations. Scores of the Haxe engine are
   not read (it keeps them in its own binary save).
 - **Cutscenes**: dialogue, videos.
 - **Scripts**: Lua. HScript is Haxe code run against the Haxe engine's own classes, so mods that use it

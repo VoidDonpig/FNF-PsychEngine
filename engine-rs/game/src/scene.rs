@@ -830,6 +830,11 @@ impl Scene {
         }
     }
 
+    /// Whether the player's character is in its idle move (or absent) rather than singing or posing.
+    pub fn player_idle(&self) -> bool {
+        self.player.as_ref().is_none_or(|player| ["idle", "danceLeft", "danceRight"].iter().any(|idle| player.current.starts_with(idle)))
+    }
+
     /// The player lost: swaps in the fallen character and turns the camera to it.
     pub fn die(&mut self) {
         self.dead = true;

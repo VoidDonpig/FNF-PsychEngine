@@ -12,6 +12,8 @@ pub struct Save {
     weeks: BTreeMap<String, i64>,
     /// Week files finished in story mode.
     completed: BTreeSet<String>,
+    /// Achievements unlocked, by id.
+    achievements: BTreeSet<String>,
 }
 
 fn key(name: &str, difficulty: &str) -> String {
@@ -46,6 +48,15 @@ impl Save {
         *best = score.max(*best);
     }
 
+    /// Unlocks an achievement; true if it was not unlocked before.
+    pub fn unlock(&mut self, achievement: &str) -> bool {
+        self.achievements.insert(achievement.to_owned())
+    }
+
+    pub fn unlocked(&self, achievement: &str) -> bool {
+        self.achievements.contains(achievement)
+    }
+
     /// A week stays locked until the week before it is finished.
     pub fn locked(&self, week: &Week) -> bool {
         !week.start_unlocked && !week.before.is_empty() && !self.completed.contains(&week.before)
@@ -53,17 +64,19 @@ impl Save {
 
     pub fn to_json(&self) -> String {
         let songs: BTreeMap<&String, Value> = self.songs.iter().map(|(name, (score, accuracy))| (name, json!({ "score": score, "accuracy": accuracy }))).collect();
-        serde_json::to_string_pretty(&json!({ "songs": songs, "weeks": self.weeks, "completed": self.completed })).unwrap_or_default()
+        serde_json::to_string_pretty(&json!({ "songs": songs, "weeks": self.weeks, "completed": self.completed, "achievements": self.achievements })).unwrap_or_default()
     }
 
     /// Anything missing or unreadable is left empty.
     pub fn from_json(text: &str) -> Save {
         let value: Value = serde_json::from_str(text).unwrap_or_default();
         let entries = |key: &str| value[key].as_object().cloned().unwrap_or_default().into_iter();
+        let names = |key: &str| value[key].as_array().into_iter().flatten().filter_map(|name| name.as_str().map(str::to_owned)).collect();
         Save {
             songs: entries("songs").map(|(name, best)| (name, (best["score"].as_i64().unwrap_or(0), best["accuracy"].as_f64().unwrap_or(0.0)))).collect(),
             weeks: entries("weeks").filter_map(|(name, score)| Some((name, score.as_i64()?))).collect(),
-            completed: value["completed"].as_array().into_iter().flatten().filter_map(|week| week.as_str().map(str::to_owned)).collect(),
+            completed: names("completed"),
+            achievements: names("achievements"),
         }
     }
 
@@ -101,6 +114,7 @@ mod tests {
         assert!(!save.locked(&next));
         assert_eq!((save.week("week1", "Hard"), save.week("week1", "Easy")), (3000, 0));
 
+        assert!(save.unlock("ur_good") && !save.unlock("ur_good") && save.unlocked("ur_good") && !save.unlocked("hype"));
         assert_eq!(Save::from_json(&save.to_json()), save);
         assert_eq!(Save::from_json("not json"), Save::default());
     }

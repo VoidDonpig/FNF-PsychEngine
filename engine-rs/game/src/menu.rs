@@ -3,6 +3,7 @@ use crate::atlas::{draw_frame, Frame, Sheet};
 use crate::audio::Song;
 use crate::{Skin, HEIGHT, WIDTH};
 use funkin_core::content::{mods as find_mods, save_mods, song_path, Paths, SongEntry, Week};
+use funkin_core::achievements::LIST as ACHIEVEMENTS;
 use funkin_core::save::Save;
 use macroquad::prelude::*;
 use std::collections::HashMap;
@@ -17,6 +18,7 @@ pub enum Page {
     Freeplay,
     Mods,
     Credits,
+    Achievements,
 }
 
 /// What a menu wants next.
@@ -303,9 +305,9 @@ pub struct Menus {
     flash: (f64, f64),
     /// When the choice on the current screen was confirmed; the screen changes a moment later.
     chosen: Option<f64>,
-    /// Main menu: the row in the middle column, whether the item at the side is selected instead, and how far the background has slid.
+    /// Main menu: the row in the middle column, whether the item at the left (-1) or right (1) is selected instead, and how far the background has slid.
     main_row: usize,
-    main_side: bool,
+    main_side: i8,
     main_slide: f32,
     week: usize,
     week_scroll: f32,
@@ -327,6 +329,51 @@ pub struct Menus {
     pub reload: bool,
     /// The player's choice on flashing lights: without them nothing flashes or blinks.
     flashing: bool,
+    /// Selected achievement, and how far its list has scrolled.
+    achievement: usize,
+    achievement_scroll: f32,
+    /// An achievement was unlocked while the menus had no sound: its chime is still owed.
+    pub chime: bool,
+}
+
+/// Where a step of (dx, dy) leads from `selected` in a grid of `count` things, four to a row. Rows wrap around, and so does the list.
+fn grid_step(selected: usize, count: usize, dx: i32, dy: i32) -> usize {
+    let (row, column, rows) = (selected / 4, selected % 4, count.div_ceil(4));
+    if dx != 0 {
+        let in_row = (count - row * 4).min(4) as i32;
+        return row * 4 + (column as i32 + dx).rem_euclid(in_row) as usize;
+    }
+    let target = (row as i32 + dy).rem_euclid(rows as i32) as usize * 4 + column;
+    // the last row may be short: from above it wraps on to the first row, from below it stops a row short
+    if target < count { target } else if dy > 0 { column } else { target - 4 }
+}
+
+/// Whether it is Friday evening by the player's own clock.
+fn friday_night() -> bool {
+    #[cfg(windows)]
+    {
+        #[repr(C)]
+        #[derive(Default)]
+        struct SystemTime { year: u16, month: u16, day_of_week: u16, day: u16, hour: u16, minute: u16, second: u16, milliseconds: u16 }
+        #[link(name = "kernel32")]
+        extern "system" { fn GetLocalTime(time: *mut SystemTime); }
+        let mut now = SystemTime::default();
+        // SAFETY: GetLocalTime fills the struct it is given and cannot fail.
+        unsafe { GetLocalTime(&mut now) };
+        now.day_of_week == 5 && now.hour >= 18
+    }
+    #[cfg(not(windows))]
+    {
+        // the fields of C's `struct tm` this needs, and room for the ones platforms add after them
+        #[repr(C)]
+        struct Tm { sec: i32, min: i32, hour: i32, mday: i32, mon: i32, year: i32, wday: i32, yday: i32, isdst: i32, rest: [u64; 4] }
+        extern "C" { fn localtime_r(time: *const i64, out: *mut Tm) -> *mut Tm; }
+        let seconds = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map_or(0, |since| since.as_secs() as i64);
+        let mut now = Tm { sec: 0, min: 0, hour: 0, mday: 0, mon: 0, year: 0, wday: 0, yday: 0, isdst: 0, rest: [0; 4] };
+        // SAFETY: both pointers are to live values of the sizes localtime_r reads and writes.
+        unsafe { localtime_r(&seconds, &mut now) };
+        now.wday == 5 && now.hour >= 18
+    }
 }
 
 /// The lines of the title screen's opening at a beat, how far down they are shifted, and whether the Newgrounds logo shows.
@@ -374,8 +421,8 @@ impl Menus {
         Menus {
             art: Art { base: base.to_path_buf(), images: HashMap::new(), sheets: HashMap::new(), characters: HashMap::new() },
             alphabet: Alphabet::load(&paths), paths, audio: None, music_at: 0.0, intro: true, wacky: [wacky.0.to_owned(), wacky.1.to_owned()], flash: (f64::MIN, 1.0), chosen: None,
-            main_row: 0, main_side: false, main_slide: 0.0, week: 0, week_scroll: 0.0, difficulty: "Normal".to_owned(), rows: Vec::new(), song: 0, song_scroll: 0.0, tint: Vec3::ONE, shown: (0.0, 0.0),
-            credits: Vec::new(), credit: 0, credit_scroll: 0.0, mods: Vec::new(), mod_row: 0, mods_changed: false, reload: false, flashing: true,
+            main_row: 0, main_side: 0, main_slide: 0.0, week: 0, week_scroll: 0.0, difficulty: "Normal".to_owned(), rows: Vec::new(), song: 0, song_scroll: 0.0, tint: Vec3::ONE, shown: (0.0, 0.0),
+            credits: Vec::new(), credit: 0, credit_scroll: 0.0, mods: Vec::new(), mod_row: 0, mods_changed: false, reload: false, flashing: true, achievement: 0, achievement_scroll: 0.0, chime: false,
         }
     }
 
@@ -386,7 +433,7 @@ impl Menus {
         self.rows.clear(); // a finished week may have unlocked songs
     }
 
-    fn sound(&self, name: &str, volume: f32) {
+    pub fn sound(&self, name: &str, volume: f32) {
         if let (Some(audio), Some(path)) = (&self.audio, self.paths.find(&format!("sounds/{name}.ogg"))) {
             audio.play_sound(&path, volume, false);
         }
@@ -432,6 +479,9 @@ impl Menus {
             self.audio = Some(audio);
             self.music_at = get_time();
         }
+        if std::mem::take(&mut self.chime) {
+            self.sound("confirmMenu", 0.5);
+        }
         let go = match page {
             Page::Title => self.title(skin),
             Page::Main => self.main_menu(skin),
@@ -439,6 +489,7 @@ impl Menus {
             Page::Freeplay => self.freeplay(skin, weeks, songs, save),
             Page::Mods => self.mods_menu(skin),
             Page::Credits => self.credits_roll(skin),
+            Page::Achievements => self.achievements(skin, save),
         };
         let flash = 1.0 - (get_time() - self.flash.0) / self.flash.1;
         if flash > 0.0 && self.flashing {
@@ -511,32 +562,33 @@ impl Menus {
     }
 
     fn main_menu(&mut self, skin: &Skin) -> Go {
-        // shortcut: achievements join at the left side with their screen.
         const MIDDLE: [&str; 4] = ["story_mode", "freeplay", "mods", "credits"];
-        const SIDE: &str = "options";
         let (now, dt) = (get_time(), get_frame_time().min(0.1));
         let since = self.chosen.map(|at| (now - at) as f32);
         if since.is_none() {
             let step = pressed(&DOWN) as usize + pressed(&UP) as usize * (MIDDLE.len() - 1);
-            if step != 0 && !self.main_side {
+            if step != 0 && self.main_side == 0 {
                 self.main_row = (self.main_row + step) % MIDDLE.len();
                 self.sound("scrollMenu", 1.0);
             }
-            if (pressed(&RIGHT) && !self.main_side) || (pressed(&LEFT) && self.main_side) {
-                self.main_side = !self.main_side;
+            let side = (self.main_side + pressed(&RIGHT) as i8 - pressed(&LEFT) as i8).clamp(-1, 1);
+            if side != self.main_side {
+                self.main_side = side;
                 self.sound("scrollMenu", 1.0);
             }
         }
 
         // every item: name, top left corner, whether it is the selected one
-        let mut items: Vec<(&str, Vec2, bool)> = MIDDLE.iter().enumerate().map(|(row, name)| (*name, vec2(0.0, row as f32 * 140.0 + 90.0 + (4 - MIDDLE.len()) as f32 * 70.0), !self.main_side && row == self.main_row)).collect();
-        items.push((SIDE, vec2(WIDTH - 60.0, 490.0), self.main_side));
+        let mut items: Vec<(&str, Vec2, bool)> = MIDDLE.iter().enumerate().map(|(row, name)| (*name, vec2(0.0, row as f32 * 140.0 + 90.0 + (4 - MIDDLE.len()) as f32 * 70.0), self.main_side == 0 && row == self.main_row)).collect();
+        // the two at the sides: achievements from the left edge, options up to the right edge
+        items.push(("achievements", vec2(60.0, 490.0), self.main_side == -1));
+        items.push(("options", vec2(WIDTH - 60.0, 490.0), self.main_side == 1));
         let mut drawn = Vec::new();
         for (index, (name, mut at, selected)) in items.into_iter().enumerate() {
             let Some(sheet) = self.art.sheet("", &format!("mainmenu/menu_{name}")) else { continue };
             let idle = sheet.animation(&format!("{name} idle"), &[]);
             let Some(resting) = idle.first().map(|frame| frame.size) else { continue };
-            at.x = if index < MIDDLE.len() { (WIDTH - resting.x) / 2.0 } else { at.x - resting.x };
+            at.x = if index < MIDDLE.len() { (WIDTH - resting.x) / 2.0 } else if name == "options" { at.x - resting.x } else { at.x };
             let frames = if selected { sheet.animation(&format!("{name} selected"), &[]) } else { idle };
             if let Some(frame) = looped(&frames) {
                 // the bigger selected picture stays centred on the resting one
@@ -569,11 +621,12 @@ impl Menus {
 
         match since {
             Some(t) if t >= 1.0 => match (self.main_side, self.main_row) {
-                (true, _) => Go::Options,
-                (false, 0) => Go::Page(Page::Story),
-                (false, 1) => Go::Page(Page::Freeplay),
-                (false, 2) => Go::Page(Page::Mods),
-                (false, _) => Go::Page(Page::Credits),
+                (1, _) => Go::Options,
+                (-1, _) => Go::Page(Page::Achievements),
+                (_, 0) => Go::Page(Page::Story),
+                (_, 1) => Go::Page(Page::Freeplay),
+                (_, 2) => Go::Page(Page::Mods),
+                (_, _) => Go::Page(Page::Credits),
             },
             Some(_) => Go::Stay,
             None if pressed(&ACCEPT) => {
@@ -792,6 +845,74 @@ impl Menus {
         }
     }
 
+    /// The achievement earned by opening the main menu on a Friday evening, if it is one.
+    pub fn greeting(&self) -> Option<&'static str> {
+        friday_night().then_some("friday_night_play")
+    }
+
+    /// The picture of an achievement: its own, or the padlock while it is locked.
+    fn badge(&mut self, id: &str, unlocked: bool) -> Option<Texture2D> {
+        if !unlocked {
+            return self.art.image("", "achievements/lockedachievement");
+        }
+        [format!("achievements/{id}-pixel"), format!("achievements/{id}"), "unknownMod".to_owned()].iter().find_map(|name| self.art.image("", name))
+    }
+
+    /// The notice that an achievement was unlocked, `age` seconds after it was. It drops in at the top left, stays, and leaves.
+    pub fn popup(&mut self, skin: &Skin, id: &str, age: f32, slot: usize) {
+        let Some(achievement) = ACHIEVEMENTS.iter().find(|achievement| achievement.id == id) else { return };
+        let shown = (age / 0.4).min((4.0 - age) / 0.4).clamp(0.0, 1.0);
+        let (x, y) = (20.0, -130.0 + 150.0 * shown + slot as f32 * 140.0);
+        draw_rectangle(x, y, 420.0, 130.0, BLACK);
+        if let Some(picture) = self.badge(id, true) {
+            draw_texture_ex(&picture, x + 15.0, y + 15.0, WHITE, DrawTextureParams { dest_size: Some(vec2(100.0, 100.0)), ..Default::default() });
+        }
+        label(skin, achievement.name, x + 130.0, y + 35.0, 16, WHITE, false);
+        let measure = |text: &str| measure_text(text, skin.font.as_ref(), 16, 1.0).width;
+        for (row, line) in wrap(achievement.text, 270.0, measure).iter().enumerate() {
+            label(skin, line, x + 130.0, y + 65.0 + row as f32 * 18.0, 16, WHITE, false);
+        }
+    }
+
+    fn achievements(&mut self, skin: &Skin, save: &Save) -> Go {
+        let dt = get_frame_time().min(0.1);
+        if let Some(picture) = self.art.image("", "menuBGBlue") {
+            let size = picture.size() * 1.1;
+            draw_texture_ex(&picture, (WIDTH - size.x) / 2.0, (HEIGHT - size.y) / 2.0, WHITE, DrawTextureParams { dest_size: Some(size), ..Default::default() });
+        }
+        // hidden ones stay out of the list until they are unlocked
+        let listed: Vec<_> = ACHIEVEMENTS.iter().filter(|achievement| !achievement.hidden || save.unlocked(achievement.id)).collect();
+        let (dx, dy) = (pressed(&RIGHT) as i32 - pressed(&LEFT) as i32, pressed(&DOWN) as i32 - pressed(&UP) as i32);
+        self.achievement = self.achievement.min(listed.len() - 1);
+        if dx != 0 || dy != 0 {
+            self.achievement = grid_step(self.achievement, listed.len(), dx, dy);
+            self.sound("scrollMenu", 1.0);
+        }
+        // the list scrolls so that the first row sits near the top and the last one clear of the text below
+        let (rows, height) = (listed.len() / 4, (listed.len().div_ceil(4) - 1) as f32 * 180.0 + 150.0);
+        let target = if rows > 0 { (self.achievement / 4) as f32 / rows as f32 * (height - HEIGHT / 2.0 - 50.0).max(0.0) - 100.0 } else { -100.0 };
+        self.achievement_scroll += (target - self.achievement_scroll) * (1.0 - 0.85f32.powf(dt * 60.0));
+        let top = -self.achievement_scroll;
+        draw_rectangle((WIDTH - 750.0) / 2.0, top - 30.0, 750.0, height + 60.0, Color::new(0.0, 0.0, 0.0, 0.6));
+        for (index, achievement) in listed.iter().enumerate() {
+            let at = vec2(295.0 + 180.0 * (index % 4) as f32, top + (index / 4) as f32 * 180.0);
+            if let Some(picture) = self.badge(achievement.id, save.unlocked(achievement.id)) {
+                let params = DrawTextureParams { dest_size: Some(vec2(150.0, 150.0)), ..Default::default() };
+                draw_texture_ex(&picture, at.x, at.y, white(if index == self.achievement { 1.0 } else { 0.6 }), params);
+            }
+        }
+        let selected = listed[self.achievement];
+        draw_rectangle(0.0, 570.0, WIDTH, HEIGHT - 570.0, Color::new(0.0, 0.0, 0.0, 0.6));
+        let centred = |text: &str, top: f32, size: u16| drop(label(skin, text, (WIDTH - measure_text(text, skin.font.as_ref(), size, 1.0).width) / 2.0, top, size, WHITE, false));
+        centred(if save.unlocked(selected.id) { selected.name } else { "???" }, 580.0, 32);
+        centred(selected.text, 618.0, 24);
+        if pressed(&BACK) {
+            self.sound("cancelMenu", 1.0);
+            return Go::Page(Page::Main);
+        }
+        Go::Stay
+    }
+
     fn credits_roll(&mut self, skin: &Skin) -> Go {
         let dt = get_frame_time().min(0.1);
         if self.credits.is_empty() {
@@ -981,6 +1102,15 @@ mod tests {
         let (placed, width) = place("Aa a", false, size);
         assert_eq!(placed, [('a', vec2(0.0, 42.0)), ('a', vec2(80.0, 42.0))]);
         assert_eq!(width, 132.0);
+    }
+
+    #[test]
+    fn steps_through_a_grid_whose_last_row_is_short() {
+        // 14 things: three full rows and a row of two
+        assert_eq!([grid_step(3, 14, 1, 0), grid_step(0, 14, -1, 0), grid_step(13, 14, 1, 0), grid_step(12, 14, -1, 0)], [0, 3, 12, 13]);
+        assert_eq!([grid_step(1, 14, 0, 1), grid_step(13, 14, 0, 1), grid_step(11, 14, 0, 1)], [5, 1, 3]);
+        assert_eq!([grid_step(1, 14, 0, -1), grid_step(3, 14, 0, -1), grid_step(5, 14, 0, -1)], [13, 11, 1]);
+        assert_eq!([grid_step(0, 1, 1, 0), grid_step(0, 1, 0, 1), grid_step(0, 1, 0, -1)], [0, 0, 0]);
     }
 
     #[test]
