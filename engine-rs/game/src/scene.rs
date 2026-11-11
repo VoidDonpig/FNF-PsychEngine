@@ -519,9 +519,10 @@ enum Stunt {
     LightsOn,
     /// The song before Winter Horrorland: the lights go out when it is over.
     LightsOut,
-    /// Week 7: Tankman has something to say before Ugh, and before Guns.
+    /// Week 7: Tankman has something to say before Ugh, and before Guns; before Stress he has the girlfriend shot at, and Pico turns up.
     Ugh,
     Guns,
+    Stress,
 }
 
 /// 0 to 1, slow at both ends.
@@ -530,11 +531,23 @@ fn in_out(part: f32) -> f32 {
     if part < 0.5 { 2.0 * part * part } else { 1.0 - 2.0 * (1.0 - part) * (1.0 - part) }
 }
 
+/// The view pulled back to show the whole stage in the scene before Stress, against the stage's own zoom.
+const FAR: f32 = 0.8 / 0.9;
+
 /// How close the view is `t` seconds into Tankman's talk, against the stage's own zoom.
 fn talk_zoom(stunt: Stunt, t: f32) -> f32 {
     match stunt {
         // closer over four seconds, a lurch at his best line, and back
         Stunt::Guns => 1.0 + 0.2 * in_out(t / 4.0) + 0.24 * in_out((t - 4.0) / 0.5) - 0.24 * in_out(t - 4.5),
+        // close on Tankman, closer on the girlfriend as she turns, then twice far out, with a jolt at the player's shout between
+        Stunt::Stress if t < 17.5 => 1.0 + 0.2 * in_out(t) + 0.24 * in_out((t - 15.2) / 2.25),
+        Stunt::Stress if (31.2..32.2).contains(&t) => {
+            let part = ((t - 31.2) / 0.25).min(1.0);
+            // (it overshoots and rings out)
+            let sprung = if part < 1.0 { 2f32.powf(-10.0 * part) * ((part - 0.1) * std::f32::consts::TAU / 0.4).sin() + 1.0 } else { 1.0 };
+            FAR + (1.44 - FAR) * sprung
+        }
+        Stunt::Stress => FAR,
         _ => 1.2,
     }
 }
@@ -552,6 +565,7 @@ fn stunt_at(stunt: Stunt, t: f32) -> (f32, f32, bool, bool) {
         Stunt::LightsOut => (1.0, 1.0, false, t >= 1.5),
         Stunt::Ugh => (0.0, 1.0, false, t >= 12.0),
         Stunt::Guns => (0.0, 1.0, false, t >= 11.5),
+        Stunt::Stress => (0.0, 1.0, false, t >= 35.5),
     }
 }
 
@@ -946,6 +960,9 @@ pub struct Scene {
     stunt: Option<(Stunt, f32, Vec2)>,
     /// The Tankman of week 7's scenes, who stands in for the opponent: his pictures, the part of his talk that plays, and since when.
     actor: Option<(crate::animate::Atlas, &'static str, f32)>,
+    /// Before Stress, in the girlfriend's place: her at gunpoint and then Pico, the part that plays and since when;
+    /// and the player as he stands without her, until he catches her.
+    rescue: Option<(crate::animate::Atlas, &'static str, f32, Option<Character>)>,
     /// For how long Accept has been held to skip his talk (a second does it).
     pub skipping: f32,
     /// Music the stage wants played and how loud just now, which the play screen follows; and its fading out: seconds left, of how many.
@@ -1046,6 +1063,7 @@ impl Scene {
             sounds: Vec::new(),
             stunt: None,
             actor: None,
+            rescue: None,
             skipping: 0.0,
             tune: None,
             tune_out: (0.0, 0.0),
@@ -1733,13 +1751,23 @@ impl Scene {
     /// `beat`: seconds a beat of the song takes.
     pub fn open_with(&mut self, song: &str, beat: f32) -> bool {
         match (self.stage.as_str(), song) {
-            ("tank", "ugh" | "guns") => {
-                let talk = self.paths.find("images/cutscenes/tankman/Animation.json").and_then(|file| crate::animate::Atlas::load(file.parent()?).map_err(|e| eprintln!("{e}")).ok());
-                let (Some(talk), Some(tankman)) = (talk, &self.opponent) else { return false };
-                let (stunt, part, sound) = if song == "ugh" { (Stunt::Ugh, "TANK TALK 1 P1", "") } else { (Stunt::Guns, "TANK TALK 2", "tankSong2") };
-                (self.actor, self.pinned) = (Some((talk, part, 0.0)), Some(tankman.position + vec2(280.0, 170.0)));
-                // his music comes up over a second, and goes over four and a half beats of the countdown
-                (self.tune, self.tune_out) = (self.paths.find("music/DISTORTO.ogg").map(|path| (path, 0.0)), (0.0, 4.5 * beat));
+            ("tank", "ugh" | "guns" | "stress") => {
+                let atlas = |name: &str| self.paths.find(&format!("images/cutscenes/{name}/Animation.json")).and_then(|file| crate::animate::Atlas::load(file.parent()?).map_err(|e| eprintln!("{e}")).ok());
+                let (Some(talk), Some(tankman)) = (atlas("tankman"), &self.opponent) else { return false };
+                let (stunt, part, sound, view) = match song {
+                    "ugh" => (Stunt::Ugh, "TANK TALK 1 P1", "", 280.0),
+                    "guns" => (Stunt::Guns, "TANK TALK 2", "tankSong2", 280.0),
+                    _ => (Stunt::Stress, "TANK TALK 3 P1 UNCUT", "stressCutscene", 400.0),
+                };
+                if stunt == Stunt::Stress {
+                    let (Some(pico), Some(player)) = (atlas("picoAppears"), &self.player) else { return false };
+                    let alone = Character::load(&self.paths, "bf", player.position, true).map_err(|e| eprintln!("Character bf: {e}")).ok();
+                    self.rescue = Some((pico, "GF Dancing at Gunpoint", 0.0, alone));
+                } else {
+                    // his music comes up over a second, and goes over four and a half beats of the countdown
+                    (self.tune, self.tune_out) = (self.paths.find("music/DISTORTO.ogg").map(|path| (path, 0.0)), (0.0, 4.5 * beat));
+                }
+                (self.actor, self.pinned) = (Some((talk, part, 0.0)), Some(tankman.position + vec2(view, 170.0)));
                 self.begin(stunt, sound, Vec2::ZERO)
             }
             ("spooky", "monster") => {
@@ -1788,6 +1816,46 @@ impl Scene {
                 self.actor.iter_mut().for_each(|actor| (actor.1, actor.2) = ("TANK TALK 1 P2", now));
                 sound("killYou");
             }
+        } else if stunt == Stunt::Stress {
+            // the girlfriend turns on her guards; Pico shoots them and takes her place while she drops into the player's arms
+            if crossed(15.2) {
+                self.pinned = Some(vec2(650.0, 300.0));
+                self.rescue.iter_mut().for_each(|rescue| (rescue.1, rescue.2) = ("GF Time to Die sequence", now));
+            }
+            if let Some((pico, part, since, alone)) = &mut self.rescue {
+                let through = (now - *since) * pico.rig.fps >= pico.rig.symbol_length(part) as f32;
+                match *part {
+                    "GF Time to Die sequence" if through => {
+                        (*part, *since, *alone) = ("Pico Saves them sequence", now, None);
+                        if let Some(player) = &mut self.player {
+                            player.play("bfCatch");
+                        }
+                    }
+                    "Pico Saves them sequence" if through => (*part, *since) = ("Pico Dual Wield on Speaker idle", now),
+                    "Pico Dual Wield on Speaker idle" if through => self.rescue = None,
+                    _ => {}
+                }
+            }
+            // the whole stage, twice: after the rescue, and after the player's shout
+            if crossed(17.5) || crossed(32.2) {
+                (self.pinned, self.camera) = (Some(vec2(630.0, 425.0)), vec2(630.0, 425.0));
+            }
+            if crossed(19.5) {
+                self.actor.iter_mut().for_each(|actor| (actor.1, actor.2) = ("TANK TALK 3 P2 UNCUT", now));
+            }
+            if crossed(20.0) {
+                self.pinned = self.opponent.as_ref().map(|tankman| tankman.position + vec2(500.0, 170.0));
+            }
+            if let Some(player) = &mut self.player {
+                if crossed(31.2) {
+                    player.play("singUPmiss");
+                    (self.pinned, self.camera) = (Some(player.position + vec2(280.0, 200.0)), player.position + vec2(280.0, 200.0));
+                } else if player.current != "idle" && player.finished() {
+                    // done catching or shouting, he stands still
+                    player.play("idle");
+                    player.time = 60.0;
+                }
+            }
         } else if let Some(gf) = self.gf.as_mut().filter(|gf| now >= 4.0 && (crossed(4.0) || gf.finished())) {
             // his bars make her cry, again and again
             gf.play("sad");
@@ -1795,8 +1863,8 @@ impl Scene {
         if !skipped && !stunt_at(stunt, now).3 {
             return false;
         }
-        // the countdown: the opponent is himself again, the view goes back to the singers
-        (self.actor, self.pinned, self.skipping) = (None, None, 0.0);
+        // the countdown: everyone is themselves again, the view goes back to the singers
+        (self.actor, self.rescue, self.pinned, self.skipping) = (None, None, None, 0.0);
         for character in [&mut self.opponent, &mut self.gf, &mut self.player].into_iter().flatten().filter(|_| skipped) {
             character.dance();
         }
@@ -1816,7 +1884,7 @@ impl Scene {
         self.stunt = Some((stunt, now, view));
         let (_, back, _, mut over) = stunt_at(stunt, now);
         match stunt {
-            Stunt::Ugh | Stunt::Guns => over = self.talk(stunt, before, now, skip),
+            Stunt::Ugh | Stunt::Guns | Stunt::Stress => over = self.talk(stunt, before, now, skip),
             // the view stays where the scene put it, as close as the scene wants it
             Stunt::LightsOn => (self.camera, self.zoom) = (view, 1.5 + (self.default_zoom - 1.5) * back),
             _ => self.camera = view,
@@ -1941,13 +2009,22 @@ impl Scene {
                 spirit.draw_as(pose, *time, *at, Color { a: 0.3 - 0.069 * age as f32, ..spirit.tint });
             }
         }
+        let scene_time = self.stunt.map_or(0.0, |(_, t, _)| t);
         for slot in fighters {
-            match (&self.actor, slot, self.stunt) {
+            match (&self.actor, &self.rescue, slot) {
                 // Tankman talks in the opponent's place
-                (Some((talk, part, since)), Some(tankman), Some((_, t, _))) if std::ptr::eq(slot, &self.opponent) => {
-                    talk.draw_symbol(part, ((t - since) * talk.rig.fps) as usize, tankman.position + vec2(419.0, 225.0));
+                (Some((talk, part, since)), _, Some(tankman)) if std::ptr::eq(slot, &self.opponent) => {
+                    talk.draw_symbol(part, ((scene_time - since) * talk.rig.fps) as usize, tankman.position + vec2(419.0, 225.0));
                 }
-                (_, Some(character), _) => character.draw(),
+                // the girlfriend at gunpoint (she dances on and on), then Pico, where the one on the speakers will be
+                (_, Some((pico, part, since, _)), Some(gf)) if std::ptr::eq(slot, &self.gf) => {
+                    let frame = ((scene_time - since) * pico.rig.fps) as usize;
+                    let frame = if *part == "GF Dancing at Gunpoint" { frame % pico.rig.symbol_length(part).max(1) } else { frame };
+                    pico.draw_symbol(part, frame, gf.position + vec2(150.0, 450.0));
+                }
+                // the player without her, standing still
+                (_, Some((.., Some(alone))), Some(player)) if std::ptr::eq(slot, &self.player) => alone.draw_as("idle", 60.0, player.position + vec2(0.0, 20.0), WHITE),
+                (_, _, Some(character)) => character.draw(),
                 _ => {}
             }
         }
@@ -1993,6 +2070,10 @@ mod tests {
         let near = |a: f32, b: f32| (a - b).abs() < 1e-5;
         assert!(near(super::talk_zoom(Stunt::Ugh, 5.0), 1.2) && near(super::talk_zoom(Stunt::Guns, 0.0), 1.0) && near(super::talk_zoom(Stunt::Guns, 2.0), 1.1));
         assert!(near(super::talk_zoom(Stunt::Guns, 4.5), 1.44) && near(super::talk_zoom(Stunt::Guns, 6.0), 1.2));
+        // before Stress: close, closer as the girlfriend turns, far out after the rescue, a jolt at the shout, far out again
+        let stress = |t: f32| super::talk_zoom(Stunt::Stress, t);
+        assert!(near(stress(5.0), 1.2) && near(stress(17.45), 1.44) && near(stress(17.5), super::FAR) && near(stress(25.0), super::FAR));
+        assert!(stress(31.25) > 1.44 && near(stress(31.5), 1.44) && near(stress(32.2), super::FAR) && stunt_at(Stunt::Stress, 35.5).3);
     }
 
     #[test]

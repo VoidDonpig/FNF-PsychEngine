@@ -113,6 +113,11 @@ impl Rig {
         pieces
     }
 
+    /// Frames of the symbol of that name; 0 when there is none.
+    pub fn symbol_length(&self, name: &str) -> usize {
+        self.symbols.get(name).map_or(0, Timeline::length)
+    }
+
     /// The pieces of a frame of one symbol played on its own (its last frame once it is through), as `pieces` gives them.
     pub fn pieces_of(&self, symbol: &str, frame: usize) -> Vec<(&str, Affine2)> {
         let mut pieces = Vec::new();
@@ -217,6 +222,7 @@ mod tests {
         assert_eq!(at(rig.pieces(0)), [("0001".to_owned(), vec2(6.0, 8.0), 2.0), ("0000".to_owned(), vec2(11.0, 22.0), 1.0)]);
         assert_eq!(at(rig.pieces(1)), [("0001".to_owned(), vec2(6.0, 8.0), 2.0), ("0001".to_owned(), vec2(13.0, 24.0), 1.0)]);
         // a symbol played on its own: its frames where it puts them, the last one once it is through, nothing for a name unknown
+        assert_eq!((rig.symbol_length("arm"), rig.symbol_length("leg")), (2, 0));
         assert_eq!(at(rig.pieces_of("arm", 0)), [("0000".to_owned(), vec2(1.0, 2.0), 1.0)]);
         assert_eq!((at(rig.pieces_of("arm", 9)), rig.pieces_of("leg", 0).len()), (vec![("0001".to_owned(), vec2(3.0, 4.0), 1.0)], 0));
         assert_eq!(at(rig.pieces(2))[1].0, "0000", "the loop comes round");
