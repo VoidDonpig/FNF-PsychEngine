@@ -320,7 +320,7 @@ impl Playing {
         tracks.extend(voices_player.as_deref());
         let player_voice = voices_player.as_ref().map(|_| 1);
         tracks.extend(voices_opponent.as_deref());
-        let scene = scene::Scene::load(base, &entry.source, &chart, settings.low_quality, story).map_err(|e| eprintln!("Stage: {e}")).ok();
+        let scene = scene::Scene::load(base, &entry.source, &chart, settings.low_quality, settings.shaders, story).map_err(|e| eprintln!("Stage: {e}")).ok();
         // shortcut: --at only moves the silent clock (it exists for screenshots); seek the audio too to make it a practice feature.
         let song = audio::Song::load_at(if start_at > 0.0 { &[] } else { &tracks }, settings.playback_rate);
         // five beats of countdown, as the Haxe engine does
@@ -1212,7 +1212,7 @@ fn main() {
         let (was, was_loading) = (which(&screen), matches!(screen, Screen::Loading(..)));
         screen = match screen {
             waiting if closing.is_some() => waiting,
-            Screen::Menu(page) => match skin.as_ref().map(|skin| menus.run(page, skin, &weeks, &songs, &save, settings.flashing)) {
+            Screen::Menu(page) => match skin.as_ref().map(|skin| menus.run(page, skin, &weeks, &songs, &save, settings.flashing, settings.shaders)) {
                 Some(Go::Stay) => Screen::Menu(page),
                 Some(Go::Page(page)) => Screen::Menu(page),
                 Some(Go::Options) => Screen::Options(Default::default(), Page::Main),
@@ -1321,7 +1321,7 @@ fn main() {
                             Some((week, rest, _, misses)) if rest.is_empty() && misses + play.misses == 0 && entry.difficulty.eq_ignore_ascii_case("hard") => Some(weeks[*week].file.as_str()),
                             _ => None,
                         };
-                        let run = Run { song: &entry.title, accuracy: play.accuracy().unwrap_or(0.0), practice: playing.settings.practice, botplay: play.botplay, idled: playing.idled, lowest_graphics: playing.settings.low_quality && !playing.settings.antialiasing,
+                        let run = Run { song: &entry.title, accuracy: play.accuracy().unwrap_or(0.0), practice: playing.settings.practice, botplay: play.botplay, idled: playing.idled, lowest_graphics: playing.settings.low_quality && !playing.settings.antialiasing && !playing.settings.shaders,
                             lanes_used: playing.lanes_used.iter().filter(|used| **used).count(), flawless_week };
                         for id in earned(&run) {
                             if save.unlock(id) {

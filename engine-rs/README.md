@@ -142,11 +142,11 @@ Done:
 Not there yet:
 
 - **Play screen**: the events and note types that belong to scripts (Set Property beyond the camera, custom
-  ones); the rain of weekend 1 is drawn as falling streaks, growing heavier through the song, not with the Haxe
-  engine's shader; the charting mode entries of the pause menu.
+  ones); the rain of weekend 1 (on the streets and in the fight; the Shaders switch turns it off with the title's
+  colour shift) is drawn as falling streaks, growing heavier through the song, not with the Haxe engine's shader; the charting mode entries of the pause menu.
 - **Menus**: per-mod settings (the mods menu's settings button stays off);
   achievements of mods; the note colours' copy and paste buttons (no clipboard here); the key binds' gamepad
-  side (no gamepads yet) and debug keys (no editors yet); the Shaders and GPU Caching switches (nothing to switch here); update check.
+  side (no gamepads yet) and debug keys (no editors yet); the GPU Caching switch (nothing to switch here); update check.
 - **Cutscenes**: videos (so weekend 1's video before Darnell and after 2hot; the scene with the can after the
   first is there); dialogue from a song's `dialogue.json` (the kind scripts start).
 - **Scripts**: Lua (about 225 functions and the callbacks). HScript is Haxe code run against the Haxe

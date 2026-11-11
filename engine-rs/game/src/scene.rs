@@ -1162,7 +1162,8 @@ fn who(value: &str) -> usize {
 impl Scene {
     /// `low`: the Low Quality option, which leaves details of the stage out.
     /// `story`: the song is played in story mode (a stage file may show some things only then, or only out of it).
-    pub fn load(base: &std::path::Path, source: &str, chart: &Chart, low: bool, story: bool) -> Result<Scene, String> {
+    /// `shaders`: what the Haxe engine draws with shaders (the rain) is drawn.
+    pub fn load(base: &std::path::Path, source: &str, chart: &Chart, low: bool, shaders: bool, story: bool) -> Result<Scene, String> {
         let stage = read_json(&Paths::new(base, source, ""), &format!("stages/{}.json", chart.stage))?;
         let paths = Paths::new(base, source, stage["directory"].as_str().unwrap_or(""));
         let mut loaded = Pictures::new();
@@ -1237,7 +1238,12 @@ impl Scene {
             fade: None,
             shot: f32::MAX,
             flicker: None,
-            rain: if low || chart.stage != "phillyStreets" { None } else { rain_of(&funkin_core::content::song_path(&chart.song)) },
+            rain: match chart.stage.as_str() {
+                _ if !shaders => None,
+                "phillyStreets" => rain_of(&funkin_core::content::song_path(&chart.song)),
+                "phillyBlazin" => Some((0.5, 0.5)),
+                _ => None,
+            },
             progress: 0.0,
             fight: (chart.stage == "phillyBlazin").then(Default::default),
             opponent_front: false,

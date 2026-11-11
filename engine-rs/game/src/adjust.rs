@@ -58,7 +58,7 @@ impl Adjust {
         let picture = |name: &str| paths.find(&format!("images/{name}.png")).and_then(|path| crate::atlas::picture(&path));
         // (the girlfriend as the opponent: she stands in her own place and nobody else is loaded)
         let chart = Chart { stage: "stage".to_owned(), player: "bf".to_owned(), opponent: "gf".to_owned(), bpm: 128.0, tempo: vec![(0.0, 0.0, 128.0)], ..Default::default() };
-        let mut scene = Scene::load(base, "", &chart, settings.low_quality, false).map_err(|error| eprintln!("Stage: {error}")).ok();
+        let mut scene = Scene::load(base, "", &chart, settings.low_quality, settings.shaders, false).map_err(|error| eprintln!("Stage: {error}")).ok();
         let view = ChartEvent { time: 0.0, name: "Camera Follow Pos".to_owned(), value1: "760".to_owned(), value2: "490".to_owned() };
         scene.iter_mut().for_each(|scene| scene.event(&view));
         let music = paths.find("music/offsetSong.ogg");

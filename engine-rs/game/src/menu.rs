@@ -432,6 +432,7 @@ pub struct Menus {
     pub reload: bool,
     /// The player's choice on flashing lights: without them nothing flashes or blinks.
     flashing: bool,
+    shaders: bool,
     /// Selected achievement, and how far its list has scrolled.
     achievement: usize,
     achievement_scroll: f32,
@@ -535,7 +536,7 @@ impl Menus {
             art, look: None, letters: String::new(), secret: None, jingle: None, fade: None, hue: 0.0,
             alphabet: Alphabet::load(&paths), paths, audio: None, music_at: 0.0, intro: true, wacky: [wacky.0.to_owned(), wacky.1.to_owned()], flash: (f64::MIN, 1.0), chosen: None,
             main_row: 0, main_side: 0, main_slide: 0.0, main_spots: Vec::new(), main_pointed: false, week: 0, week_scroll: 0.0, difficulty: "Normal".to_owned(), rows: Vec::new(), song: 0, song_scroll: 0.0, tint: Vec3::ONE, shown: (0.0, 0.0),
-            credits: Vec::new(), credit: 0, credit_scroll: 0.0, mods: Vec::new(), mod_row: 0, mods_changed: false, mod_center: 2, mod_focus: None, mod_hover: None, mod_dragging: false, mods_scan: 0.0, reload: false, flashing: true, achievement: 0, achievement_scroll: 0.0, chime: false, held: 0.0, preview: false, asking: None, player: Player::default(), restart: false,
+            credits: Vec::new(), credit: 0, credit_scroll: 0.0, mods: Vec::new(), mod_row: 0, mods_changed: false, mod_center: 2, mod_focus: None, mod_hover: None, mod_dragging: false, mods_scan: 0.0, reload: false, flashing: true, shaders: true, achievement: 0, achievement_scroll: 0.0, chime: false, held: 0.0, preview: false, asking: None, player: Player::default(), restart: false,
         }
     }
 
@@ -675,8 +676,10 @@ impl Menus {
     }
 
     /// Runs and draws one frame of a menu.
-    pub fn run(&mut self, page: Page, skin: &Skin, weeks: &[Week], songs: &[SongEntry], save: &Save, flashing: bool) -> Go {
-        self.flashing = flashing;
+    /// `shaders`: the title screen shifts its colours with Left and Right.
+    #[allow(clippy::too_many_arguments)]
+    pub fn run(&mut self, page: Page, skin: &Skin, weeks: &[Week], songs: &[SongEntry], save: &Save, flashing: bool, shaders: bool) -> Go {
+        (self.flashing, self.shaders) = (flashing, shaders);
         self.music();
         if let (Some((since, from, to, seconds)), Some(audio)) = (self.fade, &self.audio) {
             let part = ((get_time() - since) / seconds).min(1.0) as f32;
@@ -781,7 +784,7 @@ impl Menus {
         }
         // the dancer and the logo take the colours the player has turned them to
         if self.secret.is_none() {
-            self.hue += get_frame_time() * 0.1 * (crate::controls::down(RIGHT) as i8 - crate::controls::down(LEFT) as i8) as f32;
+            self.hue = if self.shaders { self.hue + get_frame_time() * 0.1 * (crate::controls::down(RIGHT) as i8 - crate::controls::down(LEFT) as i8) as f32 } else { 0.0 };
         }
         recolor(Some(turned(self.hue)).filter(|_| self.hue != 0.0));
         if let Some(sheet) = self.art.own_sheet(look.image) {
