@@ -35,7 +35,7 @@ impl ABot {
         let atlas = |name: &str| paths.find(&format!("images/abot/{name}/Animation.json")).and_then(|file| Atlas::load(file.parent()?).map_err(|error| eprintln!("{error}")).ok());
         ABot {
             at: spot + vec2(0.0, 550.0),
-            back: paths.find("images/abot/stereoBG.png").and_then(|path| std::fs::read(path).ok()).map(|bytes| Texture2D::from_file_with_format(&bytes, None)),
+            back: paths.find("images/abot/stereoBG.png").and_then(|path| std::fs::read(path).ok()).map(|bytes| crate::atlas::texture(&bytes)),
             bars: paths.find("images/abot/aBotViz.png").and_then(|path| Sheet::load(&path).ok()),
             eyes: atlas("systemEyes"),
             body: atlas("abotSystem"),

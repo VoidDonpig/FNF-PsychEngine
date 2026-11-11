@@ -50,63 +50,69 @@ struct LayerDef {
     pixel: bool,
     /// Grows around its middle instead of from its top left corner.
     centered: bool,
+    /// Left out on low quality.
+    detail: bool,
 }
 
 fn layer(image: &'static str, x: f32, y: f32, scroll_x: f32, scroll_y: f32) -> LayerDef {
-    LayerDef { image, at: vec2(x, y), scroll: vec2(scroll_x, scroll_y), size: Size::Times(1.0), flip: false, anim: None, fps: 24.0, front: false, pixel: false, centered: false }
+    LayerDef { image, at: vec2(x, y), scroll: vec2(scroll_x, scroll_y), size: Size::Times(1.0), flip: false, anim: None, fps: 24.0, front: false, pixel: false, centered: false, detail: false }
 }
 
 /// The backdrop of a stage, back to front. The numbers are those of source/states/stages.
 // shortcut: the weekend 1 lighting is not here yet. What `Own` moves is.
-fn backdrop(stage: &str) -> Vec<LayerDef> {
+/// On low quality (`low`) the details the Haxe engine leaves out are left out, and two animated backgrounds stand still.
+fn backdrop(stage: &str, low: bool) -> Vec<LayerDef> {
     use Motion::*;
     use Size::*;
     let sized = |size: Size, def: LayerDef| LayerDef { size, ..def };
     let moving = |prefix: &'static str, motion: Motion, def: LayerDef| LayerDef { anim: Some((prefix, motion)), ..def };
     let front = |def: LayerDef| LayerDef { front: true, ..def };
     let pixel = |def: LayerDef| LayerDef { pixel: true, ..def };
+    let detail = |def: LayerDef| LayerDef { detail: true, ..def };
     // pixel stages draw their 311 pixel wide pictures six times as large
     let wide = 311.0 * 6.0;
-    match stage {
+    let mut layers = match stage {
         "stage" => vec![
             layer("stageback", -600.0, -200.0, 0.9, 0.9),
             sized(Times(1.1), layer("stagefront", -650.0, 600.0, 0.9, 0.9)),
-            sized(Times(1.1), layer("stage_light", -125.0, -100.0, 0.9, 0.9)),
-            LayerDef { flip: true, ..sized(Times(1.1), layer("stage_light", 1225.0, -100.0, 0.9, 0.9)) },
-            sized(Times(0.9), layer("stagecurtains", -500.0, -300.0, 1.3, 1.3)),
+            detail(sized(Times(1.1), layer("stage_light", -125.0, -100.0, 0.9, 0.9))),
+            LayerDef { flip: true, ..detail(sized(Times(1.1), layer("stage_light", 1225.0, -100.0, 0.9, 0.9))) },
+            detail(sized(Times(0.9), layer("stagecurtains", -500.0, -300.0, 1.3, 1.3))),
         ],
         // the strike ends on the picture of the quiet house
+        "spooky" if low => vec![layer("halloween_bg_low", -200.0, -100.0, 1.0, 1.0)],
         "spooky" => vec![moving("halloweem bg lightning strike", Once, layer("halloween_bg", -200.0, -100.0, 1.0, 1.0))],
         "philly" => vec![
-            layer("philly/sky", -100.0, 0.0, 0.1, 0.1),
+            detail(layer("philly/sky", -100.0, 0.0, 0.1, 0.1)),
             sized(Times(0.85), layer("philly/city", -10.0, 0.0, 0.3, 0.3)),
             sized(Times(0.85), layer("philly/window", -10.0, 0.0, 0.3, 0.3)),
-            layer("philly/behindTrain", -40.0, 50.0, 1.0, 1.0),
+            detail(layer("philly/behindTrain", -40.0, 50.0, 1.0, 1.0)),
             layer("philly/train", 2000.0, 360.0, 1.0, 1.0),
             layer("philly/street", -40.0, 50.0, 1.0, 1.0),
         ],
         "limo" => {
             // between the dancers' limo and the dancers: what the "Kill Henchmen" event brings (a pole, its lamp, who it leaves behind, what flies off)
-            let gore = |prefix: &'static str, motion: Motion, y: f32| moving(prefix, motion, layer("gore/noooooo", -500.0, y, 0.4, 0.4));
+            // the dancers' limo and all that rides on it are details
+            let gore = |prefix: &'static str, motion: Motion, y: f32| detail(moving(prefix, motion, layer("gore/noooooo", -500.0, y, 0.4, 0.4)));
             let mut layers = vec![
                 layer("limo/limoSunset", -120.0, -50.0, 0.1, 0.1),
-                layer("gore/metalPole", -500.0, 220.0, 0.4, 0.4),
-                moving("background limo pink", Loop, layer("limo/bgLimo", -150.0, 480.0, 0.4, 0.4)),
+                detail(layer("gore/metalPole", -500.0, 220.0, 0.4, 0.4)),
+                detail(moving("background limo pink", Loop, layer("limo/bgLimo", -150.0, 480.0, 0.4, 0.4))),
                 gore("Henchmen on rail", Loop, 90.0),
                 gore("henchmen death", Loop, 220.0),
             ];
-            layers.extend((0..5).map(|i| moving("bg dancer sketch PINK", Sway(15), layer("limo/limoDancer", 370.0 * i as f32 + 170.0, 80.0, 0.4, 0.4))));
-            layers.push(layer("gore/coldHeartKiller", -680.0, 140.0, 0.4, 0.4));
+            layers.extend((0..5).map(|i| detail(moving("bg dancer sketch PINK", Sway(15), layer("limo/limoDancer", 370.0 * i as f32 + 170.0, 80.0, 0.4, 0.4)))));
+            layers.push(detail(layer("gore/coldHeartKiller", -680.0, 140.0, 0.4, 0.4)));
             layers.extend(["hench leg spin PINK", "hench arm spin PINK", "hench head spin PINK", "hench leg spin 2 PINK", "hench arm spin 2 PINK", "hench head spin 2 PINK"].map(|prefix| gore(prefix, Flash, 0.0)));
-            layers.extend([0, 1].map(|_| LayerDef { flip: true, ..moving("blood", Flash, layer("gore/stupidBlood", -400.0, -400.0, 0.4, 0.4)) }));
+            layers.extend([0, 1].map(|_| LayerDef { flip: true, ..detail(moving("blood", Flash, layer("gore/stupidBlood", -400.0, -400.0, 0.4, 0.4))) }));
             layers.push(layer("limo/fastCarLol", -12600.0, 160.0, 1.0, 1.0));
             layers.push(moving("Limo stage", Loop, layer("limo/limoDrive", -120.0, 550.0, 1.0, 1.0)));
             layers
         }
         "mall" => vec![
             sized(Times(0.8), layer("christmas/bgWalls", -1000.0, -500.0, 0.2, 0.2)),
-            sized(Times(0.85), moving("Upper Crowd Bob", Beat, layer("christmas/upperBop", -240.0, -90.0, 0.33, 0.33))),
-            sized(Times(0.9), layer("christmas/bgEscalator", -1100.0, -600.0, 0.3, 0.3)),
+            detail(sized(Times(0.85), moving("Upper Crowd Bob", Beat, layer("christmas/upperBop", -240.0, -90.0, 0.33, 0.33)))),
+            detail(sized(Times(0.9), layer("christmas/bgEscalator", -1100.0, -600.0, 0.3, 0.3))),
             layer("christmas/christmasTree", 370.0, -250.0, 0.4, 0.4),
             moving("Bottom Level Boppers Idle", Beat, layer("christmas/bottomBop", -300.0, 140.0, 0.9, 0.9)),
             layer("christmas/fgSnow", -600.0, 700.0, 1.0, 1.0),
@@ -121,61 +127,67 @@ fn backdrop(stage: &str) -> Vec<LayerDef> {
             pixel(sized(Wide(wide), layer("weeb/weebSky", 0.0, 0.0, 0.1, 0.1))),
             pixel(sized(Wide(wide), layer("weeb/weebSchool", -200.0, 0.0, 0.6, 0.9))),
             pixel(sized(Wide(wide), layer("weeb/weebStreet", -200.0, 0.0, 0.95, 0.95))),
-            pixel(sized(Wide(wide * 0.8), layer("weeb/weebTreesBack", -30.0, 130.0, 0.9, 0.9))),
+            detail(pixel(sized(Wide(wide * 0.8), layer("weeb/weebTreesBack", -30.0, 130.0, 0.9, 0.9)))),
             LayerDef { fps: 12.0, ..pixel(sized(Wide(wide * 1.4), moving("", Loop, layer("weeb/weebTrees", -580.0, -800.0, 0.85, 0.85)))) },
-            pixel(sized(Wide(wide), moving("PETALS ALL", Loop, layer("weeb/petals", -200.0, -40.0, 0.85, 0.85)))),
-            pixel(sized(Times(6.0), moving("BG girls group", Sway(15), layer("weeb/bgFreaks", -100.0, 190.0, 0.9, 0.9)))),
+            detail(pixel(sized(Wide(wide), moving("PETALS ALL", Loop, layer("weeb/petals", -200.0, -40.0, 0.85, 0.85))))),
+            detail(pixel(sized(Times(6.0), moving("BG girls group", Sway(15), layer("weeb/bgFreaks", -100.0, 190.0, 0.9, 0.9))))),
         ],
         "schoolEvil" => vec![
-            LayerDef { centered: true, ..pixel(sized(Times(6.0), moving("background 2", Loop, layer("weeb/animatedEvilSchool", 400.0, 200.0, 0.8, 0.9)))) },
+            if low {
+                LayerDef { centered: true, ..pixel(sized(Times(6.0), layer("weeb/animatedEvilSchool_low", 400.0, 200.0, 0.8, 0.9))) }
+            } else {
+                LayerDef { centered: true, ..pixel(sized(Times(6.0), moving("background 2", Loop, layer("weeb/animatedEvilSchool", 400.0, 200.0, 0.8, 0.9)))) }
+            },
             // the ghouls of the "Trigger BG Ghouls" event
             pixel(sized(Times(6.0), moving("BG freaks glitch instance", Flash, layer("weeb/bgGhouls", -100.0, 190.0, 0.9, 0.9)))),
         ],
         "tank" => vec![
             layer("tankSky", -400.0, -400.0, 0.0, 0.0),
-            layer("tankClouds", -400.0, 0.0, 0.1, 0.1),
-            sized(Times(1.2), layer("tankMountains", -300.0, -20.0, 0.2, 0.2)),
-            sized(Times(1.1), layer("tankBuildings", -200.0, 0.0, 0.3, 0.3)),
+            detail(layer("tankClouds", -400.0, 0.0, 0.1, 0.1)),
+            detail(sized(Times(1.2), layer("tankMountains", -300.0, -20.0, 0.2, 0.2))),
+            detail(sized(Times(1.1), layer("tankBuildings", -200.0, 0.0, 0.3, 0.3))),
             sized(Times(1.1), layer("tankRuins", -200.0, 0.0, 0.35, 0.35)),
-            moving("SmokeBlurLeft", Loop, layer("smokeLeft", -200.0, -100.0, 0.4, 0.4)),
-            moving("SmokeRight", Loop, layer("smokeRight", 1100.0, -100.0, 0.4, 0.4)),
-            moving("watchtower gradient color", Beat, layer("tankWatchtower", 100.0, 50.0, 0.5, 0.5)),
+            detail(moving("SmokeBlurLeft", Loop, layer("smokeLeft", -200.0, -100.0, 0.4, 0.4))),
+            detail(moving("SmokeRight", Loop, layer("smokeRight", 1100.0, -100.0, 0.4, 0.4))),
+            detail(moving("watchtower gradient color", Beat, layer("tankWatchtower", 100.0, 50.0, 0.5, 0.5))),
             moving("BG tank w lighting", Loop, layer("tankRolling", 0.0, 0.0, 0.5, 0.5)),
             sized(Times(1.15), layer("tankGround", -420.0, -150.0, 1.0, 1.0)),
             front(moving("fg", Beat, layer("tank0", -500.0, 650.0, 1.7, 1.5))),
-            front(moving("fg", Beat, layer("tank1", -300.0, 750.0, 2.0, 0.2))),
+            detail(front(moving("fg", Beat, layer("tank1", -300.0, 750.0, 2.0, 0.2)))),
             front(moving("foreground", Beat, layer("tank2", 450.0, 940.0, 1.5, 1.5))),
-            front(moving("fg", Beat, layer("tank4", 1300.0, 900.0, 1.5, 1.5))),
+            detail(front(moving("fg", Beat, layer("tank4", 1300.0, 900.0, 1.5, 1.5)))),
             front(moving("fg", Beat, layer("tank5", 1620.0, 700.0, 1.5, 1.5))),
-            front(moving("fg", Beat, layer("tank3", 1300.0, 1200.0, 3.5, 2.5))),
+            detail(front(moving("fg", Beat, layer("tank3", 1300.0, 1200.0, 3.5, 2.5)))),
         ],
         // the fight in the rain: a blurred street that stays with the camera, under a sky that drifts and flashes
         "phillyBlazin" => {
-            let mut layers: Vec<LayerDef> = (0..3).map(|_| layer("phillyBlazin/skyBlur", -500.0, -120.0, 0.0, 0.0)).collect();
+            let mut layers: Vec<LayerDef> = (0..3).map(|_| detail(layer("phillyBlazin/skyBlur", -500.0, -120.0, 0.0, 0.0))).collect();
             layers.extend([
-                sized(Times(1.75), layer("phillyBlazin/skyBlur", -600.0, -175.0, 0.0, 0.0)),
-                sized(Times(1.75), moving("lightning0", Flash, layer("phillyBlazin/lightning", -50.0, -300.0, 0.0, 0.0))),
+                detail(sized(Times(1.75), layer("phillyBlazin/skyBlur", -600.0, -175.0, 0.0, 0.0))),
+                detail(sized(Times(1.75), moving("lightning0", Flash, layer("phillyBlazin/lightning", -50.0, -300.0, 0.0, 0.0)))),
                 sized(Times(1.75), layer("phillyBlazin/streetBlur", -600.0, -175.0, 0.0, 0.0)),
             ]);
             layers
         }
         "phillyStreets" => vec![
-            sized(Times(0.65), layer("phillyStreets/phillySkybox", -650.0, -375.0, 0.1, 0.1)),
-            layer("phillyStreets/phillySkyline", -545.0, -273.0, 0.2, 0.2),
-            layer("phillyStreets/phillyForegroundCity", 625.0, 94.0, 0.3, 0.3),
+            detail(sized(Times(0.65), layer("phillyStreets/phillySkybox", -650.0, -375.0, 0.1, 0.1))),
+            detail(layer("phillyStreets/phillySkyline", -545.0, -273.0, 0.2, 0.2)),
+            detail(layer("phillyStreets/phillyForegroundCity", 625.0, 94.0, 0.3, 0.3)),
             layer("phillyStreets/phillyConstruction", 1800.0, 364.0, 0.7, 1.0),
             layer("phillyStreets/phillyHighwayLights", 284.0, 305.0, 1.0, 1.0),
             layer("phillyStreets/phillyHighway", 139.0, 209.0, 1.0, 1.0),
-            layer("phillyStreets/phillySmog", -6.0, 245.0, 0.8, 1.0),
+            detail(layer("phillyStreets/phillySmog", -6.0, 245.0, 0.8, 1.0)),
             // shortcut: the light maps over the lamps (added brightness) and the rain are left out.
-            moving("car1", Still, layer("phillyStreets/phillyCars", 1200.0, 818.0, 0.9, 1.0)),
-            LayerDef { flip: true, ..moving("car1", Still, layer("phillyStreets/phillyCars", 1200.0, 818.0, 0.9, 1.0)) },
-            moving("redtogreen", Once, layer("phillyStreets/phillyTraffic", 1840.0, 608.0, 0.9, 1.0)),
+            detail(moving("car1", Still, layer("phillyStreets/phillyCars", 1200.0, 818.0, 0.9, 1.0))),
+            LayerDef { flip: true, ..detail(moving("car1", Still, layer("phillyStreets/phillyCars", 1200.0, 818.0, 0.9, 1.0))) },
+            detail(moving("redtogreen", Once, layer("phillyStreets/phillyTraffic", 1840.0, 608.0, 0.9, 1.0))),
             layer("phillyStreets/phillyForeground", 88.0, 317.0, 1.0, 1.0),
             front(layer("SpraycanPile", 920.0, 1045.0, 1.0, 1.0)),
         ],
         _ => Vec::new(),
-    }
+    };
+    layers.retain(|def| !(low && def.detail));
+    layers
 }
 
 /// The pictures of a stage as read from disk, by name and by whether their sheet was read with them.
@@ -460,7 +472,7 @@ impl Layer {
                     let sheet = Sheet::load(&image).map_err(|e| eprintln!("Stage: {e}")).ok()?;
                     (sheet.texture, std::rc::Rc::new(sheet.frames))
                 }
-                None => (Texture2D::from_file_with_format(&std::fs::read(image).ok()?, None), Default::default()),
+                None => (crate::atlas::texture(&std::fs::read(image).ok()?), Default::default()),
             };
             loaded.insert(key, picture);
         }
@@ -550,7 +562,7 @@ fn read_json(paths: &Paths, relative: &str) -> Result<Value, String> {
 }
 
 fn texture(paths: &Paths, relative: &str) -> Option<Texture2D> {
-    Some(Texture2D::from_file_with_format(&std::fs::read(paths.find(relative)?).ok()?, None))
+    Some(crate::atlas::texture(&std::fs::read(paths.find(relative)?).ok()?))
 }
 
 struct Animation {
@@ -795,6 +807,8 @@ pub struct Scene {
     glow: Option<Glow>,
     spotlight: Option<Spotlight>,
     soldiers: Option<Soldiers>,
+    /// Low quality: no henchmen to sweep away, no sparks, no soldiers.
+    low: bool,
     /// When the shooter on the speakers fires, and to which side (lane 3: the right); and how many shots are behind.
     shots: Vec<(f64, usize)>,
     shots_done: usize,
@@ -822,11 +836,12 @@ fn who(value: &str) -> usize {
 }
 
 impl Scene {
-    pub fn load(base: &std::path::Path, source: &str, chart: &Chart) -> Result<Scene, String> {
+    /// `low`: the Low Quality option, which leaves details of the stage out.
+    pub fn load(base: &std::path::Path, source: &str, chart: &Chart, low: bool) -> Result<Scene, String> {
         let stage = read_json(&Paths::new(base, source, ""), &format!("stages/{}.json", chart.stage))?;
         let paths = Paths::new(base, source, stage["directory"].as_str().unwrap_or(""));
         let mut loaded = Pictures::new();
-        let mut backdrop: Vec<Layer> = backdrop(&chart.stage).into_iter().filter_map(|def| Layer::load(&paths, def, &mut loaded)).collect();
+        let mut backdrop: Vec<Layer> = backdrop(&chart.stage, low).into_iter().filter_map(|def| Layer::load(&paths, def, &mut loaded)).collect();
         // what only shows when its moment comes
         for hidden in backdrop.iter_mut().filter(|layer| ["philly/window", "gore/metalPole", "gore/coldHeartKiller"].contains(&layer.def.image) || matches!(layer.def.anim, Some(("Henchmen on rail" | "henchmen death", _)))) {
             hidden.tint.a = 0.0;
@@ -885,6 +900,7 @@ impl Scene {
             glow: None,
             spotlight: None,
             soldiers: None,
+            low,
             shots: Vec::new(),
             shots_done: 0,
             position: 0.0,
@@ -900,7 +916,7 @@ impl Scene {
             (shooter.skip_dance, shooter.current) = (true, "shoot1".to_owned());
             let cues = scene.paths.find(&format!("data/{}/picospeaker.json", funkin_core::content::song_path(&chart.song))).and_then(|path| std::fs::read_to_string(path).ok());
             scene.shots = cues.and_then(|text| funkin_core::chart::parse(&text).ok()).map_or(Vec::new(), |cues| cues.notes.iter().map(|note| (note.time, note.lane)).collect());
-            let sheet = scene.paths.find("images/tankmanKilled1.png").filter(|_| chart.stage == "tank").and_then(|path| Sheet::load(&path).ok());
+            let sheet = scene.paths.find("images/tankmanKilled1.png").filter(|_| chart.stage == "tank" && !low).and_then(|path| Sheet::load(&path).ok());
             if let Some(sheet) = sheet {
                 let list = scene.shots.iter().filter(|_| chance(0.16)).map(|&(shot_at, lane)| Soldier {
                     shot_at, y: 200.0 + rand::gen_range(50.0, 100.0), right: lane < 2, short: rand::gen_range(50.0, 200.0), speed: rand::gen_range(0.6, 1.0), fall: rand::gen_range(0, 2), step: rand::gen_range(0, 14),
@@ -960,7 +976,7 @@ impl Scene {
     pub fn event(&mut self, event: &ChartEvent) {
         let number = |value: &str| value.trim().parse::<f32>().ok();
         match event.name.as_str() {
-            "Kill Henchmen" => {
+            "Kill Henchmen" if !self.low => {
                 if let Own::Limo { kill: kill @ Kill::Wait, .. } = &mut self.own {
                     *kill = Kill::Sweep;
                     for layer in self.backdrop.iter_mut() {
@@ -987,7 +1003,7 @@ impl Scene {
                 match number(&event.value1).unwrap_or(0.0).round() as i32 {
                     // sparks, and the glow jumps up
                     2 => {
-                        let count = rand::gen_range(8, 13);
+                        let count = if self.low { 0 } else { rand::gen_range(8, 13) };
                         let apart = 2000.0 / count as f32;
                         for (row, column) in (0..3).flat_map(|row| (0..count).map(move |column| (row, column))) {
                             glow.sparks.push(Particle {
@@ -1677,6 +1693,19 @@ impl Scene {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn low_quality_leaves_out_details_only() {
+        let images = |stage: &str, low: bool| super::backdrop(stage, low).into_iter().map(|def| def.image).collect::<Vec<_>>();
+        assert_eq!(images("stage", true), ["stageback", "stagefront"]);
+        assert_eq!(images("philly", true), ["philly/city", "philly/window", "philly/train", "philly/street"]);
+        assert_eq!((images("spooky", true), images("schoolEvil", true)[0]), (vec!["halloween_bg_low"], "weeb/animatedEvilSchool_low"));
+        assert_eq!((images("limo", true), images("limo", false).len()), (vec!["limo/limoSunset", "limo/fastCarLol", "limo/limoDrive"], 21));
+        // every stage keeps something to stand on
+        for stage in ["stage", "spooky", "philly", "limo", "mall", "mallEvil", "school", "schoolEvil", "tank", "phillyBlazin", "phillyStreets"] {
+            assert!(!images(stage, true).is_empty() && images(stage, true).len() <= images(stage, false).len(), "{stage}");
+        }
+    }
+
     #[test]
     fn the_train_waits_for_its_sound_then_passes_car_by_car() {
         use super::{Train, TrainNow};

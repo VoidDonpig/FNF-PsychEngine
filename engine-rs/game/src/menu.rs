@@ -179,14 +179,14 @@ impl Art {
         let base = &self.base;
         self.images.entry(format!("{source}/{name}")).or_insert_with(|| {
             let path = Paths::new(base, source, "").find(&format!("images/{name}.png"))?;
-            Some(Texture2D::from_file_with_format(&std::fs::read(path).ok()?, None))
+            Some(crate::atlas::texture(&std::fs::read(path).ok()?))
         }).clone()
     }
 
     /// A mod's own picture, the "pack.png" in its folder.
     fn pack(&mut self, folder: &str) -> Option<Texture2D> {
         let path = self.base.join("mods").join(folder).join("pack.png");
-        self.images.entry(format!("{folder}/pack.png")).or_insert_with(|| Some(Texture2D::from_file_with_format(&std::fs::read(path).ok()?, None))).clone()
+        self.images.entry(format!("{folder}/pack.png")).or_insert_with(|| Some(crate::atlas::texture(&std::fs::read(path).ok()?))).clone()
     }
 
     fn sheet(&mut self, source: &str, name: &str) -> Option<Rc<Sheet>> {
@@ -432,6 +432,12 @@ impl Menus {
             main_row: 0, main_side: 0, main_slide: 0.0, week: 0, week_scroll: 0.0, difficulty: "Normal".to_owned(), rows: Vec::new(), song: 0, song_scroll: 0.0, tint: Vec3::ONE, shown: (0.0, 0.0),
             credits: Vec::new(), credit: 0, credit_scroll: 0.0, mods: Vec::new(), mod_row: 0, mods_changed: false, reload: false, flashing: true, achievement: 0, achievement_scroll: 0.0, chime: false, held: 0.0, preview: false, asking: None,
         }
+    }
+
+    /// Lets go of every picture loaded: each is read again when next shown (the Anti-Aliasing option changed).
+    pub fn forget(&mut self) {
+        (self.art.images, self.art.sheets, self.art.characters) = Default::default();
+        self.alphabet = Alphabet::load(&self.paths);
     }
 
     /// Gives up the sound card for a song. The menu music starts again when a menu is next shown.

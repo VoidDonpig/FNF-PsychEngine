@@ -54,6 +54,18 @@ pub fn parse_packer(txt: &str) -> Vec<(String, Frame)> {
     }).collect()
 }
 
+/// The Anti-Aliasing option: when off, pictures are loaded to keep their hard edges however they are stretched.
+pub static SMOOTH: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(true);
+
+/// A picture from the bytes of its file.
+pub fn texture(bytes: &[u8]) -> Texture2D {
+    let texture = Texture2D::from_file_with_format(bytes, None);
+    if !SMOOTH.load(std::sync::atomic::Ordering::Relaxed) {
+        texture.set_filter(FilterMode::Nearest);
+    }
+    texture
+}
+
 pub struct Sheet {
     pub texture: Texture2D,
     pub frames: Vec<(String, Frame)>,
@@ -63,7 +75,7 @@ impl Sheet {
     /// Loads `image` (a .png) and the .xml beside it.
     pub fn load(image: &Path) -> Result<Sheet, String> {
         let read = |path: &Path| std::fs::read(path).map_err(|e| format!("{}: {e}", path.display()));
-        let texture = Texture2D::from_file_with_format(&read(image)?, None);
+        let texture = texture(&read(image)?);
         let frames = match read(&image.with_extension("xml")) {
             Ok(xml) => parse(&String::from_utf8_lossy(&xml)),
             Err(missing) => parse_packer(&String::from_utf8_lossy(&read(&image.with_extension("txt")).map_err(|_| missing)?)),

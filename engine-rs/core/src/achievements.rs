@@ -47,10 +47,11 @@ pub struct Run<'a> {
     pub lanes_used: usize,
     /// The week file, when this song ended a week played in story mode on Hard without one miss.
     pub flawless_week: Option<&'a str>,
+    /// Every graphics option is at its lowest.
+    pub lowest_graphics: bool,
 }
 
 /// The achievements a finished song earns.
-// shortcut: "Toaster Gamer" asks for every graphics option at its lowest, and there are no graphics options yet.
 pub fn earned(run: &Run) -> Vec<&'static str> {
     if run.botplay {
         return Vec::new();
@@ -63,6 +64,7 @@ pub fn earned(run: &Run) -> Vec<&'static str> {
         "ur_good" => run.accuracy >= 1.0 && fair,
         "hype" => !run.idled && fair,
         "two_keys" => run.lanes_used <= 2 && fair,
+        "toastie" => run.lowest_graphics,
         "debugger" => run.song.eq_ignore_ascii_case("test") && fair,
         id => week.as_deref() == Some(id) && fair,
     }).collect()
@@ -74,10 +76,11 @@ mod tests {
 
     #[test]
     fn a_finished_song_earns_what_it_shows() {
-        let run = Run { song: "Fresh", accuracy: 1.0, practice: false, botplay: false, idled: true, lanes_used: 4, flawless_week: None };
+        let run = Run { song: "Fresh", accuracy: 1.0, practice: false, botplay: false, idled: true, lanes_used: 4, flawless_week: None, lowest_graphics: false };
         assert_eq!(earned(&run), ["ur_good"]);
         assert_eq!(earned(&Run { accuracy: 0.1, idled: false, lanes_used: 2, flawless_week: Some("week3"), ..run }), ["week3_nomiss", "ur_bad", "hype", "two_keys"]);
         assert_eq!(earned(&Run { flawless_week: Some("my-mod-week"), accuracy: 0.5, ..run }), [] as [&str; 0], "only weeks that have one");
         assert!(earned(&Run { practice: true, ..run }).is_empty() && earned(&Run { botplay: true, ..run }).is_empty());
+        assert_eq!(earned(&Run { practice: true, lowest_graphics: true, ..run }), ["toastie"], "a toaster is one in practice mode too");
     }
 }

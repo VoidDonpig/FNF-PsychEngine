@@ -1,5 +1,5 @@
 //! The options menu: key binds, and the pages of `settings::OPTIONS`.
-use crate::settings::{Kind, Settings, OPTIONS, PAGES};
+use crate::settings::{hex, Kind, Settings, LANE_COLORS, OPTIONS, PAGES, PIXEL_LANE_COLORS};
 use crate::{DIRECTIONS, HEIGHT};
 use macroquad::prelude::*;
 
@@ -12,6 +12,16 @@ pub struct OptionsMenu {
     binding: bool,
     /// Opened straight at a page: leaving the page leaves the options.
     direct: bool,
+    /// Note colours: those of pixel stages are shown, and the colour code being typed.
+    pixel: bool,
+    typing: Option<String>,
+}
+
+/// The colour with its hue turned by `degrees`. Greys have none and stay as they are.
+fn turned(color: u32, degrees: f32) -> u32 {
+    let (hue, saturation, light) = macroquad::color::rgb_to_hsl(Color::from_hex(color));
+    let Color { r, g, b, .. } = macroquad::color::hsl_to_rgb((hue + degrees / 360.0).rem_euclid(1.0), saturation, light);
+    [r, g, b].iter().fold(0, |code, channel| code << 8 | (channel * 255.0).round() as u32)
 }
 
 /// How an option's value reads in the menu.
@@ -54,7 +64,8 @@ impl OptionsMenu {
     }
 
     /// Runs and draws one frame. `text` writes a line with its baseline at (x, y). Returns true when the player leaves the options.
-    pub fn run(&mut self, settings: &mut Settings, text: &dyn Fn(&str, f32, f32, u16, Color), raw_input: bool, bindable: &[KeyCode]) -> bool {
+    /// `note` draws a lane's note (of pixel stages or not) centred on (x, y).
+    pub fn run(&mut self, settings: &mut Settings, text: &dyn Fn(&str, f32, f32, u16, Color), note: &dyn Fn(usize, bool, f32, f32), raw_input: bool, bindable: &[KeyCode]) -> bool {
         let title = self.page.map_or("Options".to_owned(), |page| format!("Options - {}", PAGES[page]));
         text(&title, 40.0, 60.0, 36, WHITE);
         let line = |index: usize, selected: usize, content: &str, y: f32| {
@@ -111,6 +122,62 @@ impl OptionsMenu {
             return false;
         }
 
+        let fast = if is_key_down(KeyCode::LeftShift) || is_key_down(KeyCode::RightShift) { 10.0 } else { 1.0 };
+        let steps = (is_key_pressed(KeyCode::Right) as i32 - is_key_pressed(KeyCode::Left) as i32) as f64;
+        if page == PAGES.len() - 1 {
+            // three colours for each of the four lanes
+            text("Up/Down: choose   Left/Right: turn the hue (Shift: x10)   Enter: type a colour code", 40.0, 96.0, 18, GRAY);
+            text("R: back to its usual colour   Ctrl: the notes of pixel stages   Esc: back", 40.0, 118.0, 18, GRAY);
+            let (colors, usual) = if self.pixel { (&mut settings.pixel_note_colors, PIXEL_LANE_COLORS) } else { (&mut settings.note_colors, LANE_COLORS) };
+            if self.typing.is_none() {
+                self.row = (self.row + step(12)) % 12;
+            }
+            let (lane, part) = (self.row / 3, self.row % 3);
+            for index in 0..12 {
+                let code = match &self.typing {
+                    Some(typed) if index == self.row => format!("#{typed}_"),
+                    _ => format!("#{:06X}", colors[index / 3][index % 3]),
+                };
+                line(index, self.row, &format!("{} {}: {code}", DIRECTIONS[index / 3], ["body", "shine", "outline"][index % 3]), 170.0 + index as f32 * 30.0 + (index / 3) as f32 * 20.0);
+                if index % 3 == 1 {
+                    note(index / 3, self.pixel, 480.0, 162.0 + index as f32 * 30.0 + (index / 3) as f32 * 20.0);
+                }
+            }
+            text(if self.pixel { "Pixel stages" } else { "Other stages" }, 40.0, HEIGHT - 40.0, 18, GRAY);
+            if let Some(typed) = &mut self.typing {
+                while let Some(letter) = get_char_pressed() {
+                    if letter.is_ascii_hexdigit() && typed.len() < 6 {
+                        typed.push(letter.to_ascii_uppercase());
+                    }
+                }
+                if is_key_pressed(KeyCode::Backspace) {
+                    typed.pop();
+                }
+                // the sixth digit completes it
+                if let Some(color) = hex(typed) {
+                    (colors[lane][part], self.typing) = (color, None);
+                } else if is_key_pressed(KeyCode::Escape) {
+                    self.typing = None;
+                }
+                return false;
+            }
+            if steps != 0.0 {
+                colors[lane][part] = turned(colors[lane][part], (steps * fast * 3.0) as f32);
+            } else if is_key_pressed(KeyCode::Enter) {
+                // what was typed before does not count
+                while get_char_pressed().is_some() {}
+                self.typing = Some(String::new());
+            } else if is_key_pressed(KeyCode::R) {
+                colors[lane][part] = usual[lane][part];
+            } else if is_key_pressed(KeyCode::LeftControl) || is_key_pressed(KeyCode::RightControl) {
+                self.pixel ^= true;
+            }
+            if back {
+                (self.page, self.row) = (None, page);
+            }
+            return back && self.direct;
+        }
+
         text("Up/Down: choose   Enter or Left/Right: change (Shift: x10)   Esc: back", 40.0, 96.0, 18, GRAY);
         let options: Vec<_> = OPTIONS.iter().filter(|option| option.page == page).collect();
         self.row = (self.row + step(options.len())) % options.len();
@@ -119,8 +186,6 @@ impl OptionsMenu {
         }
         let selected = options[self.row];
         text(selected.about, 40.0, HEIGHT - 40.0, 18, GRAY);
-        let steps = (is_key_pressed(KeyCode::Right) as i32 - is_key_pressed(KeyCode::Left) as i32) as f64;
-        let fast = if is_key_down(KeyCode::LeftShift) || is_key_down(KeyCode::RightShift) { 10.0 } else { 1.0 };
         if steps != 0.0 {
             change(&selected.kind, settings, steps * fast);
         } else if is_key_pressed(KeyCode::Enter) {
@@ -158,5 +223,16 @@ mod tests {
         assert_eq!(settings.time_bar, 0);
         change(option("playback_rate"), &mut settings, 10.0);
         assert_eq!(shown(option("playback_rate"), &mut settings), "1.50X");
+        change(option("rating_y"), &mut settings, -2.0);
+        assert_eq!((settings.combo_offset, shown(option("rating_y"), &mut settings).as_str()), ([0.0, -10.0, 0.0, 0.0], "-10 px"));
+    }
+
+    #[test]
+    fn a_hue_turns_all_the_way_round() {
+        assert_eq!((turned(0xFF0000, 120.0), turned(0xFF0000, -120.0), turned(0x808080, 50.0)), (0x00FF00, 0x0000FF, 0x808080));
+        // a third of the way round, three times, and each lane's colour is itself again
+        for color in LANE_COLORS.iter().chain(&PIXEL_LANE_COLORS).flatten() {
+            assert_eq!(turned(turned(turned(*color, 120.0), 120.0), 120.0), *color);
+        }
     }
 }

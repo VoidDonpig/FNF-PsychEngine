@@ -36,7 +36,11 @@ pub struct Opt {
 }
 
 /// The pages of the options menu. The first holds the key binds; the others list `OPTIONS`.
-pub const PAGES: [&str; 4] = ["Controls", "Gameplay", "Visuals", "Gameplay Changers"];
+/// The last holds the note colours.
+pub const PAGES: [&str; 6] = ["Controls", "Gameplay", "Visuals", "Gameplay Changers", "Graphics", "Note Colors"];
+/// The colours each lane's notes are made of (body, shine, outline) until the player chooses others, and those of pixel stages.
+pub const LANE_COLORS: [[u32; 3]; 4] = [[0xC24B99, 0xFFFFFF, 0x3C1F56], [0x00FFFF, 0xFFFFFF, 0x1542B7], [0x12FA05, 0xFFFFFF, 0x0A4447], [0xF9393F, 0xFFFFFF, 0x651038]];
+pub const PIXEL_LANE_COLORS: [[u32; 3]; 4] = [[0xE276FF, 0xFFF9FF, 0x60008D], [0x3DCAFF, 0xF4FFFF, 0x003060], [0x71E300, 0xF6FFE6, 0x003100], [0xFF884E, 0xFFFAF5, 0x6C0000]];
 pub const SCROLL_TYPES: [&str; 2] = ["multiplicative", "constant"];
 pub const TIME_BARS: [&str; 4] = ["Time Left", "Time Elapsed", "Song Name", "Disabled"];
 pub const PAUSE_MUSIC: [&str; 4] = ["None", "Tea Time", "Breakfast", "Breakfast (Pico)"];
@@ -66,6 +70,10 @@ pub const OPTIONS: &[Opt] = &[
     Opt { page: 2, key: "pause_music", name: "Pause Music", about: "What song do you prefer for the Pause Screen?", kind: Kind::Choice(|s| &mut s.pause_music, &PAUSE_MUSIC) },
     Opt { page: 2, key: "combo_stacking", name: "Combo Stacking", about: "If unchecked, Ratings and Combo won't stack, saving on System Memory and making them easier to read.", kind: Kind::Flag(|s| &mut s.combo_stacking) },
     Opt { page: 2, key: "show_ms", name: "Hit Timing (ms)", about: "If checked, shows how many milliseconds early or late each hit was.", kind: Kind::Flag(|s| &mut s.show_ms) },
+    Opt { page: 2, key: "rating_x", name: "Rating Position X", about: "Moves the rating that pops up on a hit to the right.", kind: Kind::Number(|s| &mut s.combo_offset[0], -640.0, 640.0, 5.0, "px") },
+    Opt { page: 2, key: "rating_y", name: "Rating Position Y", about: "Moves the rating that pops up on a hit up.", kind: Kind::Number(|s| &mut s.combo_offset[1], -360.0, 360.0, 5.0, "px") },
+    Opt { page: 2, key: "combo_x", name: "Combo Position X", about: "Moves the combo count and the hit timing to the right.", kind: Kind::Number(|s| &mut s.combo_offset[2], -640.0, 640.0, 5.0, "px") },
+    Opt { page: 2, key: "combo_y", name: "Combo Position Y", about: "Moves the combo count and the hit timing up.", kind: Kind::Number(|s| &mut s.combo_offset[3], -360.0, 360.0, 5.0, "px") },
     Opt { page: 3, key: "scroll_type", name: "Scroll Type", about: "Multiplicative: the chart's speed times Scroll Speed. Constant: Scroll Speed itself, for every song.", kind: Kind::Choice(|s| &mut s.scroll_type, &SCROLL_TYPES) },
     Opt { page: 3, key: "scroll_speed", name: "Scroll Speed", about: "How fast the notes travel (up to 3X when multiplicative, up to 6 when constant).", kind: Kind::Number(|s| &mut s.scroll_speed, 0.35, 6.0, 0.05, "X") },
     Opt { page: 3, key: "playback_rate", name: "Playback Rate", about: "How fast the song plays. Its pitch follows.", kind: Kind::Number(|s| &mut s.playback_rate, 0.5, 3.0, 0.05, "X") },
@@ -74,7 +82,15 @@ pub const OPTIONS: &[Opt] = &[
     Opt { page: 3, key: "instakill", name: "Instakill on Miss", about: "One miss ends the song.", kind: Kind::Flag(|s| &mut s.instakill) },
     Opt { page: 3, key: "practice", name: "Practice Mode", about: "You cannot lose. Scores are not kept.", kind: Kind::Flag(|s| &mut s.practice) },
     Opt { page: 3, key: "botplay", name: "Botplay", about: "The game plays the player's notes itself. Scores are not kept.", kind: Kind::Flag(|s| &mut s.botplay) },
+    Opt { page: 4, key: "low_quality", name: "Low Quality", about: "If checked, disables some background details, decreases loading times and improves performance.", kind: Kind::Flag(|s| &mut s.low_quality) },
+    Opt { page: 4, key: "antialiasing", name: "Anti-Aliasing", about: "If unchecked, disables anti-aliasing, increases performance at the cost of sharper visuals.", kind: Kind::Flag(|s| &mut s.antialiasing) },
 ];
+
+/// A colour from its six hex digits, with or without a leading "#".
+pub fn hex(text: &str) -> Option<u32> {
+    let digits = text.strip_prefix('#').unwrap_or(text);
+    u32::from_str_radix(digits, 16).ok().filter(|_| digits.len() == 6 && digits.bytes().all(|digit| digit.is_ascii_hexdigit()))
+}
 
 #[derive(Clone, Debug, PartialEq)]
 pub struct Settings {
@@ -114,6 +130,13 @@ pub struct Settings {
     pub health_loss: f64,
     pub instakill: bool,
     pub practice: bool,
+    /// How far the rating (x, y) and the combo count (x, y) pop up from their usual place, in pixels: right and up.
+    pub combo_offset: [f64; 4],
+    pub low_quality: bool,
+    pub antialiasing: bool,
+    /// Body, shine and outline of each lane's notes, and those of pixel stages.
+    pub note_colors: [[u32; 3]; 4],
+    pub pixel_note_colors: [[u32; 3]; 4],
     /// Two keys per lane.
     pub keys: [[Option<KeyCode>; 2]; 4],
 }
@@ -127,6 +150,7 @@ impl Default for Settings {
             splash_alpha: 0.6, hide_hud: false, time_bar: 0, flashing: true, cam_zooms: true, score_zoom: true, health_bar_alpha: 1.0, show_fps: true,
             pause_music: 1, combo_stacking: true, show_ms: false,
             scroll_type: 0, scroll_speed: 1.0, playback_rate: 1.0, health_gain: 1.0, health_loss: 1.0, instakill: false, practice: false,
+            combo_offset: [0.0; 4], low_quality: false, antialiasing: true, note_colors: LANE_COLORS, pixel_note_colors: PIXEL_LANE_COLORS,
             keys: [[Some(A), Some(Left)], [Some(S), Some(Down)], [Some(W), Some(Up)], [Some(D), Some(Right)]],
         }
     }
@@ -154,6 +178,13 @@ impl Settings {
                 }
             }
         }
+        for (key, colors) in [("note_colors", &mut settings.note_colors), ("pixel_note_colors", &mut settings.pixel_note_colors)] {
+            for (lane, parts) in colors.iter_mut().enumerate() {
+                for (part, color) in parts.iter_mut().enumerate() {
+                    *color = json[key][lane][part].as_str().and_then(hex).unwrap_or(*color);
+                }
+            }
+        }
         settings
     }
 
@@ -170,6 +201,9 @@ impl Settings {
         }
         let keys: Vec<Vec<Value>> = self.keys.iter().map(|lane| lane.iter().map(|k| k.map_or(Value::Null, |k| json!(format!("{k:?}")))).collect()).collect();
         json.insert("keys".to_owned(), json!(keys));
+        for (key, colors) in [("note_colors", &self.note_colors), ("pixel_note_colors", &self.pixel_note_colors)] {
+            json.insert(key.to_owned(), json!(colors.map(|parts| parts.map(|color| format!("{color:06X}")))));
+        }
         serde_json::to_string_pretty(&json).unwrap_or_default()
     }
 
@@ -217,12 +251,14 @@ mod tests {
 
     #[test]
     fn survives_a_round_trip_and_bad_files() {
-        let mut settings = Settings { downscroll: true, offset_ms: -12.0, ghost_tapping: false, time_bar: 2, splash_alpha: 0.3, sick_window: 30.0, ..Default::default() };
+        let mut settings = Settings { downscroll: true, offset_ms: -12.0, ghost_tapping: false, time_bar: 2, splash_alpha: 0.3, sick_window: 30.0, combo_offset: [5.0, -20.0, 0.0, 300.0], antialiasing: false, ..Default::default() };
+        settings.note_colors[2] = [0x000001, 0xABCDEF, 0];
         settings.bind(0, 0, Some(KeyCode::Z));
         settings.bind(3, 1, None);
         assert_eq!(Settings::from_json(&settings.to_json()), settings);
         assert_eq!(Settings::from_json("not json"), Settings::default());
-        assert_eq!(Settings::from_json(r#"{"downscroll":true,"keys":"?","offset_ms":9999}"#), Settings { downscroll: true, offset_ms: 500.0, ..Default::default() });
+        assert_eq!(Settings::from_json(r#"{"downscroll":true,"keys":"?","offset_ms":9999,"note_colors":[["red","+12345","12345"]]}"#), Settings { downscroll: true, offset_ms: 500.0, ..Default::default() });
+        assert_eq!((hex("#c24b99"), hex("C24B99"), hex("C24B9"), hex("C24B99F")), (Some(0xC24B99), Some(0xC24B99), None, None));
     }
 
     #[test]

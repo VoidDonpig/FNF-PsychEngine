@@ -70,15 +70,17 @@ Done:
   mods menu: switch mods on and off and move them up and down, kept in `modsList.txt` as the Haxe engine
   keeps it. Mods switched off bring no weeks; mods that run globally lend their files to every song.
 - **Achievements**: the Haxe engine's list and rules (a week on Hard without a miss, a rating of 100% or
-  under 20%, no idling, two keys only, ten seconds of singing, Friday night), a notice when one is
-  unlocked, and the achievements menu.
+  under 20%, no idling, two keys only, ten seconds of singing, Friday night, the lowest graphics), a
+  notice when one is unlocked, and the achievements menu.
 - **Saved data**: best score and accuracy of every song and difficulty, best week scores, finished weeks
   (which unlock the weeks after them). Runs on botplay are not kept.
 - **Options**: key binds (two per lane); gameplay: downscroll, middlescroll, opponent notes, ghost
   tapping, reset button (R), hitsound volume, rating offset, the sick/good/bad hit windows, safe frames,
   note offset; visuals: note splash opacity, hide HUD, time bar (left, elapsed, song name, off),
   flashing lights, camera zooms, score text growing on a hit, health bar opacity, FPS counter, pause
-  music, combo stacking, hit timing in ms.
+  music, combo stacking, hit timing in ms, where the rating and the combo count pop up; graphics: low
+  quality (the stage details the Haxe engine leaves out are left out) and anti-aliasing; note colours:
+  body, shine and outline of each lane, for pixel stages too (turn the hue, or type a colour code).
 - **Gameplay changers** (an options page, also Ctrl in story mode and freeplay): scroll type and speed,
   playback rate (the pitch follows), health gain and loss, instakill on miss, practice mode, botplay.
   Runs in practice mode or on botplay keep no scores.
@@ -91,10 +93,10 @@ Not there yet:
   cheers, the shell flying off the gun, the stage going dark at the shot, rain, light maps, the two rare
   turns of the fight when the player is nearly out), coarse note splashes on pixel stages, other note and splash skins.
 - **Menus**: the mods menu's mouse buttons, per-mod settings and restart flag; the achievements that
-  need features not here yet (the henchmen count, the toaster one, the title easter egg), those of mods,
-  and resetting one; the rest of the options (graphics, note colours and skins, delay and combo
-  placement, auto pause, gamepad, languages; the options menu is a plain list, not the Haxe engine's
-  look); winding and speed in the freeplay song player; covering the old screen before a change (the new
+  need features not here yet (the henchmen count, the title easter egg), those of mods,
+  and resetting one; the rest of the options (frame rate, note skins, placing the rating and combo by
+  dragging them, auto pause, gamepad, languages; the options menu is a plain list, not the Haxe engine's
+  look, and its Shaders and GPU Caching switches have nothing to switch here); winding and speed in the freeplay song player; covering the old screen before a change (the new
   one is uncovered by a wipe); the loading screen; a mod's own title screen (`gfDanceTitle.json`).
 - **Saved data**: translations. Scores of the Haxe engine are
   not read (it keeps them in its own binary save).
@@ -103,4 +105,4 @@ Not there yet:
 - **Scripts**: Lua. HScript is Haxe code run against the Haxe engine's own classes, so mods that use it
   cannot run here as they are.
 - **Editors**: chart, character, stage, week, menu character, dialogue, note splash.
-- **Other**: gamepads, Discord presence, exclusive fullscreen and the flip-model presenter, FPS counter.
+- **Other**: gamepads, Discord presence, exclusive fullscreen and the flip-model presenter.

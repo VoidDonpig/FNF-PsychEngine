@@ -159,7 +159,7 @@ impl Atlas {
             let number = |key: &str| sprite[key].as_f64().map(|n| n as f32);
             Some((sprite["name"].as_str()?.to_owned(), Rect::new(number("x")?, number("y")?, number("w")?, number("h")?)))
         }).collect();
-        Ok(Atlas { rig, texture: Texture2D::from_file_with_format(&read("spritemap1.png")?, None), sprites })
+        Ok(Atlas { rig, texture: crate::atlas::texture(&read("spritemap1.png")?), sprites })
     }
 
     /// Draws a frame with the timeline's origin at `at`.

@@ -41,9 +41,6 @@ const DIRECTIONS: [&str; 4] = ["left", "down", "up", "right"];
 const NOTE_NAMES: [&str; 4] = ["purple", "blue", "green", "red"];
 /// Pixel stages draw their small pictures this many times as large.
 const PIXEL_ZOOM: f32 = 6.0;
-const PIXEL_LANE_COLORS: [[u32; 3]; 4] = [[0xE276FF, 0xFFF9FF, 0x60008D], [0x3DCAFF, 0xF4FFFF, 0x003060], [0x71E300, 0xF6FFE6, 0x003100], [0xFF884E, 0xFFFAF5, 0x6C0000]];
-/// The sheet stores each note as three masks; these are the colours they become per lane (body, shine, outline).
-const LANE_COLORS: [[u32; 3]; 4] = [[0xC24B99, 0xFFFFFF, 0x3C1F56], [0x00FFFF, 0xFFFFFF, 0x1542B7], [0x12FA05, 0xFFFFFF, 0x0A4447], [0xF9393F, 0xFFFFFF, 0x651038]];
 
 const VERTEX: &str = "#version 100
 attribute vec3 position;
@@ -105,27 +102,37 @@ struct Popup {
 }
 
 impl Skin {
-    /// One recolouring material per lane, for the three colours each lane's notes are made of.
-    fn lanes(lane_colors: [[u32; 3]; 4]) -> Result<Vec<Material>, String> {
-        let rgb = |c: u32| vec3((c >> 16 & 255) as f32, (c >> 8 & 255) as f32, (c & 255) as f32) / 255.0;
+    /// One recolouring material per lane: the sheet stores each note as three masks, which `recolor` gives their colours.
+    fn lanes() -> Result<Vec<Material>, String> {
         let mut lanes = Vec::new();
-        for colors in lane_colors {
+        for _ in 0..4 {
             let uniforms = ["r", "g", "b"].iter().map(|name| UniformDesc::new(name, UniformType::Float3)).collect();
             // custom materials do not blend unless told to
             let blend = BlendState::new(Equation::Add, BlendFactor::Value(BlendValue::SourceAlpha), BlendFactor::OneMinusValue(BlendValue::SourceAlpha));
             let params = MaterialParams { uniforms, pipeline_params: PipelineParams { color_blend: Some(blend), ..Default::default() }, ..Default::default() };
-            let material = load_material(ShaderSource::Glsl { vertex: VERTEX, fragment: RECOLOR }, params).map_err(|e| e.to_string())?;
-            for (name, color) in ["r", "g", "b"].iter().zip(colors) {
-                material.set_uniform(name, rgb(color));
-            }
-            lanes.push(material);
+            lanes.push(load_material(ShaderSource::Glsl { vertex: VERTEX, fragment: RECOLOR }, params).map_err(|e| e.to_string())?);
         }
         Ok(lanes)
     }
 
+    /// The three colours each lane's notes are made of from now on (body, shine, outline).
+    fn recolor(&self, lane_colors: &[[u32; 3]; 4]) {
+        let rgb = |c: u32| vec3((c >> 16 & 255) as f32, (c >> 8 & 255) as f32, (c & 255) as f32) / 255.0;
+        for (material, colors) in self.lanes.iter().zip(lane_colors) {
+            for (name, color) in ["r", "g", "b"].iter().zip(colors) {
+                material.set_uniform(name, rgb(*color));
+            }
+        }
+    }
+
+    /// The note of a lane as it flies, centred on (x, y).
+    fn note(&self, lane: usize, x: f32, y: f32) {
+        self.frame(&format!("{}0000", NOTE_NAMES[lane]), x, y, None, Some(lane), 1.0);
+    }
+
     /// The pictures named, from a folder; all of them or none (missing pictures only cost their effect).
     fn pictures(dir: &Path, names: &[&str], pixel: bool) -> Vec<Texture2D> {
-        let found: Vec<Texture2D> = names.iter().filter_map(|name| std::fs::read(dir.join(format!("{name}.png"))).ok()).map(|bytes| Texture2D::from_file_with_format(&bytes, None)).collect();
+        let found: Vec<Texture2D> = names.iter().filter_map(|name| std::fs::read(dir.join(format!("{name}.png"))).ok()).map(|bytes| atlas::texture(&bytes)).collect();
         if pixel {
             found.iter().for_each(|picture| picture.set_filter(FilterMode::Nearest));
         }
@@ -135,13 +142,13 @@ impl Skin {
     fn load(base: &Path) -> Result<Skin, String> {
         let dir = base.join("assets/shared/images/noteSkins");
         let read = |name: &str| std::fs::read(dir.join(name)).map_err(|e| format!("{}: {e}", dir.join(name).display()));
-        let sheet = Texture2D::from_file_with_format(&read("NOTE_assets.png")?, None);
+        let sheet = atlas::texture(&read("NOTE_assets.png")?);
         let frames = atlas::parse(&String::from_utf8_lossy(&read("NOTE_assets.xml")?));
         let font = std::fs::read(base.join("assets/fonts/vcr.ttf")).ok().and_then(|bytes| load_ttf_font_from_bytes(&bytes).ok());
         let images = base.join("assets/shared/images");
         let digits = Skin::pictures(&images, &["num0", "num1", "num2", "num3", "num4", "num5", "num6", "num7", "num8", "num9"], false);
         let splashes = atlas::Sheet::load(&images.join("noteSplashes/noteSplashes.png")).ok();
-        Ok(Skin { sheet, frames, lanes: Skin::lanes(LANE_COLORS)?, font, ratings: Skin::pictures(&images, &["sick", "good", "bad", "shit"], false), digits, countdown: Skin::pictures(&images, &["ready", "set", "go"], false), splashes,
+        Ok(Skin { sheet, frames, lanes: Skin::lanes()?, font, ratings: Skin::pictures(&images, &["sick", "good", "bad", "shit"], false), digits, countdown: Skin::pictures(&images, &["ready", "set", "go"], false), splashes,
             note_scale: NOTE_SCALE, hold: vec2(50.0, 64.0) * NOTE_SCALE, popup_scales: [0.7, 0.5, 1.0] })
     }
 
@@ -183,7 +190,7 @@ impl Skin {
         let digits = Skin::pictures(&dir, &["num0-pixel", "num1-pixel", "num2-pixel", "num3-pixel", "num4-pixel", "num5-pixel", "num6-pixel", "num7-pixel", "num8-pixel", "num9-pixel"], true);
         // shortcut: the usual splashes; the Haxe engine coarsens them with a shader on pixel stages.
         let splashes = atlas::Sheet::load(&base.join("assets/shared/images/noteSplashes/noteSplashes.png")).ok();
-        Ok(Skin { sheet, frames, lanes: Skin::lanes(PIXEL_LANE_COLORS)?, font, ratings: Skin::pictures(&dir, &["sick-pixel", "good-pixel", "bad-pixel", "shit-pixel"], true), digits,
+        Ok(Skin { sheet, frames, lanes: Skin::lanes()?, font, ratings: Skin::pictures(&dir, &["sick-pixel", "good-pixel", "bad-pixel", "shit-pixel"], true), digits,
             countdown: Skin::pictures(&dir, &["ready-pixel", "set-pixel", "date-pixel"], true), splashes, note_scale: PIXEL_ZOOM, hold: end * PIXEL_ZOOM, popup_scales: [PIXEL_ZOOM * 0.85, PIXEL_ZOOM, PIXEL_ZOOM] })
     }
 
@@ -288,7 +295,7 @@ impl Playing {
         tracks.extend(entry.voices_player.as_deref());
         let player_voice = entry.voices_player.as_ref().map(|_| 1);
         tracks.extend(entry.voices_opponent.as_deref());
-        let mut scene = scene::Scene::load(base, &entry.source, &chart).map_err(|e| eprintln!("Stage: {e}")).ok();
+        let mut scene = scene::Scene::load(base, &entry.source, &chart, settings.low_quality).map_err(|e| eprintln!("Stage: {e}")).ok();
         if let Some(scene) = &mut scene {
             (scene.cam_zooms, scene.flashing) = (settings.cam_zooms, settings.flashing);
         }
@@ -502,16 +509,18 @@ impl Playing {
                     }
                     // the rating jumps up left of the player's lanes, the combo count under it
                     let left = if self.settings.middlescroll { 60.0 } else { WIDTH * 0.35 - 40.0 };
+                    // moved by the player: right and up
+                    let [rating_at, combo_at] = [0, 2].map(|i| vec2(self.settings.combo_offset[i] as f32, -self.settings.combo_offset[i + 1] as f32));
                     if let Some(picture) = skin.ratings.get(rating as usize) {
                         let scale = skin.popup_scales[0];
-                        let at = vec2(left, (HEIGHT - picture.height() * scale) / 2.0 - 60.0);
+                        let at = rating_at + vec2(left, (HEIGHT - picture.height() * scale) / 2.0 - 60.0);
                         self.popups.push(Popup { texture: picture.clone(), at, scale, motion: (160.0, 550.0), born: judged, stays: crochet });
                     }
                     if self.play.combo >= 10 && !skin.digits.is_empty() {
                         for (place, digit) in format!("{:03}", self.play.combo).bytes().enumerate() {
                             let picture = &skin.digits[(digit - b'0') as usize];
                             let scale = skin.popup_scales[1];
-                            let at = vec2(left - 50.0 + 43.0 * place as f32, (HEIGHT - picture.height() * scale) / 2.0 + 80.0);
+                            let at = combo_at + vec2(left - 50.0 + 43.0 * place as f32, (HEIGHT - picture.height() * scale) / 2.0 + 80.0);
                             self.popups.push(Popup { texture: picture.clone(), at, scale, motion: (150.0, 250.0), born: judged, stays: crochet * 2.0 });
                         }
                     }
@@ -710,7 +719,7 @@ impl Playing {
             let age = (position - at) as f32;
             if age < 700.0 {
                 let fade = Color { a: (1.0 - (age - 500.0).max(0.0) / 200.0), ..*color };
-                skin.text(text, side_x, HEIGHT / 2.0 + 160.0, 24, fade);
+                skin.text(text, side_x + settings.combo_offset[2] as f32, HEIGHT / 2.0 + 160.0 - settings.combo_offset[3] as f32, 24, fade);
             }
         }
         if self.play.botplay {
@@ -783,6 +792,7 @@ async fn main() {
     let mut greeted = false;
     let mut settings = Settings::load(&base);
     settings.botplay |= flag("--bot");
+    atlas::SMOOTH.store(settings.antialiasing, std::sync::atomic::Ordering::Relaxed);
     let keyboard = Keyboard::start();
     let bindable: Vec<KeyCode> = settings::bindable().into_iter().map(|(key, _)| key).collect();
     let mut frames = 0u32;
@@ -796,10 +806,12 @@ async fn main() {
         _ => Page::Title,
     };
     let pixel_skin = Skin::load_pixel(&base).map_err(|error| eprintln!("No pixel note skin: {error}")).ok();
-    let (skin, mut screen) = match Skin::load(&base) {
+    let (mut skin, mut screen) = match Skin::load(&base) {
         Ok(skin) => (Some(skin), Screen::Menu(first)),
         Err(error) => (None, Screen::Failed(format!("Could not load the note skin.\n{error}\nRun the game from the folder that holds \"assets\", or pass --base <folder>."))),
     };
+    skin.iter().for_each(|skin| skin.recolor(&settings.note_colors));
+    pixel_skin.iter().for_each(|skin| skin.recolor(&settings.pixel_note_colors));
     if flag("--options") && matches!(screen, Screen::Menu(_)) {
         screen = Screen::Options(options::OptionsMenu::at(&value("--options").unwrap_or_default()), Page::Main);
     }
@@ -867,7 +879,16 @@ async fn main() {
                 Some(Go::Quit) | None => break,
             },
             Screen::Options(mut menu, back) => {
-                if menu.run(&mut settings, &plain, keyboard.raw, &bindable) {
+                // the notes as the player has coloured them so far
+                let note = |lane: usize, pixel: bool, x: f32, y: f32| {
+                    if let Some(skin) = if pixel { pixel_skin.as_ref() } else { skin.as_ref() } {
+                        skin.note(lane, x, y);
+                    }
+                };
+                let left = menu.run(&mut settings, &plain, &note, keyboard.raw, &bindable);
+                skin.iter().for_each(|skin| skin.recolor(&settings.note_colors));
+                pixel_skin.iter().for_each(|skin| skin.recolor(&settings.pixel_note_colors));
+                if left {
                     settings.save(&base);
                     Screen::Menu(back)
                 } else {
@@ -903,7 +924,7 @@ async fn main() {
                             Some((week, rest, _, misses)) if rest.is_empty() && misses + play.misses == 0 && entry.difficulty.eq_ignore_ascii_case("hard") => Some(weeks[*week].file.as_str()),
                             _ => None,
                         };
-                        let run = Run { song: &entry.title, accuracy: play.accuracy().unwrap_or(0.0), practice: playing.settings.practice, botplay: play.botplay, idled: playing.idled,
+                        let run = Run { song: &entry.title, accuracy: play.accuracy().unwrap_or(0.0), practice: playing.settings.practice, botplay: play.botplay, idled: playing.idled, lowest_graphics: playing.settings.low_quality && !playing.settings.antialiasing,
                             lanes_used: playing.lanes_used.iter().filter(|used| **used).count(), flawless_week };
                         for id in earned(&run) {
                             if save.unlock(id) {
@@ -995,6 +1016,14 @@ async fn main() {
         if settings.show_fps {
             set_camera(&Camera2D { target: vec2(WIDTH / 2.0, HEIGHT / 2.0), zoom: vec2(2.0 / WIDTH, 2.0 / HEIGHT), ..Default::default() });
             plain(&format!("FPS: {}", get_fps()), 10.0, 17.0, 14, WHITE);
+        }
+        if atlas::SMOOTH.swap(settings.antialiasing, std::sync::atomic::Ordering::Relaxed) != settings.antialiasing {
+            // the Anti-Aliasing option changed: what is already loaded is loaded again, to look as chosen
+            menus.forget();
+            if let Ok(new) = Skin::load(&base) {
+                new.recolor(&settings.note_colors);
+                skin = Some(new);
+            }
         }
         if std::mem::take(&mut menus.reload) {
             weeks = find_weeks(&base);
