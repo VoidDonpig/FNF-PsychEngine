@@ -70,6 +70,11 @@ pub struct Play {
     pub health_loss: f64,
     /// One miss empties the health bar.
     pub instakill: bool,
+    /// A hold is one note: missed or let go of, the rest of it is lost as one miss (the Haxe engine's "Sustains as One Note").
+    /// Off, every sixteenth of it is hit or missed by whether the key is down as it passes, whatever came before.
+    pub one_note_holds: bool,
+    /// How many notes got each rating: sick, good, bad, shit.
+    pub ratings: [u32; 4],
     pub score: i64,
     pub misses: u32,
     pub combo: u32,
@@ -79,15 +84,36 @@ pub struct Play {
     weight: f64,
     /// Every note before this one is finished.
     first_open: usize,
+    /// For holds judged piece by piece: the time up to which each note's pieces are judged.
+    judged_to: Vec<f64>,
+}
+
+/// What the Haxe engine calls an accuracy (0 to 1).
+pub fn rating_name(accuracy: f64) -> &'static str {
+    const NAMES: [(&str, f64); 9] = [("You Suck!", 0.2), ("Shit", 0.4), ("Bad", 0.5), ("Bruh", 0.6), ("Meh", 0.69), ("Nice", 0.7), ("Good", 0.8), ("Great", 0.9), ("Sick!", 1.0)];
+    NAMES.iter().find(|(_, below)| accuracy < *below).map_or("Perfect!!", |(name, _)| name)
 }
 
 impl Play {
     pub fn new(chart: Chart, botplay: bool) -> Play {
         let state = vec![NoteState::Pending; chart.notes.len()];
-        Play { chart, state, held: [false; 4], botplay, ghost_tapping: true, timing: Timing::default(), health_gain: 1.0, health_loss: 1.0, instakill: false, score: 0, misses: 0, combo: 0, health: 1.0, rated: 0, weight: 0.0, first_open: 0 }
+        let judged_to = vec![0.0; chart.notes.len()];
+        Play { chart, state, held: [false; 4], botplay, ghost_tapping: true, timing: Timing::default(), health_gain: 1.0, health_loss: 1.0, instakill: false, one_note_holds: true, ratings: [0; 4], score: 0, misses: 0, combo: 0, health: 1.0, rated: 0, weight: 0.0, first_open: 0, judged_to }
     }
 
     /// Accuracy from 0 to 1, once anything was rated.
+    /// How clean the run is so far: only sicks, goods at worst, any hit, under ten misses, or just cleared.
+    pub fn full_combo(&self) -> &'static str {
+        match (self.misses, self.ratings) {
+            (0, [_, _, bad, shit]) if bad + shit > 0 => "FC",
+            (0, [_, good, ..]) if good > 0 => "GFC",
+            (0, [sick, ..]) if sick > 0 => "SFC",
+            (0, _) => "",
+            (1..=9, _) => "SDCB",
+            _ => "Clear",
+        }
+    }
+
     pub fn accuracy(&self) -> Option<f64> {
         (self.rated > 0).then(|| self.weight / self.rated as f64)
     }
@@ -156,9 +182,28 @@ impl Play {
                     events.push(if note.player { self.hit(note.lane, 0.0, i) } else { Event::OpponentHit { lane: note.lane, note: i } });
                 }
                 NoteState::Pending if !auto && pos > note.time + self.timing.safe => {
-                    self.state[i] = if hurt { NoteState::Done } else { NoteState::Missed };
+                    // piece by piece, a hold whose start was missed can still be caught
+                    let catchable = !self.one_note_holds && note.sustain > 0.0;
+                    self.state[i] = if hurt { NoteState::Done } else if catchable { NoteState::Held } else { NoteState::Missed };
                     if !hurt {
                         events.push(self.miss(note.lane, Some(i)));
+                    }
+                }
+                NoteState::Held if !self.one_note_holds && !auto => {
+                    // every sixteenth that has passed since last time: hit with the key down, missed with it up
+                    let (end, piece) = (note.time + note.sustain, 15000.0 / self.chart.bpm);
+                    let mut judged = self.judged_to[i].max(note.time);
+                    while judged + piece <= pos.min(end) {
+                        judged += piece;
+                        if self.held[note.lane] {
+                            self.health = (self.health + HIT_HEALTH * self.health_gain).min(2.0);
+                        } else {
+                            events.push(self.miss(note.lane, Some(i)));
+                        }
+                    }
+                    self.judged_to[i] = judged;
+                    if pos >= end {
+                        self.state[i] = NoteState::Done;
                     }
                 }
                 NoteState::Held => {
@@ -182,6 +227,7 @@ impl Play {
 
     fn hit(&mut self, lane: usize, diff_ms: f64, note: usize) -> Event {
         let rating = Rating::of(diff_ms, &self.timing);
+        self.ratings[rating as usize] += 1;
         self.score += rating.score();
         self.combo += 1;
         self.rated += 1;
@@ -215,6 +261,45 @@ mod tests {
     fn play(notes: &[(f64, usize, bool, f64)], botplay: bool) -> Play {
         let notes = notes.iter().map(|&(time, lane, player, sustain)| Note { time, lane, player, sustain, kind: NoteKind::Normal }).collect();
         Play::new(Chart { bpm: 120.0, speed: 1.0, notes, ..Default::default() }, botplay)
+    }
+
+    #[test]
+    fn a_run_gets_its_name_and_its_grade() {
+        assert_eq!([0.0, 0.19, 0.2, 0.69, 0.7, 0.95, 1.0].map(rating_name), ["You Suck!", "You Suck!", "Shit", "Nice", "Good", "Sick!", "Perfect!!"]);
+        let mut p = play(&[(0.0, 0, true, 0.0), (500.0, 1, true, 0.0), (1000.0, 2, true, 0.0), (5000.0, 3, true, 0.0)], false);
+        assert_eq!(p.full_combo(), "");
+        p.press(0, 0.0);
+        assert_eq!((p.full_combo(), p.ratings), ("SFC", [1, 0, 0, 0]));
+        p.press(1, 500.0 + 60.0);
+        assert_eq!(p.full_combo(), "GFC");
+        p.press(2, 1000.0 + 120.0);
+        assert_eq!(p.full_combo(), "FC");
+        p.update(6000.0);
+        assert_eq!((p.full_combo(), p.misses), ("SDCB", 1));
+        p.misses = 10;
+        assert_eq!(p.full_combo(), "Clear");
+    }
+
+    #[test]
+    fn piece_by_piece_a_hold_is_judged_by_the_key_as_it_passes() {
+        // a hold of one beat at 120 BPM: four sixteenths of 125 ms
+        let mut p = play(&[(1000.0, 0, true, 500.0)], false);
+        p.one_note_holds = false;
+        // its start is missed: one miss, and the hold can still be caught
+        assert_eq!(p.update(1200.0).len(), 1);
+        p.press(0, 1200.0);
+        let health = p.health;
+        assert!(p.update(1260.0).is_empty() && p.health > health, "the second sixteenth passes with the key down");
+        p.release(0);
+        assert_eq!((p.update(1400.0).len(), p.misses), (1, 2), "the third with it up");
+        p.press(0, 1400.0);
+        assert!(p.update(1600.0).is_empty() && p.finished());
+        // as one note, the same hold is lost with its start
+        let mut p = play(&[(1000.0, 0, true, 500.0)], false);
+        p.update(1200.0);
+        p.press(0, 1200.0);
+        p.update(1600.0);
+        assert_eq!((p.misses, p.finished()), (1, true));
     }
 
     #[test]

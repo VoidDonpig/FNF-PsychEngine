@@ -85,6 +85,8 @@ pub struct Chart {
     pub opponent: String,
     pub gf: String,
     pub stage: String,
+    /// The chart is this many ms ahead of its sound.
+    pub offset: f64,
 }
 
 impl Chart {
@@ -196,6 +198,7 @@ pub fn parse(text: &str) -> Result<Chart, String> {
         song: root["song"].as_str().unwrap_or("").to_owned(),
         bpm: tempo[0].2,
         speed: root["speed"].as_f64().unwrap_or(1.0),
+        offset: root["offset"].as_f64().unwrap_or(0.0),
         notes,
         events,
         sections,

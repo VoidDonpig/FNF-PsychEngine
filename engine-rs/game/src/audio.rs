@@ -5,6 +5,7 @@ use std::time::Instant;
 
 /// How loud seven bands of a stretch of sound are, low to high, each from 0 (silent) to 1.
 /// `window` is one channel's samples, `rate` how many of them make a second.
+#[cfg(any(feature = "audio", test))]
 pub fn bands(window: &[f32], rate: f32) -> [f32; 7] {
     [60.0, 135.0, 300.0, 680.0, 1500.0, 3400.0, 7500.0].map(|pitch: f32| {
         let (mut along, mut across) = (0.0, 0.0);
@@ -19,6 +20,17 @@ pub fn bands(window: &[f32], rate: f32) -> [f32; 7] {
         // from -50 dB up to -10 dB
         ((20.0 * (loudness + 1e-9).log10() + 50.0) / 40.0).clamp(0.0, 1.0)
     })
+}
+
+/// How long a sound file plays, in seconds. None when it cannot be read, or without sound.
+pub fn seconds(path: &Path) -> Option<f32> {
+    #[cfg(feature = "audio")]
+    return output::decoded(path, false).ok().map(|(samples, rate)| samples.len() as f32 / 2.0 / rate as f32);
+    #[cfg(not(feature = "audio"))]
+    {
+        let _ = path;
+        None
+    }
 }
 
 pub struct Song {
@@ -129,6 +141,16 @@ impl Song {
         let _ = (path, volume, looped);
     }
 
+    /// How loud the music playing on top of the song (the looped sounds) is from now on.
+    pub fn set_music_volume(&self, volume: f32) {
+        #[cfg(feature = "audio")]
+        if let Some(output) = &self.output {
+            output.sounds.lock().unwrap().iter_mut().filter(|voice| voice.looped).for_each(|voice| voice.volume = volume);
+        }
+        #[cfg(not(feature = "audio"))]
+        let _ = volume;
+    }
+
     pub fn stop_sounds(&self) {
         #[cfg(feature = "audio")]
         if let Some(output) = &self.output {
@@ -171,8 +193,8 @@ mod output {
         /// Source frames per output frame.
         step: f64,
         cursor: f64,
-        volume: f32,
-        looped: bool,
+        pub(super) volume: f32,
+        pub(super) looped: bool,
     }
 
     pub struct Output {

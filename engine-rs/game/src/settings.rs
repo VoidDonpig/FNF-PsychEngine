@@ -54,6 +54,7 @@ pub const OPTIONS: &[Opt] = &[
     Opt { page: 1, key: "opponent_strums", name: "Opponent Notes", about: "If unchecked, opponent notes get hidden.", kind: Kind::Flag(|s| &mut s.opponent_strums) },
     Opt { page: 1, key: "ghost_tapping", name: "Ghost Tapping", about: "If checked, you won't get misses from pressing keys while there are no notes able to be hit.", kind: Kind::Flag(|s| &mut s.ghost_tapping) },
     Opt { page: 1, key: "no_reset", name: "Disable Reset Button", about: "If checked, pressing Reset (R) won't do anything.", kind: Kind::Flag(|s| &mut s.no_reset) },
+    Opt { page: 1, key: "one_note_holds", name: "Sustains as One Note", about: "If checked, Hold Notes can't be pressed if you miss, and count as a single Hit/Miss. Uncheck this if you prefer the old Input System.", kind: Kind::Flag(|s| &mut s.one_note_holds) },
     Opt { page: 1, key: "hitsound_volume", name: "Hitsound Volume", about: "Funny notes does \"Tick!\" when you hit them.", kind: Kind::Number(|s| &mut s.hitsound_volume, 0.0, 1.0, 0.1, "%") },
     Opt { page: 1, key: "rating_offset", name: "Rating Offset", about: "Changes how late/early you have to hit for a \"Sick!\" Higher values mean you have to hit later.", kind: Kind::Number(|s| &mut s.rating_offset, -30.0, 30.0, 1.0, "ms") },
     Opt { page: 1, key: "sick_window", name: "Sick! Hit Window", about: "Changes the amount of time you have for hitting a \"Sick!\" in milliseconds.", kind: Kind::Number(|s| &mut s.sick_window, 15.0, 45.0, 1.0, "ms") },
@@ -133,6 +134,7 @@ pub struct Settings {
     pub opponent_strums: bool,
     pub ghost_tapping: bool,
     pub no_reset: bool,
+    pub one_note_holds: bool,
     pub botplay: bool,
     /// 0 to 1.
     pub hitsound_volume: f64,
@@ -185,7 +187,7 @@ impl Default for Settings {
     fn default() -> Settings {
         use KeyCode::*;
         Settings {
-            downscroll: false, middlescroll: false, opponent_strums: true, ghost_tapping: true, no_reset: false, botplay: false,
+            downscroll: false, middlescroll: false, opponent_strums: true, ghost_tapping: true, no_reset: false, one_note_holds: true, botplay: false,
             hitsound_volume: 0.0, rating_offset: 0.0, sick_window: 45.0, good_window: 90.0, bad_window: 135.0, safe_frames: 10.0, offset_ms: 0.0,
             splash_alpha: 0.6, hide_hud: false, time_bar: 0, flashing: true, cam_zooms: true, score_zoom: true, health_bar_alpha: 1.0, show_fps: true,
             pause_music: 1, combo_stacking: true, show_ms: false,
