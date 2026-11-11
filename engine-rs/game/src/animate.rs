@@ -163,27 +163,48 @@ impl Rig {
     }
 }
 
+/// A piece stored turned a quarter clockwise (`rotated`), `width` wide as stored, turned back upright: its stored point
+/// (u, v) goes to (v, width - u), as Flixel draws such a frame.
+fn turned_back(width: f32) -> Affine2 {
+    Affine2::from_cols(vec2(0.0, -1.0), vec2(1.0, 0.0), vec2(0.0, width))
+}
+
 /// A rig with its picture.
 pub struct Atlas {
     pub rig: Rig,
-    texture: Texture2D,
-    /// Where each piece is in the picture.
-    sprites: HashMap<String, Rect>,
+    textures: Vec<Texture2D>,
+    /// Where each piece is: its picture, the place in it, and whether it lies turned on its side there.
+    sprites: HashMap<String, (usize, Rect, bool)>,
 }
 
 impl Atlas {
-    /// Loads the atlas in folder `dir`.
+    /// Loads the atlas in folder `dir`: its timelines, and its pieces from `spritemap.json`, or `spritemap1.json`,
+    /// `spritemap2.json` and on, as flxanimate looks for them.
     pub fn load(dir: &Path) -> Result<Atlas, String> {
         let read = |name: &str| std::fs::read(dir.join(name)).map_err(|e| format!("{}: {e}", dir.join(name).display()));
         let rig = Rig::parse(&String::from_utf8_lossy(&read("Animation.json")?)).ok_or(format!("{}: no animation in it", dir.join("Animation.json").display()))?;
-        let map: Value = serde_json::from_str(String::from_utf8_lossy(&read("spritemap1.json")?).trim_start_matches('\u{feff}')).map_err(|e| format!("{}: {e}", dir.join("spritemap1.json").display()))?;
-        // shortcut: one picture per atlas and pieces stored upright, as every atlas of the game is. Read spritemap2 onwards and turn `rotated` pieces when a mod needs it.
-        let sprites = map["ATLAS"]["SPRITES"].as_array().into_iter().flatten().filter_map(|sprite| {
-            let sprite = &sprite["SPRITE"];
-            let number = |key: &str| sprite[key].as_f64().map(|n| n as f32);
-            Some((sprite["name"].as_str()?.to_owned(), Rect::new(number("x")?, number("y")?, number("w")?, number("h")?)))
-        }).collect();
-        Ok(Atlas { rig, texture: crate::atlas::picture(&dir.join("spritemap1.png")).ok_or(format!("{}: not found", dir.join("spritemap1.png").display()))?, sprites })
+        let maps: Vec<String> = if dir.join("spritemap.json").is_file() {
+            vec!["spritemap".to_owned()]
+        } else {
+            (1..).map(|n| format!("spritemap{n}")).take_while(|name| dir.join(format!("{name}.json")).is_file()).collect()
+        };
+        let (mut textures, mut sprites) = (Vec::new(), HashMap::new());
+        for name in &maps {
+            let map: Value = serde_json::from_str(String::from_utf8_lossy(&read(&format!("{name}.json"))?).trim_start_matches('\u{feff}')).map_err(|e| format!("{}: {e}", dir.join(name).display()))?;
+            let image = map["meta"]["image"].as_str().map_or(format!("{name}.png"), str::to_owned);
+            let texture = crate::atlas::picture(&dir.join(&image)).ok_or(format!("{}: not found", dir.join(&image).display()))?;
+            for sprite in map["ATLAS"]["SPRITES"].as_array().into_iter().flatten() {
+                let sprite = &sprite["SPRITE"];
+                let number = |key: &str| sprite[key].as_f64().map(|n| n as f32);
+                let (Some(name), Some(x), Some(y), Some(w), Some(h)) = (sprite["name"].as_str(), number("x"), number("y"), number("w"), number("h")) else { continue };
+                sprites.insert(name.to_owned(), (textures.len(), Rect::new(x, y, w, h), sprite["rotated"].as_bool().unwrap_or(false)));
+            }
+            textures.push(texture);
+        }
+        if textures.is_empty() {
+            return Err(format!("{}: no spritemap", dir.display()));
+        }
+        Ok(Atlas { rig, textures, sprites })
     }
 
     /// Draws a frame with the timeline's origin at `at`.
@@ -204,10 +225,11 @@ impl Atlas {
         // mirrored, it is turned over around the origin
         let whole = Affine2::from_translation(at) * Affine2::from_scale(vec2(if flip_x { -scale } else { scale }, scale));
         for (name, placed) in pieces {
-            let Some(source) = self.sprites.get(name) else { continue };
-            let Affine2 { matrix2: turn, translation: shift } = whole * placed;
+            let Some(&(texture, source, turned)) = self.sprites.get(name) else { continue };
+            let back = if turned { turned_back(source.w) } else { Affine2::IDENTITY };
+            let Affine2 { matrix2: turn, translation: shift } = whole * placed * back;
             push_model_matrix(Mat4::from_cols(turn.x_axis.extend(0.0).extend(0.0), turn.y_axis.extend(0.0).extend(0.0), Vec4::Z, shift.extend(0.0).extend(1.0)));
-            draw_texture_ex(&self.texture, 0.0, 0.0, color, DrawTextureParams { source: Some(*source), ..Default::default() });
+            draw_texture_ex(&self.textures[texture], 0.0, 0.0, color, DrawTextureParams { source: Some(source), ..Default::default() });
             pop_model_matrix();
         }
     }
@@ -216,6 +238,13 @@ impl Atlas {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_turned_piece_stands_upright_again() {
+        // stored 30 wide and 10 high, it stands 10 wide and 30 high: its stored top left corner comes to the bottom left
+        let back = turned_back(30.0);
+        assert_eq!([vec2(0.0, 0.0), vec2(30.0, 0.0), vec2(0.0, 10.0), vec2(30.0, 10.0)].map(|corner| back.transform_point2(corner)), [vec2(0.0, 30.0), vec2(0.0, 0.0), vec2(10.0, 30.0), vec2(10.0, 0.0)]);
+    }
 
     #[test]
     fn an_animation_names_a_symbol_by_how_it_begins() {
