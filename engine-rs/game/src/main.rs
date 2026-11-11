@@ -23,13 +23,14 @@ use funkin_core::content::{songs as find_songs, weeks as find_weeks, Paths, Song
 use funkin_core::achievements::{earned, Run, ROADKILL};
 use funkin_core::save::Save;
 use menu::{Go, Menus, Page};
-use funkin_core::chart::NoteKind;
+use funkin_core::chart::{Chart, NoteKind};
 use funkin_core::play::{Event, NoteState, Play, Rating};
 use input::{KeyEvent, Keyboard};
 use controls::Ui;
 use gfx::*;
 use settings::Settings;
 use std::path::{Path, PathBuf};
+use std::rc::Rc;
 
 const WIDTH: f32 = 1280.0;
 const HEIGHT: f32 = 720.0;
@@ -64,6 +65,8 @@ struct Skin {
     hold: Vec2,
     /// How much the rating, combo digit and countdown pictures are enlarged.
     popup_scales: [f32; 3],
+    /// The notes are drawn in the colours they were painted in (a chart asked for that).
+    plain: bool,
 }
 
 /// A picture that pops up, jumps and fades: a rating, a combo digit, a countdown step.
@@ -86,6 +89,11 @@ impl Skin {
         self.lanes.set(lane_colors.map(|colors| colors.map(rgb)));
     }
 
+    /// What a lane's notes are recoloured with.
+    fn colors(&self, lane: usize) -> Option<[Vec3; 3]> {
+        (!self.plain).then(|| self.lanes.get()[lane])
+    }
+
     /// The note of a lane as it flies, centred on (x, y).
     fn note(&self, lane: usize, x: f32, y: f32) {
         self.frame(&format!("{}0000", NOTE_NAMES[lane]), x, y, None, Some(lane), 1.0);
@@ -100,19 +108,25 @@ impl Skin {
         if found.len() == names.len() { found } else { Vec::new() }
     }
 
+    /// The picture of the splashes: the chart's own (`own`, found through `paths`) or the one chosen in the options.
+    fn splash_file(base: &Path, own: Option<(&Paths, &str)>, skin: usize) -> PathBuf {
+        let chosen = if skin == 0 { "noteSplashes".to_owned() } else { format!("noteSplashes-{}", settings::SPLASH_SKINS[skin].to_lowercase()) };
+        own.and_then(|(paths, name)| paths.find(&format!("images/{name}.png"))).unwrap_or(base.join(format!("assets/shared/images/noteSplashes/{chosen}.png")))
+    }
+
     /// `skins`: the note skin and the splash skin chosen in the options (the first of each is the usual one).
-    fn load(base: &Path, skins: (usize, usize)) -> Result<Skin, String> {
-        let dir = base.join("assets/shared/images/noteSkins");
-        let read = |name: &str| std::fs::read(dir.join(name)).map_err(|e| format!("{}: {e}", dir.join(name).display()));
-        // "NOTE_assets-future", "noteSplashes-diamond": the skin's name after the usual file's
-        let named = |file: &str, skin: usize, names: &[&str]| if skin == 0 { file.to_owned() } else { format!("{file}-{}", names[skin].to_lowercase()) };
-        let notes = named("NOTE_assets", skins.0, &settings::NOTE_SKINS);
-        let sheet = atlas::picture(&dir.join(format!("{notes}.png"))).ok_or(format!("{}: not found", dir.join(format!("{notes}.png")).display()))?;
-        let frames = atlas::parse(&String::from_utf8_lossy(&read(&format!("{notes}.xml"))?));
+    /// `own`: where to look for the pictures a chart names for its notes and its splashes instead.
+    fn load(base: &Path, skins: (usize, usize), own: Option<(&Paths, &Chart)>) -> Result<Skin, String> {
+        // "NOTE_assets-future": the skin's name after the usual file's
+        let chosen = if skins.0 == 0 { "NOTE_assets".to_owned() } else { format!("NOTE_assets-{}", settings::NOTE_SKINS[skins.0].to_lowercase()) };
+        let own_notes = own.filter(|(_, chart)| !chart.arrow_skin.is_empty()).and_then(|(paths, chart)| paths.find(&format!("images/{}.png", chart.arrow_skin)));
+        let notes = own_notes.unwrap_or(base.join(format!("assets/shared/images/noteSkins/{chosen}.png")));
+        let sheet = atlas::picture(&notes).ok_or(format!("{}: not found", notes.display()))?;
+        let frames = atlas::parse(&std::fs::read_to_string(notes.with_extension("xml")).map_err(|e| format!("{}: {e}", notes.with_extension("xml").display()))?);
         let font = std::fs::read(base.join("assets/fonts/vcr.ttf")).ok().and_then(|bytes| load_ttf_font_from_bytes(&bytes).ok());
         let images = base.join("assets/shared/images");
         let digits = Skin::pictures(&images, &["num0", "num1", "num2", "num3", "num4", "num5", "num6", "num7", "num8", "num9"], false);
-        let splash = images.join(format!("noteSplashes/{}.png", named("noteSplashes", skins.1, &settings::SPLASH_SKINS)));
+        let splash = Skin::splash_file(base, own.filter(|(_, chart)| !chart.splash_skin.is_empty()).map(|(paths, chart)| (paths, chart.splash_skin.as_str())), skins.1);
         let splashes = atlas::Sheet::load(&splash).ok();
         // the skin's own file says what each lane's animation is called
         let named: serde_json::Value = std::fs::read_to_string(splash.with_extension("json")).ok().and_then(|text| serde_json::from_str(&text).ok()).unwrap_or_default();
@@ -121,18 +135,22 @@ impl Skin {
             own.map_or(format!("note splash {} 1", NOTE_NAMES[lane]), str::to_owned)
         });
         Ok(Skin { sheet, frames, lanes: Default::default(), font, ratings: Skin::pictures(&images, &["sick", "good", "bad", "shit"], false), digits, countdown: Skin::pictures(&images, &["ready", "set", "go"], false), splashes, splash_names,
-            note_scale: NOTE_SCALE, hold: vec2(50.0, 64.0) * NOTE_SCALE, popup_scales: [0.7, 0.5, 1.0] })
+            note_scale: NOTE_SCALE, hold: vec2(50.0, 64.0) * NOTE_SCALE, popup_scales: [0.7, 0.5, 1.0], plain: own.is_some_and(|(_, chart)| chart.no_rgb) })
     }
 
     /// The look of pixel stages: notes from a grid of small pictures drawn six times as large, with their own colours, ratings and countdown.
-    fn load_pixel(base: &Path) -> Result<Skin, String> {
+    /// `own`: as for `load`; a chart's notes for pixel stages sit under `images/pixelUI/`, the hold pieces in a second picture.
+    fn load_pixel(base: &Path, own: Option<(&Paths, &Chart)>) -> Result<Skin, String> {
         let dir = base.join("assets/shared/images/pixelUI");
-        let image = |name: &str| -> Result<Image, String> {
-            let path = dir.join(name);
+        let image = |path: PathBuf| -> Result<Image, String> {
             let bytes = std::fs::read(&path).map_err(|e| format!("{}: {e}", path.display()))?;
             Image::from_file_with_format(&bytes, None).map_err(|e| format!("{}: {e}", path.display()))
         };
-        let (notes, ends) = (image("noteSkins/NOTE_assets.png")?, image("noteSkins/NOTE_assetsENDS.png")?);
+        let own_notes = own.filter(|(_, chart)| !chart.arrow_skin.is_empty()).and_then(|(paths, chart)| {
+            Some((paths.find(&format!("images/pixelUI/{}.png", chart.arrow_skin))?, paths.find(&format!("images/pixelUI/{}ENDS.png", chart.arrow_skin))?))
+        });
+        let (notes, ends) = own_notes.unwrap_or((dir.join("noteSkins/NOTE_assets.png"), dir.join("noteSkins/NOTE_assetsENDS.png")));
+        let (notes, ends) = (image(notes)?, image(ends)?);
         // one picture for both: the notes, and the hold pieces under them
         let mut both = Image::gen_image_color(notes.width.max(ends.width), notes.height + ends.height, Color::new(0.0, 0.0, 0.0, 0.0));
         for (source, top) in [(&notes, 0), (&ends, notes.height as u32)] {
@@ -161,16 +179,16 @@ impl Skin {
         let font = std::fs::read(base.join("assets/fonts/vcr.ttf")).ok().and_then(|bytes| load_ttf_font_from_bytes(&bytes).ok());
         let digits = Skin::pictures(&dir, &["num0-pixel", "num1-pixel", "num2-pixel", "num3-pixel", "num4-pixel", "num5-pixel", "num6-pixel", "num7-pixel", "num8-pixel", "num9-pixel"], true);
         // shortcut: the usual splashes; the Haxe engine coarsens them with a shader on pixel stages.
-        let splashes = atlas::Sheet::load(&base.join("assets/shared/images/noteSplashes/noteSplashes.png")).ok();
+        let splashes = atlas::Sheet::load(&Skin::splash_file(base, own.filter(|(_, chart)| !chart.splash_skin.is_empty()).map(|(paths, chart)| (paths, chart.splash_skin.as_str())), 0)).ok();
         Ok(Skin { sheet, frames, lanes: Default::default(), font, ratings: Skin::pictures(&dir, &["sick-pixel", "good-pixel", "bad-pixel", "shit-pixel"], true), digits,
-            countdown: Skin::pictures(&dir, &["ready-pixel", "set-pixel", "date-pixel"], true), splashes, splash_names: NOTE_NAMES.map(|name| format!("note splash {name} 1")), note_scale: PIXEL_ZOOM, hold: end * PIXEL_ZOOM, popup_scales: [PIXEL_ZOOM * 0.85, PIXEL_ZOOM, PIXEL_ZOOM] })
+            countdown: Skin::pictures(&dir, &["ready-pixel", "set-pixel", "date-pixel"], true), splashes, splash_names: NOTE_NAMES.map(|name| format!("note splash {name} 1")), plain: own.is_some_and(|(_, chart)| chart.no_rgb), note_scale: PIXEL_ZOOM, hold: end * PIXEL_ZOOM, popup_scales: [PIXEL_ZOOM * 0.85, PIXEL_ZOOM, PIXEL_ZOOM] })
     }
 
     /// Draws a sheet frame centred on (x, y), stretched to `size` if given. `lane` recolours it.
     fn frame(&self, name: &str, x: f32, y: f32, size: Option<Vec2>, lane: Option<usize>, alpha: f32) {
         let Some(source) = self.frames.iter().find(|(n, _)| n == name).map(|(_, f)| f.source) else { return };
         let size = size.unwrap_or(vec2(source.w, source.h) * self.note_scale);
-        recolor(lane.map(|lane| self.lanes.get()[lane]));
+        recolor(lane.and_then(|lane| self.colors(lane)));
         draw_texture_ex(&self.sheet, x - size.x / 2.0, y - size.y / 2.0, Color::new(1.0, 1.0, 1.0, alpha), DrawTextureParams { dest_size: Some(size), source: Some(source), ..Default::default() });
         recolor(None);
     }
@@ -204,6 +222,9 @@ struct Playing {
     song: audio::Song,
     /// Which of the song's tracks is the player's voice (it drops out on a miss).
     player_voice: Option<usize>,
+    /// The look of the notes when the chart brings its own pictures for them or wants them left unpainted.
+    own_skin: Option<Rc<Skin>>,
+    base: PathBuf,
     /// Stage and characters; None when they could not be loaded (the notes still work).
     scene: Option<scene::Scene>,
     /// Ms spent on the play screen before the song starts.
@@ -296,7 +317,7 @@ impl Playing {
         // shortcut: in story mode the week goes on at the difficulty it began with; let the rest of the week change with it if that is missed
         let difficulties = if story { Vec::new() } else { songs.iter().filter(|other| other.week == entry.week && other.title == entry.title).map(|other| other.difficulty.clone()).collect() };
         atlas::forget_unused();
-        Ok(Playing { entry: entry.clone(), play, song, player_voice, scene, waited: 0.0, clock: Default::default(), ticked: std::time::Instant::now(), started: false, paused: None, choosing: None, difficulties, story, taunt_until: None, start_at, position: -lead_in, settings: settings.clone(), held_keys: Vec::new(), flash_until: [[f64::MIN; 4]; 2], judgement: None, last_hit: f64::MIN, lanes_used: [false; 4], idled: false, idle_for: 0.0, sang_for: 0.0,
+        Ok(Playing { entry: entry.clone(), play, song, player_voice, own_skin: None, base: base.to_path_buf(), scene, waited: 0.0, clock: Default::default(), ticked: std::time::Instant::now(), started: false, paused: None, choosing: None, difficulties, story, taunt_until: None, start_at, position: -lead_in, settings: settings.clone(), held_keys: Vec::new(), flash_until: [[f64::MIN; 4]; 2], judgement: None, last_hit: f64::MIN, lanes_used: [false; 4], idled: false, idle_for: 0.0, sang_for: 0.0,
             paths, cutscene, lead_in, counted: i64::MIN, popups: Vec::new(), splashes: Vec::new(), dead: None, next_event: 0, speed, speed_change: None }.with(settings))
     }
 
@@ -307,6 +328,15 @@ impl Playing {
         (play.health_gain, play.health_loss, play.instakill) = (settings.health_gain, settings.health_loss, settings.instakill);
         if let Some(scene) = &mut self.scene {
             (scene.cam_zooms, scene.flashing) = (settings.cam_zooms, settings.flashing);
+        }
+        let chart = &self.play.chart;
+        if !chart.arrow_skin.is_empty() || !chart.splash_skin.is_empty() || chart.no_rgb {
+            let (base, own, skins) = (&self.base, Some((&self.paths, chart)), (settings.note_skin, settings.splash_skin));
+            let skin = if self.pixel() { Skin::load_pixel(base, own) } else { Skin::load(base, skins, own) };
+            self.own_skin = skin.map_err(|error| eprintln!("The chart's note skin: {error}")).ok().map(Rc::new);
+            if let Some(skin) = &self.own_skin {
+                skin.recolor(if self.pixel() { &settings.pixel_note_colors } else { &settings.note_colors });
+            }
         }
         // what the song was opened with stays: who plays it, and how fast
         self.settings = Settings { botplay: self.settings.botplay, playback_rate: self.settings.playback_rate, ..settings.clone() };
@@ -693,7 +723,7 @@ impl Playing {
             for &(lane, at) in &self.splashes {
                 let frames = sheet.animation(&skin.splash_names[lane], &[]);
                 if let Some(&frame) = frames.get(((position - at) * 0.024) as usize) {
-                    recolor(Some(skin.lanes.get()[lane]));
+                    recolor(skin.colors(lane));
                     sheet.draw(frame, lane_x(settings, true, lane) - frame.size.x / 2.0, strum_y - frame.size.y / 2.0, 1.0, false, Color::new(1.0, 1.0, 1.0, settings.splash_alpha as f32));
                     recolor(None);
                 }
@@ -920,9 +950,9 @@ fn main() {
         Some("achievements") => Page::Achievements,
         _ => Page::Title,
     };
-    let pixel_skin = Skin::load_pixel(&base).map_err(|error| eprintln!("No pixel note skin: {error}")).ok();
+    let pixel_skin = Skin::load_pixel(&base, None).map_err(|error| eprintln!("No pixel note skin: {error}")).ok();
     let mut skins = (settings.note_skin, settings.splash_skin);
-    let (mut skin, mut screen) = match Skin::load(&base, skins) {
+    let (mut skin, mut screen) = match Skin::load(&base, skins, None) {
         Ok(skin) => (Some(skin), Screen::Menu(first)),
         Err(error) => (None, Screen::Failed(format!("Could not load the note skin.\n{error}\nRun the game from the folder that holds \"assets\", or pass --base <folder>."))),
     };
@@ -1042,7 +1072,8 @@ fn main() {
                 // a song is only ever opened with the skin loaded
                 let flow = match &skin {
                     Some(skin) => {
-                        let skin = pixel_skin.as_ref().filter(|_| playing.pixel()).unwrap_or(skin);
+                        let own = playing.own_skin.clone();
+                        let skin = own.as_deref().or(pixel_skin.as_ref().filter(|_| playing.pixel())).unwrap_or(skin);
                         let flow = playing.update(&key_events, skin);
                         playing.draw(skin);
                         flow
@@ -1258,7 +1289,7 @@ fn main() {
         }
         if smoothing || skins != (settings.note_skin, settings.splash_skin) {
             skins = (settings.note_skin, settings.splash_skin);
-            match Skin::load(&base, skins) {
+            match Skin::load(&base, skins, None) {
                 Ok(new) => {
                     new.recolor(&settings.note_colors);
                     skin = Some(new);

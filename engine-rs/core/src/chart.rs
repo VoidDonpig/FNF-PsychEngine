@@ -87,6 +87,11 @@ pub struct Chart {
     pub stage: String,
     /// The chart is this many ms ahead of its sound.
     pub offset: f64,
+    /// The chart's own note and splash pictures (under `images/`); empty: the player's.
+    pub arrow_skin: String,
+    pub splash_skin: String,
+    /// The notes keep the colours they were painted in.
+    pub no_rgb: bool,
 }
 
 impl Chart {
@@ -199,6 +204,9 @@ pub fn parse(text: &str) -> Result<Chart, String> {
         bpm: tempo[0].2,
         speed: root["speed"].as_f64().unwrap_or(1.0),
         offset: root["offset"].as_f64().unwrap_or(0.0),
+        arrow_skin: root["arrowSkin"].as_str().unwrap_or("").to_owned(),
+        splash_skin: root["splashSkin"].as_str().unwrap_or("").to_owned(),
+        no_rgb: root["disableNoteRGB"].as_bool().unwrap_or(false),
         notes,
         events,
         sections,
@@ -231,9 +239,11 @@ mod tests {
 
     #[test]
     fn psych_v1_columns_are_absolute() {
-        let chart = parse(r#"{"song":"T","bpm":120,"speed":2.5,"format":"psych_v1","notes":[
+        let chart = parse(r#"{"song":"T","bpm":120,"speed":2.5,"format":"psych_v1","arrowSkin":"noteSkins/mine","disableNoteRGB":true,"notes":[
             {"mustHitSection":false,"sectionNotes":[[500,2,0],[0,5,250,"Hurt Note"]]}]}"#).unwrap();
         assert_eq!(chart.speed, 2.5);
+        // its own notes, unpainted; the player's splashes
+        assert_eq!((chart.arrow_skin.as_str(), chart.splash_skin.as_str(), chart.no_rgb), ("noteSkins/mine", "", true));
         assert_eq!(chart.notes, vec![
             Note { time: 0.0, lane: 1, player: false, sustain: 250.0, kind: NoteKind::Hurt },
             Note { time: 500.0, lane: 2, player: true, sustain: 0.0, kind: NoteKind::Normal },

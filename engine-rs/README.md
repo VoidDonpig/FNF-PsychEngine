@@ -110,12 +110,13 @@ Done:
   title screen (`images/gfDanceTitle.json`: places, tempo, the dancer's frames, a background), the menus
   looking in the first mod switched on before the game's files; the title screen's four hidden dancers
   (their words typed on it, the jingles, Pessy's achievement); a dark edge closing over the old screen
-  before every change of screen, as one uncovers the new.
+  before every change of screen, as one uncovers the new; a chart's own note and splash pictures
+  (`arrowSkin`, `splashSkin`) and notes left in the colours they were painted in (`disableNoteRGB`).
 
 Not there yet:
 
 - **Play screen**: the events and note types that belong to scripts (Set Property beyond the camera, custom
-  ones); a chart's own `arrowSkin`/`splashSkin` and `disableNoteRGB`; what is left of weekend 1 (Nene's
+  ones); what is left of weekend 1 (Nene's
   knife and cheers, the shell flying off the gun, the stage going dark at the shot, rain, light maps, the two
   rare turns of the fight when the player is nearly out); coarse note splashes on pixel stages; the Haxe
   fork's Display Lag Correction; the charting mode entries of the pause menu.
