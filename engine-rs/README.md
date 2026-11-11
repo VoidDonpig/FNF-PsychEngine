@@ -45,7 +45,12 @@ Done:
   Animation, Screen Shake, Change Character, Change Scroll Speed, Play Sound, from the chart and from the
   song's `events.json`. Note types: Hurt Note, Alt Animation, Hey!, GF Sing, No Animation, the can and
   gun notes of weekend 1 (poses, sounds, camera; a missed shot costs much health), and sections marked for
-  alternative poses or for the girlfriend. Characters may be drawn from several sheets.
+  alternative poses or for the girlfriend. Characters may be drawn from several sheets, or the Animate
+  way (a folder with `Animation.json` and a sprite map: a timeline of layers placing pieces, symbols
+  nested in symbols, in either spelling Animate exports).
+- **The fist fight of weekend 1** (Blazin'): the two fighters' moves for every note hit or missed, who
+  stands in front, the screen shaking on a hit, the blurred street under a drifting sky, lightning, and
+  its game over.
 - **Pixel stages**: notes, holds, ratings, combo digits and countdown in their pixel look and colours,
   the pixel countdown and game over sounds, and the pixel game over character.
 - **Dialogue**: the talks before Senpai, Roses and Thorns in story mode: the text boxes, portraits,
@@ -79,8 +84,8 @@ Not there yet:
 
 - **Play screen**: the events and note types that belong to scripts (Set Property beyond the
   camera, the weekend 1 fight notes, custom ones), what is left of weekend 1 (the speaker under Nene
-  and her knife, the spray can itself and its blast, rain, light maps, the fight stage), coarse note
-  splashes on pixel stages, characters and props made of Animate atlases, other note and splash skins.
+  and her knife, the spray can itself and its blast, rain, light maps, the two rare turns of the fight
+  when the player is nearly out), coarse note splashes on pixel stages, other note and splash skins.
 - **Menus**: the mods menu's mouse buttons, per-mod settings and restart flag, the achievements
   that need features not here yet (the henchmen count, the toaster one, the title easter egg), those of mods, and resetting one, the rest of the options (graphics, note
   colours and skins, delay and combo placement, auto pause, gamepad, languages; the options menu is a plain

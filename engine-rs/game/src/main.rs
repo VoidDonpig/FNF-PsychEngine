@@ -5,9 +5,11 @@
 //! For checking a build without a screen: `--at <seconds>` starts at that point of the song, `--options`
 //! opens the options, and `--shot <file.png>` saves the picture after a few frames (or `--after <seconds>`, or
 //! once the song has reached `--when <seconds>`) and quits.
+mod animate;
 mod atlas;
 mod audio;
 mod dialogue;
+mod fight;
 mod input;
 mod menu;
 mod options;
@@ -314,7 +316,7 @@ impl Playing {
 
     /// What the stage adds to the names of the game over sounds.
     fn death_suffix(&self) -> &'static str {
-        self.scene.as_ref().map_or("", |scene| scene.death().1)
+        self.scene.as_ref().map_or("", |scene| scene.death().2)
     }
 
     /// What pixel stages add to the names of their countdown sounds.
@@ -554,7 +556,7 @@ impl Playing {
         if (self.play.health <= 0.0 || reset) && !self.settings.practice {
             self.dead = Some((0.0, None));
             self.song.pause();
-            self.sound(&format!("fnf_loss_sfx{}", self.death_suffix()), 1.0, false);
+            self.sound(self.scene.as_ref().map_or("fnf_loss_sfx", |scene| scene.death().1), 1.0, false);
             self.scene.iter_mut().for_each(|scene| scene.die());
             return Flow::Continue;
         }

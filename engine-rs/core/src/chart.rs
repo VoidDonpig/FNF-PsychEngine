@@ -36,7 +36,16 @@ pub enum NoteKind {
     /// and the player cocks the gun and shoots the can down. Missing the shot hurts.
     CockGun,
     FireGun,
+    /// Weekend 1: a move of the fist fight, by its place in `FIGHT_MOVES`.
+    Fight(u8),
 }
+
+/// The moves of the weekend 1 fist fight: note types named "weekend-1-" and one of these.
+pub const FIGHT_MOVES: [&str; 26] = [
+    "punchlow", "punchlowblocked", "punchlowdodged", "punchlowspin", "punchhigh", "punchhighblocked", "punchhighdodged", "punchhighspin",
+    "blockhigh", "blocklow", "blockspin", "dodgehigh", "dodgelow", "dodgespin", "hithigh", "hitlow", "hitspin",
+    "picouppercutprep", "picouppercut", "darnelluppercutprep", "darnelluppercut", "idle", "fakeout", "taunt", "tauntforce", "reversefakeout",
+];
 
 /// Something a chart schedules besides notes: a camera zoom, a pose, a character swap.
 #[derive(Clone, Debug, PartialEq)]
@@ -167,6 +176,9 @@ pub fn parse(text: &str) -> Result<Chart, String> {
                     "weekend-1-kneecan" => NoteKind::KneeCan,
                     "weekend-1-cockgun" => NoteKind::CockGun,
                     "weekend-1-firegun" => NoteKind::FireGun,
+                    kind if kind.strip_prefix("weekend-1-").is_some_and(|fight| FIGHT_MOVES.contains(&fight)) => {
+                        NoteKind::Fight(FIGHT_MOVES.iter().position(|fight| kind.strip_prefix("weekend-1-") == Some(*fight)).unwrap_or(0) as u8)
+                    }
                     // in a girlfriend section, the notes of the side in focus are hers
                     _ if gf_section && player == must_hit => NoteKind::GfSing,
                     _ => NoteKind::Normal,
@@ -259,6 +271,15 @@ mod tests {
         // sorted by time: the player's note of the girlfriend section, the opponent's, then the typed ones
         assert_eq!(kinds, [NoteKind::GfSing, NoteKind::Normal, NoteKind::Alt, NoteKind::Hey, NoteKind::NoAnimation, NoteKind::GfSing]);
         assert!(chart.sections[0].alt);
+    }
+
+    #[test]
+    fn weekend_1_notes_are_stunts_and_fight_moves() {
+        let chart = parse(r#"{"song":"T","format":"psych_v1","notes":[{"mustHitSection":true,"sectionNotes":[
+            [0,0,0,"weekend-1-firegun"],[10,1,0,"weekend-1-punchhigh"],[20,2,0,"weekend-1-reversefakeout"],[30,3,0,"weekend-1-unheard-of"]]}]}"#).unwrap();
+        let kinds: Vec<NoteKind> = chart.notes.iter().map(|n| n.kind).collect();
+        assert_eq!(kinds, [NoteKind::FireGun, NoteKind::Fight(4), NoteKind::Fight(25), NoteKind::Normal]);
+        assert_eq!(FIGHT_MOVES[4], "punchhigh");
     }
 
     #[test]

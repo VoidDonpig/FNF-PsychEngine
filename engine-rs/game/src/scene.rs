@@ -149,6 +149,16 @@ fn backdrop(stage: &str) -> Vec<LayerDef> {
             front(moving("fg", Beat, layer("tank5", 1620.0, 700.0, 1.5, 1.5))),
             front(moving("fg", Beat, layer("tank3", 1300.0, 1200.0, 3.5, 2.5))),
         ],
+        // the fight in the rain: a blurred street that stays with the camera, under a sky that drifts and flashes
+        "phillyBlazin" => {
+            let mut layers: Vec<LayerDef> = (0..3).map(|_| layer("phillyBlazin/skyBlur", -500.0, -120.0, 0.0, 0.0)).collect();
+            layers.extend([
+                sized(Times(1.75), layer("phillyBlazin/skyBlur", -600.0, -175.0, 0.0, 0.0)),
+                sized(Times(1.75), moving("lightning0", Flash, layer("phillyBlazin/lightning", -50.0, -300.0, 0.0, 0.0))),
+                sized(Times(1.75), layer("phillyBlazin/streetBlur", -600.0, -175.0, 0.0, 0.0)),
+            ]);
+            layers
+        }
         "phillyStreets" => vec![
             sized(Times(0.65), layer("phillyStreets/phillySkybox", -650.0, -375.0, 0.1, 0.1)),
             layer("phillyStreets/phillySkyline", -545.0, -273.0, 0.2, 0.2),
@@ -249,6 +259,8 @@ enum Own {
     Mall { hey: f32 },
     /// Whether the girls in the back have turned sour.
     School { sour: bool },
+    /// The fight stage: how far its sky has drifted, the seconds until lightning strikes and since it last did.
+    Blazin { drift: f32, strike_in: f32, since: f32 },
     /// The traffic light (red or not, the beat it last changed and the beats until it changes again) and the two cars: one each way.
     Streets { red: bool, changed: i64, every: i64, cars: [Car; 2] },
     /// The tank rolling round behind the ground: where on its circle it is (degrees) and how fast it goes.
@@ -543,7 +555,10 @@ fn texture(paths: &Paths, relative: &str) -> Option<Texture2D> {
 struct Animation {
     /// Which of the character's sheets its frames are on.
     sheet: usize,
+    /// Its frames; for a character drawn the Animate way one empty frame for each of `steps`.
     frames: Vec<Frame>,
+    /// The frames of the Animate timeline it goes through.
+    steps: Vec<usize>,
     fps: f32,
     looped: bool,
     offset: Vec2,
@@ -551,6 +566,8 @@ struct Animation {
 
 pub struct Character {
     sheets: Vec<Sheet>,
+    /// Drawn the Animate way instead, from a folder of that name.
+    rig: Option<crate::animate::Atlas>,
     animations: HashMap<String, Animation>,
     position: Vec2,
     scale: f32,
@@ -587,10 +604,15 @@ impl Character {
     /// Loads characters/<name>.json and its sheet. `spot` is where the stage puts this character.
     fn load(paths: &Paths, name: &str, spot: Vec2, is_player: bool) -> Result<Character, String> {
         let json = read_json(paths, &format!("characters/{name}.json"))?;
-        // shortcut: texture-atlas (Animate) characters are not read. Extend Sheet for them.
-        // a character may be drawn from several sheets ("a, b"): the first is needed, the others bring more animations
+        // a folder with an Animation.json in it is a character drawn the Animate way
+        let whole = json["image"].as_str().unwrap_or("").trim();
+        let rig = match paths.find(&format!("images/{whole}/Animation.json")) {
+            Some(file) => Some(crate::animate::Atlas::load(file.parent().unwrap_or(&file))?),
+            None => None,
+        };
+        // otherwise it may be drawn from several sheets ("a, b"): the first is needed, the others bring more animations
         let mut sheets = Vec::new();
-        for image in json["image"].as_str().unwrap_or("").split(',').map(str::trim) {
+        for image in whole.split(',').map(str::trim).filter(|_| rig.is_none()) {
             match paths.find(&format!("images/{image}.png")).ok_or(format!("images/{image}.png not found")).and_then(|path| Sheet::load(&path)) {
                 Ok(sheet) => sheets.push(sheet),
                 Err(error) if sheets.is_empty() => return Err(error),
@@ -600,10 +622,21 @@ impl Character {
         let mut animations = HashMap::new();
         for animation in json["animations"].as_array().into_iter().flatten() {
             let indices: Vec<u32> = animation["indices"].as_array().into_iter().flatten().filter_map(|i| i.as_u64()).map(|i| i as u32).collect();
-            let found = sheets.iter().map(|sheet| sheet.animation(animation["name"].as_str().unwrap_or(""), &indices)).enumerate().find(|(_, frames)| !frames.is_empty());
-            if let Some((sheet, frames)) = found {
-                let fps = animation["fps"].as_f64().unwrap_or(24.0) as f32;
-                animations.insert(animation["anim"].as_str().unwrap_or("").to_owned(), Animation { sheet, frames, fps, looped: animation["loop"].as_bool().unwrap_or(false), offset: pair(&animation["offsets"]) });
+            let named = animation["name"].as_str().unwrap_or("");
+            let found = match &rig {
+                // on a timeline: the frames listed, or those under the label of that name, or all of it
+                Some(atlas) => {
+                    let (start, length) = atlas.rig.label(named).unwrap_or((0, atlas.rig.length()));
+                    let steps: Vec<usize> = if indices.is_empty() { (start..start + length).collect() } else { indices.iter().map(|index| *index as usize).collect() };
+                    let empty = Frame { source: Rect::new(0.0, 0.0, 0.0, 0.0), offset: Vec2::ZERO, size: Vec2::ZERO, rotated: false };
+                    Some((0, vec![empty; steps.len()], steps)).filter(|(_, _, steps)| !steps.is_empty())
+                }
+                None => sheets.iter().map(|sheet| sheet.animation(named, &indices)).enumerate().find(|(_, frames)| !frames.is_empty()).map(|(sheet, frames)| (sheet, frames, Vec::new())),
+            };
+            if let Some((sheet, frames, steps)) = found {
+                // a speed of 0 means the timeline's own
+                let fps = animation["fps"].as_f64().filter(|fps| *fps > 0.0).map_or(rig.as_ref().map_or(24.0, |atlas| atlas.rig.fps), |fps| fps as f32);
+                animations.insert(animation["anim"].as_str().unwrap_or("").to_owned(), Animation { sheet, frames, steps, fps, looped: animation["loop"].as_bool().unwrap_or(false), offset: pair(&animation["offsets"]) });
             }
         }
         let sways = animations.contains_key("danceLeft") && animations.contains_key("danceRight");
@@ -620,6 +653,7 @@ impl Character {
         let icon = texture(paths, &format!("images/icons/icon-{icon_name}.png")).or_else(|| texture(paths, &format!("images/icons/{icon_name}.png"))).or_else(|| texture(paths, "images/icons/icon-face.png"));
         Ok(Character {
             sheets,
+            rig,
             animations,
             position: spot + pair(&json["position"]),
             scale,
@@ -704,7 +738,10 @@ impl Character {
         let frame = (self.time * animation.fps) as usize;
         let frame = if animation.looped { frame % animation.frames.len() } else { frame.min(animation.frames.len() - 1) };
         let at = self.position - animation.offset - self.grow;
-        self.sheets[animation.sheet].draw(animation.frames[frame], at.x, at.y, self.scale, self.flip_x, self.tint);
+        match &self.rig {
+            Some(atlas) => atlas.draw(animation.steps[frame], at, self.scale, self.flip_x, self.tint),
+            None => self.sheets[animation.sheet].draw(animation.frames[frame], at.x, at.y, self.scale, self.flip_x, self.tint),
+        }
     }
 }
 
@@ -746,6 +783,9 @@ pub struct Scene {
     /// Characters a chart event will swap in, loaded ahead so that the swap does not stall the song.
     spares: HashMap<String, Character>,
     own: Own,
+    /// The fist fight of weekend 1, on its stage; and whether the opponent stands in front of the player in it.
+    fight: Option<crate::fight::Fight>,
+    opponent_front: bool,
     glow: Option<Glow>,
     spotlight: Option<Spotlight>,
     soldiers: Option<Soldiers>,
@@ -826,10 +866,13 @@ impl Scene {
                 "limo" => Own::Limo { speed: 0.0, back_in: None, kill: Kill::Wait, limo_speed: 0.0 },
                 "mall" => Own::Mall { hey: 0.0 },
                 "school" => Own::School { sour: false },
+                "phillyBlazin" => Own::Blazin { drift: 0.0, strike_in: 3.0, since: 1e9 },
                 "phillyStreets" => Own::Streets { red: false, changed: 0, every: 8, cars: Default::default() },
                 "tank" => Own::Tank { angle: rand::gen_range(-90.0, 45.0), speed: rand::gen_range(5.0, 7.0) },
                 _ => Own::Nothing,
             },
+            fight: (chart.stage == "phillyBlazin").then(Default::default),
+            opponent_front: false,
             glow: None,
             spotlight: None,
             soldiers: None,
@@ -1099,6 +1142,27 @@ impl Scene {
             self.bumping |= side == 0;
             let note = note.map(|index| &chart.notes[index]);
             let kind = note.map_or(NoteKind::Normal, |n| n.kind);
+            // in the fist fight nobody sings: every note is an exchange of moves, and the opponent's notes count as the player's misses
+            if let Some(fight) = &mut self.fight {
+                let name = match kind {
+                    NoteKind::Fight(index) => funkin_core::chart::FIGHT_MOVES.get(index as usize).copied().unwrap_or(""),
+                    _ => "",
+                };
+                let now = [&self.player, &self.opponent].map(|c| c.as_ref().map_or(String::new(), |c| c.current.clone()));
+                let (mine, his) = fight.moves(name, missed || side == 0, note.is_none(), (&now[0], &now[1]));
+                for (who, moved) in [(1, mine), (0, his)] {
+                    let Some(moved) = moved else { continue };
+                    // going back to idle does not start an idle move over
+                    if let Some(fighter) = self.singer(who).filter(|c| !(moved.pose == "idle" && c.current == "idle")) {
+                        fighter.play(&moved.pose);
+                    }
+                    self.opponent_front = (who == 0) == moved.front;
+                    if let Some(shake) = moved.shake {
+                        self.shake[0] = shake;
+                    }
+                }
+                continue;
+            }
             let alt = kind == NoteKind::Alt || (side == 0 && note.and_then(|n| chart.section_at(n.time)).is_some_and(|s| s.alt));
             match kind {
                 NoteKind::NoAnimation => {}
@@ -1293,6 +1357,32 @@ impl Scene {
                 }
             }
             Own::School { .. } => {}
+            Own::Blazin { drift, strike_in, since } => {
+                (*drift, *strike_in, *since) = (*drift + 35.0 * dt, *strike_in - dt, *since + dt);
+                let skies: Vec<usize> = self.backdrop.iter().enumerate().filter(|(_, layer)| layer.def.image == "phillyBlazin/skyBlur").map(|(index, _)| index).collect();
+                let [first, second, third, glare] = skies[..] else { return };
+                // three skies side by side drift past, coming round as each leaves
+                let width = self.backdrop[first].texture.width();
+                for (place, sky) in [first, second, third].into_iter().enumerate() {
+                    self.backdrop[sky].def.at.x = -500.0 - *drift % width + place as f32 * width;
+                }
+                if *strike_in <= 0.0 {
+                    (*strike_in, *since) = (rand::gen_range(7.0, 15.0), 0.0);
+                    sound(&format!("lightning/Lightning{}", rand::gen_range(1, 4)), 1.0);
+                    if let Some(bolt) = find(&mut self.backdrop, "phillyBlazin/lightning") {
+                        // mostly on the left, sometimes on the right
+                        (bolt.def.at.x, bolt.time) = (if chance(0.65) { rand::gen_range(-250.0, 280.0) } else { rand::gen_range(780.0, 900.0) }, 0.0);
+                    }
+                }
+                // the sky glares and fades; everyone is a dark shape for a moment
+                self.backdrop[glare].tint.a = (0.7 * (1.0 - *since / 1.5)).max(0.0);
+                let lit = (*since / 0.3).min(1.0);
+                for (who, character) in [&mut self.opponent, &mut self.player, &mut self.gf].into_iter().enumerate() {
+                    let usual = if who == 2 { 0x88 } else { 0xDE } as f32;
+                    let shade = (0x60 as f32 + (usual - 0x60 as f32) * lit) / 255.0;
+                    character.iter_mut().for_each(|c| c.tint = Color::new(shade, shade, shade, 1.0));
+                }
+            }
             Own::Streets { red, changed, every, cars } => {
                 const CARS: [&str; 4] = ["car1", "car2", "car3", "car4"];
                 let layers: Vec<usize> = self.backdrop.iter().enumerate().filter(|(_, layer)| layer.def.image == "phillyStreets/phillyCars").map(|(index, _)| index).collect();
@@ -1437,13 +1527,14 @@ impl Scene {
         self.player.as_ref().is_none_or(|player| ["idle", "danceLeft", "danceRight"].iter().any(|idle| player.current.starts_with(idle)))
     }
 
-    /// Who lies there when the player has lost, and what is added to the names of the game over sounds.
+    /// Who lies there when the player has lost, the sound of losing, and what is added to the names of the game over music.
     // shortcut: by stage, as the base game's stages set it; charts and scripts can name another game over character (gameOverChar). Read it from the chart when one needs it.
-    pub fn death(&self) -> (&'static str, &'static str) {
+    pub fn death(&self) -> (&'static str, &'static str, &'static str) {
         match self.stage.as_str() {
-            _ if self.pixel => ("bf-pixel-dead", "-pixel"),
-            "phillyStreets" | "phillyBlazin" => ("pico-dead", "-pico"),
-            _ => ("bf-dead", ""),
+            _ if self.pixel => ("bf-pixel-dead", "fnf_loss_sfx-pixel", "-pixel"),
+            "phillyStreets" => ("pico-dead", "fnf_loss_sfx-pico", "-pico"),
+            "phillyBlazin" => ("pico-blazin", "fnf_loss_sfx-pico-gutpunch", "-pico"),
+            _ => ("bf-dead", "fnf_loss_sfx", ""),
         }
     }
 
@@ -1531,7 +1622,9 @@ impl Scene {
                 draw_texture_ex(&spot.smoke, at.x, at.y, Color::new(1.0, 1.0, 1.0, spot.fog), params);
             }
         }
-        for character in [&self.gf, &self.opponent, &self.player].into_iter().flatten() {
+        // whoever throws the punch stands in front
+        let fighters = if self.opponent_front { [&self.gf, &self.player, &self.opponent] } else { [&self.gf, &self.opponent, &self.player] };
+        for character in fighters.into_iter().flatten() {
             character.draw();
         }
         self.backdrop.iter().filter(|layer| layer.def.front).for_each(|layer| layer.draw(scroll));
