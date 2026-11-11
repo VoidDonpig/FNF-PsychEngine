@@ -1202,7 +1202,7 @@ fn main() {
         }
         // the game is laid out for 1280x720 and stretched to the window
         set_camera(&Camera2D { target: vec2(WIDTH / 2.0, HEIGHT / 2.0), zoom: vec2(2.0 / WIDTH, 2.0 / HEIGHT), ..Default::default() });
-        clear_background(Color::from_hex(0x1B1B26));
+        clear_background(BLACK);
         // read every frame, also outside songs, so that a song never starts with old key presses queued
         let key_events = keyboard.poll();
         let plain = |text: &str, x: f32, y: f32, size: u16, color: Color| match &skin {
