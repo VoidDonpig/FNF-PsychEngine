@@ -120,7 +120,9 @@ Done:
   and going out after the song before it; the options' screen for the note delay (its own music, a bar,
   "Beat Hit!" on the beat as it will be judged) and for placing the rating and the combo count;
   Tankman's talks before Ugh, Guns and Stress in story mode (his lines and music, the view, the beep, the
-  tears, the girlfriend at gunpoint and Pico's rescue; holding Accept for a second skips them).
+  tears, the girlfriend at gunpoint and Pico's rescue; holding Accept for a second skips them); the rest of
+  stage files' `objects`: drawn between the characters where listed (and the characters in the order listed),
+  `flipY`, colour names, and objects shown only in story mode or only in freeplay.
 
 Not there yet:
 
@@ -129,8 +131,6 @@ Not there yet:
   knife and cheers, the shell flying off the gun, the stage going dark at the shot, rain, light maps, the two
   rare turns of the fight when the player is nearly out); the Haxe
   fork's Display Lag Correction; the charting mode entries of the pause menu.
-- **Stages**: objects of a stage file listed between two characters are drawn behind all three; `flipY`,
-  colour names and the story-mode/freeplay filters of stage objects.
 - **Menus**: the mods menu's
   mouse buttons and per-mod settings; achievements of mods; the options menu's look (it is a plain list)
   and its Shaders and GPU Caching switches (nothing to switch here); Discord presence; update check;

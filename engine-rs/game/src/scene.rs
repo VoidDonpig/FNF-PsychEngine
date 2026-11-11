@@ -41,11 +41,13 @@ struct LayerDef {
     scroll: Vec2,
     size: Size,
     flip: bool,
+    flip_y: bool,
     /// Animation: frame name prefix ("" for a sheet's frames in file order) and how it plays.
     anim: Option<(&'static str, Motion)>,
     fps: f32,
-    /// Drawn over the characters.
+    /// Drawn over the characters; or, behind some of them, after this many of them.
     front: bool,
+    after: usize,
     /// Pixel art keeps its hard edges.
     pixel: bool,
     /// Grows around its middle instead of from its top left corner.
@@ -61,7 +63,7 @@ struct LayerDef {
 }
 
 fn layer(image: &'static str, x: f32, y: f32, scroll_x: f32, scroll_y: f32) -> LayerDef {
-    LayerDef { image, at: vec2(x, y), scroll: vec2(scroll_x, scroll_y), size: Size::Times(1.0), flip: false, anim: None, fps: 24.0, front: false, pixel: false, centered: false, detail: false, tint: WHITE, angle: 0.0, stretch: Vec2::ONE, indices: &[] }
+    LayerDef { image, at: vec2(x, y), scroll: vec2(scroll_x, scroll_y), size: Size::Times(1.0), flip: false, flip_y: false, anim: None, fps: 24.0, front: false, after: 0, pixel: false, centered: false, detail: false, tint: WHITE, angle: 0.0, stretch: Vec2::ONE, indices: &[] }
 }
 
 /// The backdrop of a stage, back to front. The numbers are those of source/states/stages.
@@ -211,26 +213,51 @@ fn kept(name: &str) -> &'static str {
 
 /// The backdrop a stage file describes itself (its "objects", as the Haxe engine's stage editor writes them): pictures, animated
 /// pictures and plain squares, in the order they are drawn. What comes after the three characters is drawn over them.
-// shortcut: characters are drawn together, so an object listed between two of them is drawn behind all three; flipY, colour
-// names and the story-mode/freeplay filters are not read. Add them when a stage needs them.
-fn objects(stage: &Value, low: bool) -> Vec<LayerDef> {
+/// A colour as a stage file writes it: "#RRGGBB", "0xAARRGGBB", "RRGGBB" or a name ("red"). Anything else is white.
+/// (Only the colour counts: a tint has no opacity of its own.)
+fn color_named(code: &str) -> Color {
+    let code = code.trim();
+    let digits = code.strip_prefix("0x").or(code.strip_prefix('#')).unwrap_or(code);
+    if matches!(digits.len(), 6 | 8) && digits.chars().all(|c| c.is_ascii_hexdigit()) {
+        return crate::settings::hex(&digits[digits.len() - 6..]).map_or(WHITE, Color::from_hex);
+    }
+    // Flixel's names
+    const NAMES: [(&str, u32); 15] = [("transparent", 0x000000), ("white", 0xFFFFFF), ("gray", 0x808080), ("black", 0x000000), ("green", 0x008000), ("lime", 0x00FF00), ("yellow", 0xFFFF00),
+        ("orange", 0xFFA500), ("red", 0xFF0000), ("purple", 0x800080), ("blue", 0x0000FF), ("brown", 0x8B4513), ("pink", 0xFFC0CB), ("magenta", 0xFF00FF), ("cyan", 0x00FFFF)];
+    NAMES.iter().find(|(name, _)| name.eq_ignore_ascii_case(code)).map_or(WHITE, |(_, rgb)| Color::from_hex(*rgb))
+}
+
+/// The pictures a stage file's `objects` list (on low quality `low`, in story mode `story`), and the order its characters
+/// are drawn in: 0 the girlfriend, 1 the opponent, 2 the player. A character it does not list is not drawn.
+fn objects(stage: &Value, low: bool, story: bool) -> (Vec<LayerDef>, Vec<usize>) {
     let list = stage["objects"].as_array().map_or(&[][..], Vec::as_slice);
-    let is_character = |object: &Value| matches!(object["type"].as_str(), Some("gf" | "gfGroup" | "dad" | "dadGroup" | "boyfriend" | "boyfriendGroup"));
-    let last_character = list.iter().rposition(is_character);
+    let who = |object: &Value| match object["type"].as_str() {
+        Some("gf" | "gfGroup") => Some(0),
+        Some("dad" | "dadGroup") => Some(1),
+        Some("boyfriend" | "boyfriendGroup") => Some(2),
+        _ => None,
+    };
+    let mut cast = Vec::new();
     let number = |value: &Value, or: f32| value.as_f64().map_or(or, |n| n as f32);
     let pair = |value: &Value, or: f32| vec2(number(&value[0], or), number(&value[1], or));
-    list.iter().enumerate().filter_map(|(place, object)| {
+    let layers = list.iter().filter_map(|object| {
+        if let Some(character) = who(object) {
+            if !cast.contains(&character) {
+                cast.push(character);
+            }
+            return None;
+        }
         let kind = object["type"].as_str().filter(|kind| ["square", "sprite", "animatedSprite"].contains(kind))?;
-        // 1: shown on low quality, 2: shown otherwise
+        // 1: shown on low quality, 2: shown otherwise; 4: only in story mode, 8: only out of it
+        // (the Haxe engine means the last one so, but only heeds it together with 4)
         let filters = object["filters"].as_u64().unwrap_or(3);
-        if filters & if low { 1 } else { 2 } == 0 {
+        if filters & if low { 1 } else { 2 } == 0 || (filters & 4 != 0 && !story) || (filters & 8 != 0 && story) {
             return None;
         }
         let mut def = layer(if kind == "square" { "" } else { kept(object["image"].as_str()?) }, number(&object["x"], 0.0), number(&object["y"], 0.0), 1.0, 1.0);
         (def.scroll, def.stretch) = (pair(&object["scroll"], 1.0), pair(&object["scale"], 1.0));
-        (def.flip, def.pixel, def.front) = (object["flipX"] == true, object["antialiasing"] == false, last_character.is_some_and(|last| place > last));
-        let color = object["color"].as_str().and_then(|code| crate::settings::hex(code.trim_start_matches("0x")));
-        def.tint = Color { a: number(&object["alpha"], 1.0), ..color.map_or(WHITE, Color::from_hex) };
+        (def.flip, def.flip_y, def.pixel, def.after) = (object["flipX"] == true, object["flipY"] == true, object["antialiasing"] == false, cast.len());
+        def.tint = Color { a: number(&object["alpha"], 1.0), ..object["color"].as_str().map_or(WHITE, color_named) };
         def.angle = number(&object["angle"], 0.0).to_radians();
         if kind == "animatedSprite" {
             // the animation it starts on: the one named first, else the first of the list
@@ -244,7 +271,10 @@ fn objects(stage: &Value, low: bool) -> Vec<LayerDef> {
             def.indices = Vec::leak(indices);
         }
         Some(def)
-    }).collect()
+    }).collect::<Vec<_>>();
+    // what comes after every character listed is in front of them all
+    let layers = layers.into_iter().map(|def| LayerDef { front: !cast.is_empty() && def.after == cast.len(), ..def }).collect();
+    (layers, cast)
 }
 
 /// The pictures of a stage as read from disk, by name and by whether their sheet was read with them.
@@ -666,9 +696,17 @@ impl Layer {
         if stretch != Vec2::ONE {
             push_model_matrix(Mat4::from_translation(corner) * Mat4::from_scale(stretch.extend(1.0)) * Mat4::from_translation(-corner));
         }
+        // upside down about its middle
+        if self.def.flip_y {
+            let middle = (at + size * scale / 2.0).extend(0.0);
+            push_model_matrix(Mat4::from_translation(middle) * Mat4::from_scale(vec3(1.0, -1.0, 1.0)) * Mat4::from_translation(-middle));
+        }
         match frame {
             Some(f) => crate::atlas::draw_frame(&self.texture, self.frames[f], at.x, at.y, scale, self.def.flip, tint),
             None => draw_texture_ex(&self.texture, at.x, at.y, tint, DrawTextureParams { dest_size: Some(size * scale), flip_x: self.def.flip, ..Default::default() }),
+        }
+        if self.def.flip_y {
+            pop_model_matrix();
         }
         if stretch != Vec2::ONE {
             pop_model_matrix();
@@ -936,6 +974,8 @@ pub struct Scene {
     /// The fist fight of weekend 1, on its stage; and whether the opponent stands in front of the player in it.
     fight: Option<crate::fight::Fight>,
     opponent_front: bool,
+    /// The order the characters are drawn in (0 the girlfriend, 1 the opponent, 2 the player); a stage file may change it.
+    cast: Vec<usize>,
     glow: Option<Glow>,
     spotlight: Option<Spotlight>,
     soldiers: Option<Soldiers>,
@@ -988,11 +1028,19 @@ fn who(value: &str) -> usize {
 
 impl Scene {
     /// `low`: the Low Quality option, which leaves details of the stage out.
-    pub fn load(base: &std::path::Path, source: &str, chart: &Chart, low: bool) -> Result<Scene, String> {
+    /// `story`: the song is played in story mode (a stage file may show some things only then, or only out of it).
+    pub fn load(base: &std::path::Path, source: &str, chart: &Chart, low: bool, story: bool) -> Result<Scene, String> {
         let stage = read_json(&Paths::new(base, source, ""), &format!("stages/{}.json", chart.stage))?;
         let paths = Paths::new(base, source, stage["directory"].as_str().unwrap_or(""));
         let mut loaded = Pictures::new();
-        let mut backdrop: Vec<Layer> = Some(backdrop(&chart.stage, low)).filter(|known| !known.is_empty()).unwrap_or_else(|| objects(&stage, low)).into_iter().filter_map(|def| Layer::load(&paths, def, &mut loaded)).collect();
+        // a stage the engine knows has its own backdrop; any other is built from the objects its file lists, if it lists any
+        let (defs, cast) = match backdrop(&chart.stage, low) {
+            known if !known.is_empty() => (known, Vec::new()),
+            _ => objects(&stage, low, story),
+        };
+        // (a file that lists no character at all draws all three: the Haxe engine would draw none)
+        let cast = if cast.is_empty() { vec![0, 1, 2] } else { cast };
+        let mut backdrop: Vec<Layer> = defs.into_iter().filter_map(|def| Layer::load(&paths, def, &mut loaded)).collect();
         // what only shows when its moment comes
         for hidden in backdrop.iter_mut().filter(|layer| ["philly/window", "gore/metalPole", "gore/coldHeartKiller"].contains(&layer.def.image) || matches!(layer.def.anim, Some(("Henchmen on rail" | "henchmen death", _)))) {
             hidden.tint.a = 0.0;
@@ -1048,6 +1096,7 @@ impl Scene {
             levels: [0.0; 7],
             fight: (chart.stage == "phillyBlazin").then(Default::default),
             opponent_front: false,
+            cast,
             glow: None,
             spotlight: None,
             soldiers: None,
@@ -1954,7 +2003,7 @@ impl Scene {
         // everything the camera can see, and more
         let view = SCREEN / self.zoom;
         let cover = |color: Color| draw_rectangle(self.camera.x - view.x, self.camera.y - view.y, view.x * 2.0, view.y * 2.0, color);
-        for layer in self.backdrop.iter().filter(|layer| !layer.def.front) {
+        for layer in self.backdrop.iter().filter(|layer| !layer.def.front && layer.def.after == 0) {
             // with the lights out the street is all that stays in front of the dark, the glow, the sparks and the lit windows
             if let (Some(glow), "philly/street") = (&self.glow, layer.def.image) {
                 if let Some(color) = glow.color.map(|index| Color::from_hex(WINDOW_LIGHTS[index])) {
@@ -2002,7 +2051,8 @@ impl Scene {
         }
         self.abot.iter().for_each(|abot| abot.draw());
         // whoever throws the punch stands in front
-        let fighters = if self.opponent_front { [&self.gf, &self.player, &self.opponent] } else { [&self.gf, &self.opponent, &self.player] };
+        let everyone = [&self.gf, &self.opponent, &self.player];
+        let fighters: Vec<&Option<Character>> = if self.opponent_front { vec![&self.gf, &self.player, &self.opponent] } else { self.cast.iter().map(|who| everyone[*who]).collect() };
         if let Some(spirit) = &self.opponent {
             // fainter the older they are
             for (age, (pose, time, at)) in self.trail.iter().enumerate().rev() {
@@ -2010,7 +2060,9 @@ impl Scene {
             }
         }
         let scene_time = self.stunt.map_or(0.0, |(_, t, _)| t);
-        for slot in fighters {
+        for (index, slot) in fighters.into_iter().enumerate() {
+            // what a stage file puts between two characters
+            self.backdrop.iter().filter(|layer| !layer.def.front && index > 0 && layer.def.after == index).for_each(|layer| layer.draw(scroll));
             match (&self.actor, &self.rescue, slot) {
                 // Tankman talks in the opponent's place
                 (Some((talk, part, since)), _, Some(tankman)) if std::ptr::eq(slot, &self.opponent) => {
@@ -2087,17 +2139,33 @@ mod tests {
             {"type": "sprite", "image": "curtains", "x": 0, "y": 0, "scroll": [1.3, 1.3], "alpha": 0.5, "filters": 1},
             {"type": "something else"}
         ]}"##).unwrap();
-        let high = super::objects(&stage, false);
-        assert_eq!(high.iter().map(|def| def.image).collect::<Vec<_>>(), ["", "detail", "crowd"]);
+        let (high, cast) = super::objects(&stage, false, false);
+        assert_eq!((high.iter().map(|def| def.image).collect::<Vec<_>>(), cast), (vec!["", "detail", "crowd"], vec![0, 1, 2]));
         let (square, detail, crowd) = (high[0], high[1], high[2]);
         assert_eq!((square.stretch, square.scroll, square.tint), (super::vec2(3000.0, 1800.0), super::vec2(0.1, 0.2), super::Color::from_hex(0x203060)));
         assert!((detail.angle - std::f32::consts::FRAC_PI_2).abs() < 1e-6 && !detail.front);
         // the animation it starts on, with its offset taken off and only the frames it names
         assert!(crowd.anim == Some(("crowd cheer", super::Motion::Once)) && crowd.at == super::vec2(290.0, 280.0) && crowd.indices == [0, 2] && crowd.flip && crowd.pixel);
         // low quality: what is marked for it, here the one in front of the characters
-        let low = super::objects(&stage, true);
+        let low = super::objects(&stage, true, false).0;
         assert_eq!(low.iter().map(|def| (def.image, def.front, def.tint.a)).collect::<Vec<_>>(), [("", false, 1.0), ("crowd", false, 1.0), ("curtains", true, 0.5)]);
-        assert!(super::objects(&serde_json::Value::Null, false).is_empty());
+        assert!(super::objects(&serde_json::Value::Null, false, false).0.is_empty());
+    }
+
+    #[test]
+    fn stage_objects_go_between_characters_and_may_be_for_one_mode_only() {
+        let stage: serde_json::Value = serde_json::from_str(r##"{"objects": [
+            {"type": "dad"}, {"type": "sprite", "image": "pillar", "color": "red", "flipY": true, "filters": 2},
+            {"type": "boyfriend"}, {"type": "sprite", "image": "story", "filters": 6}, {"type": "sprite", "image": "free", "filters": 10, "color": "0x80FF0000"}
+        ]}"##).unwrap();
+        // the girlfriend is not listed: she is not drawn; the pillar stands after the opponent, before the player
+        let (layers, cast) = super::objects(&stage, false, false);
+        assert_eq!((cast, layers.iter().map(|def| (def.image, def.after, def.front)).collect::<Vec<_>>()), (vec![1, 2], vec![("pillar", 1, false), ("free", 2, true)]));
+        assert!(layers[0].flip_y && layers[0].tint == super::Color::from_hex(0xFF0000) && layers[1].tint == super::Color::from_hex(0xFF0000));
+        assert_eq!(super::objects(&stage, false, true).0.iter().map(|def| def.image).collect::<Vec<_>>(), ["pillar", "story"]);
+        // colours: codes with or without a mark, names in any case, white for anything else
+        let rgb = |code: &str| { let c = super::color_named(code); ((c.r * 255.0) as u32, (c.g * 255.0) as u32, (c.b * 255.0) as u32) };
+        assert_eq!([rgb("#00FF00"), rgb("0000FF"), rgb("Cyan"), rgb("#FF8B4513"), rgb("nonsense")], [(0, 255, 0), (0, 0, 255), (0, 255, 255), (139, 69, 19), (255, 255, 255)]);
     }
 
     #[test]

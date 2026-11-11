@@ -309,7 +309,7 @@ impl Playing {
         tracks.extend(voices_player.as_deref());
         let player_voice = voices_player.as_ref().map(|_| 1);
         tracks.extend(voices_opponent.as_deref());
-        let scene = scene::Scene::load(base, &entry.source, &chart, settings.low_quality).map_err(|e| eprintln!("Stage: {e}")).ok();
+        let scene = scene::Scene::load(base, &entry.source, &chart, settings.low_quality, story).map_err(|e| eprintln!("Stage: {e}")).ok();
         // shortcut: --at only moves the silent clock (it exists for screenshots); seek the audio too to make it a practice feature.
         let song = audio::Song::load_at(if start_at > 0.0 { &[] } else { &tracks }, settings.playback_rate);
         // five beats of countdown, as the Haxe engine does
