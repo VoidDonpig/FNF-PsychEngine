@@ -144,8 +144,8 @@ Not there yet:
   engine's shader; the Haxe
   fork's Display Lag Correction; the charting mode entries of the pause menu.
 - **Menus**: the mods menu's buttons (enable, disable, move: here they are keys) and per-mod settings;
-  achievements of mods; the note colours' page looks plain (the other pages look as in the Haxe engine); the
-  key binds' gamepad side (no gamepads yet) and debug keys (no editors yet); the Shaders and GPU Caching switches (nothing to switch here); update check.
+  achievements of mods; the note colours' copy and paste buttons (no clipboard here); the key binds' gamepad
+  side (no gamepads yet) and debug keys (no editors yet); the Shaders and GPU Caching switches (nothing to switch here); update check.
 - **Cutscenes**: weekend 1's;
   videos; dialogue from a song's `dialogue.json` (the kind scripts start).
 - **Scripts**: Lua (about 225 functions and the callbacks). HScript is Haxe code run against the Haxe

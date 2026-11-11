@@ -40,33 +40,7 @@ pub const BLACK: Color = Color::new(0.0, 0.0, 0.0, 1.0);
 pub const GRAY: Color = Color::new(0.51, 0.51, 0.51, 1.0);
 pub const RED: Color = Color::new(0.90, 0.16, 0.22, 1.0);
 pub const GREEN: Color = Color::new(0.0, 0.89, 0.19, 1.0);
-pub const YELLOW: Color = Color::new(0.99, 0.98, 0.0, 1.0);
 pub const ORANGE: Color = Color::new(1.0, 0.63, 0.0, 1.0);
-
-/// Hue, saturation and lightness of a colour, each 0 to 1.
-pub fn rgb_to_hsl(color: Color) -> (f32, f32, f32) {
-    let (max, min) = (color.r.max(color.g).max(color.b), color.r.min(color.g).min(color.b));
-    let (light, spread) = ((max + min) / 2.0, max - min);
-    if spread == 0.0 {
-        return (0.0, 0.0, light);
-    }
-    let saturation = if light < 0.5 { spread / (max + min) } else { spread / (2.0 - max - min) };
-    let hue = if max == color.r { (color.g - color.b) / spread } else if max == color.g { 2.0 + (color.b - color.r) / spread } else { 4.0 + (color.r - color.g) / spread };
-    ((hue / 6.0).rem_euclid(1.0), saturation, light)
-}
-
-pub fn hsl_to_rgb(hue: f32, saturation: f32, light: f32) -> Color {
-    let high = if light < 0.5 { light * (1.0 + saturation) } else { light + saturation - light * saturation };
-    let low = 2.0 * light - high;
-    // each channel is the same ramp, a third of the circle apart
-    let channel = |turn: f32| match turn.rem_euclid(1.0) {
-        t if t < 1.0 / 6.0 => low + (high - low) * 6.0 * t,
-        t if t < 0.5 => high,
-        t if t < 2.0 / 3.0 => low + (high - low) * (2.0 / 3.0 - t) * 6.0,
-        _ => low,
-    };
-    Color::new(channel(hue + 1.0 / 3.0), channel(hue), channel(hue - 1.0 / 3.0), 1.0)
-}
 
 #[derive(Clone, Copy, Debug, Default, PartialEq)]
 pub struct Rect {
@@ -1161,13 +1135,6 @@ mod tests {
     #[test]
     fn colours_and_random_numbers_behave() {
         assert_eq!(Color::from_hex(0xFF8000), Color::new(1.0, 128.0 / 255.0, 0.0, 1.0));
-        // there and back: hue, saturation and lightness say the same colour
-        for hex in [0xC24B99u32, 0x00FFFF, 0x12FA05, 0xF9393F, 0x808080, 0x000000] {
-            let (hue, saturation, light) = rgb_to_hsl(Color::from_hex(hex));
-            let back = hsl_to_rgb(hue, saturation, light);
-            let code = [back.r, back.g, back.b].iter().fold(0, |code, channel| code << 8 | (channel * 255.0).round() as u32);
-            assert_eq!(code, hex);
-        }
         rand::srand(7);
         let rolls: Vec<i32> = (0..200).map(|_| rand::gen_range(0, 3)).collect();
         assert!(rolls.iter().all(|roll| (0..3).contains(roll)) && (0..3).all(|face| rolls.contains(&face)));

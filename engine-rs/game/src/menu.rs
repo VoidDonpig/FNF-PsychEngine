@@ -561,7 +561,7 @@ impl Menus {
     }
 
     /// The same in a colour.
-    fn write_in(&self, skin: &Skin, text: &str, bold: bool, x: f32, y: f32, squeeze: f32, color: Color) {
+    pub fn write_in(&self, skin: &Skin, text: &str, bold: bool, x: f32, y: f32, squeeze: f32, color: Color) {
         // without the letter sheet the plain font has to do
         let Some(alphabet) = &self.alphabet else { return skin.text(text, x, y + 55.0, 48, color) };
         let step = (get_time() * 24.0) as usize;
@@ -632,6 +632,11 @@ impl Menus {
     /// A sheet of the menus' own pictures.
     pub fn picture(&mut self, name: &str) -> Option<Texture2D> {
         self.art.own(name)
+    }
+
+    /// A file of the menus, found as their pictures are.
+    pub fn find(&self, relative: &str) -> Option<std::path::PathBuf> {
+        self.paths.find(relative)
     }
 
     pub fn sheet(&mut self, name: &str) -> Option<Rc<Sheet>> {

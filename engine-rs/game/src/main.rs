@@ -98,8 +98,12 @@ impl Skin {
     }
 
     /// The note of a lane as it flies, centred on (x, y).
-    fn note(&self, lane: usize, x: f32, y: f32) {
-        self.frame(&format!("{}0000", NOTE_NAMES[lane]), x, y, None, Some(lane), 1.0);
+    /// Draws a frame of a lane's notes centred on `at`, at the size that makes the lane's strum `width` wide.
+    fn fitted(&self, name: &str, lane: usize, at: Vec2, width: f32, alpha: f32) {
+        let source = |name: &str| self.frames.iter().find(|(n, _)| n == name).map(|(_, f)| f.source);
+        if let (Some(strum), Some(frame)) = (source(&format!("arrow{}0000", DIRECTIONS[lane].to_uppercase())), source(name)) {
+            self.frame(name, at.x, at.y, Some(vec2(frame.w, frame.h) * width / strum.w), Some(lane), alpha);
+        }
     }
 
     /// The pictures named, from a folder; all of them or none (missing pictures only cost their effect).
@@ -1243,9 +1247,9 @@ fn main() {
             },
             Screen::Options(mut menu, back) => {
                 // the notes as the player has coloured them so far
-                let note = |lane: usize, pixel: bool, x: f32, y: f32| {
+                let note = |name: &str, lane: usize, pixel: bool, at: Vec2, width: f32, alpha: f32| {
                     if let Some(skin) = if pixel { pixel_skin.as_ref() } else { skin.as_ref() } {
-                        skin.note(lane, x, y);
+                        skin.fitted(name, lane, at, width, alpha);
                     }
                 };
                 let adjusting = menu.adjusting();

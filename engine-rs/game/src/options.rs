@@ -1,6 +1,6 @@
 //! The options menu: key binds, and the pages of `settings::OPTIONS`.
 use crate::controls::{pressed, Ui, NAMES};
-use crate::settings::{hex, Kind, Settings, LANE_COLORS, OPTIONS, PAGES, PIXEL_LANE_COLORS};
+use crate::settings::{Kind, Settings, LANE_COLORS, OPTIONS, PAGES, PIXEL_LANE_COLORS};
 use crate::{DIRECTIONS, HEIGHT};
 use crate::gfx::*;
 use funkin_core::lang::phrase;
@@ -14,9 +14,18 @@ pub struct OptionsMenu {
     binding: bool,
     /// Opened straight at a page: leaving the page leaves the options.
     direct: bool,
-    /// Note colours: those of pixel stages are shown, and the colour code being typed.
+    /// Note colours: those of pixel stages are shown; the lane and the part (body, shine, outline) chosen, and whether Left
+    /// and Right choose among lanes; the digit of the colour code being typed; what the mouse holds on to, and the colour
+    /// when it took hold; the pictures made for the page.
     pixel: bool,
-    typing: Option<String>,
+    lane: usize,
+    part: usize,
+    on_lanes: bool,
+    typing: Option<usize>,
+    typed_at: f64,
+    dragging: Option<Drag>,
+    stored: u32,
+    made: Option<Made>,
     /// The screen for the note delay and the place of rating and combo, while it is open.
     adjust: Option<Box<crate::adjust::Adjust>>,
     /// The list of languages, while it is open: the row chosen.
@@ -103,6 +112,71 @@ fn key_of(bind: Bind) -> &'static str {
     }
 }
 
+/// Light squares drifting down and to the right, over the key binds and the note colours.
+fn grid() {
+    let drift = (get_time() * 40.0 % 160.0) as f32;
+    for row in -1..5 {
+        for column in -1..8 {
+            for corner in [0.0, 80.0] {
+                draw_rectangle(column as f32 * 160.0 + drift + corner, row as f32 * 160.0 + drift + corner, 80.0, 80.0, Color::new(1.0, 1.0, 1.0, 0.2));
+            }
+        }
+    }
+}
+
+/// Large letters at `scale`, centred on `top`'s x with their top at its y.
+fn small(menus: &crate::menu::Menus, skin: &crate::Skin, text: &str, bold: bool, top: Vec2, scale: f32, color: Color) {
+    push_model_matrix(Mat4::from_translation(vec3(top.x - menus.width(skin, text, bold) * scale / 2.0, top.y, 0.0)) * Mat4::from_scale(vec3(scale, scale, 1.0)));
+    menus.write_in(skin, text, bold, 0.0, 0.0, 1.0, color);
+    pop_model_matrix();
+}
+
+/// What the mouse holds on to among the note colours.
+#[derive(Clone, Copy, PartialEq)]
+enum Drag {
+    Wheel,
+    Shade,
+}
+
+/// The pictures the note colours' page makes for itself: the dot on the wheel, the shade from white to black, and the
+/// palette's colours to pick from.
+struct Made {
+    dot: Texture2D,
+    shade: Texture2D,
+    palette: Option<Image>,
+}
+
+/// A colour's hue (degrees), saturation and brightness, as Flixel reckons them.
+fn to_hsv(color: u32) -> (f32, f32, f32) {
+    let [r, g, b] = [16, 8, 0].map(|shift| (color >> shift & 0xFF) as f32 / 255.0);
+    let (high, low) = (r.max(g).max(b), r.min(g).min(b));
+    let range = high - low;
+    let hue = if range == 0.0 {
+        0.0
+    } else if high == r {
+        60.0 * ((g - b) / range).rem_euclid(6.0)
+    } else if high == g {
+        60.0 * ((b - r) / range + 2.0)
+    } else {
+        60.0 * ((r - g) / range + 4.0)
+    };
+    (hue, if high == 0.0 { 0.0 } else { range / high }, high)
+}
+
+fn from_hsv(hue: f32, saturation: f32, brightness: f32) -> u32 {
+    let chroma = brightness * saturation;
+    let side = chroma * (1.0 - ((hue / 60.0).rem_euclid(2.0) - 1.0).abs());
+    let [r, g, b] = match (hue.rem_euclid(360.0) / 60.0) as u32 {
+        0 => [chroma, side, 0.0],
+        1 => [side, chroma, 0.0],
+        2 => [0.0, chroma, side],
+        3 => [0.0, side, chroma],
+        4 => [side, 0.0, chroma],
+        _ => [chroma, 0.0, side],
+    };
+    [r, g, b].iter().fold(0, |code, channel| code << 8 | ((channel + brightness - chroma) * 255.0).round() as u32)
+}
+
 /// Where a list of the Haxe engine's large letters puts a row `from` rows away from the chosen one, starting at `start`.
 fn listed(from: f32, start: Vec2) -> Vec2 {
     start + vec2(from * 20.0, from * 1.3 * 120.0)
@@ -130,13 +204,6 @@ fn checkbox(menus: &mut crate::menu::Menus, on: bool, since: f32, at: Vec2, alph
     // drawn at nine tenths of its size, about its middle
     let corner = at + vec2(-130.0, 30.0) - vec2(by.0, by.1) + frame.size * 0.05;
     sheet.draw(frame, corner.x, corner.y, 0.9, false, Color::new(1.0, 1.0, 1.0, alpha));
-}
-
-/// The colour with its hue turned by `degrees`. Greys have none and stay as they are.
-fn turned(color: u32, degrees: f32) -> u32 {
-    let (hue, saturation, light) = rgb_to_hsl(Color::from_hex(color));
-    let Color { r, g, b, .. } = hsl_to_rgb((hue + degrees / 360.0).rem_euclid(1.0), saturation, light);
-    [r, g, b].iter().fold(0, |code, channel| code << 8 | (channel * 255.0).round() as u32)
 }
 
 /// How an option's value reads in the menu.
@@ -185,7 +252,8 @@ impl OptionsMenu {
     }
 
     /// Runs and draws one frame. `text` writes a line with its baseline at (x, y). Returns true when the player leaves the options.
-    /// `note` draws a lane's note (of pixel stages or not) centred on (x, y).
+    /// `note` draws a frame of a lane's notes (of pixel stages or not) centred on a point, at the size that makes the strum
+    /// as wide as asked, with its alpha.
     /// Whether the screen with its own music (delay and combo) is open.
     pub fn adjusting(&self) -> bool {
         self.adjust.is_some()
@@ -194,7 +262,7 @@ impl OptionsMenu {
     /// `languages`: the languages there are, as (file, name). `base`: the game's folder. `menus` lends its letters, pictures and
     /// sounds, `skin` the plain font.
     #[allow(clippy::too_many_arguments)]
-    pub fn run(&mut self, settings: &mut Settings, menus: &mut crate::menu::Menus, skin: &crate::Skin, text: &dyn Fn(&str, f32, f32, u16, Color), note: &dyn Fn(usize, bool, f32, f32), raw_input: bool, bindable: &[KeyCode], languages: &[(String, String)], base: &std::path::Path) -> bool {
+    pub fn run(&mut self, settings: &mut Settings, menus: &mut crate::menu::Menus, skin: &crate::Skin, text: &dyn Fn(&str, f32, f32, u16, Color), note: &dyn Fn(&str, usize, bool, Vec2, f32, f32), raw_input: bool, bindable: &[KeyCode], languages: &[(String, String)], base: &std::path::Path) -> bool {
         if let Some(adjust) = &mut self.adjust {
             if adjust.run(settings, text) {
                 self.adjust = None;
@@ -202,21 +270,15 @@ impl OptionsMenu {
             return false;
         }
         let dt = get_frame_time().min(0.1);
-        let line = |index: usize, selected: usize, content: &str, y: f32| {
-            text(&format!("{}{content}", if index == selected { "> " } else { "  " }), 40.0, y, 24, if index == selected { YELLOW } else { WHITE });
-        };
         let step = |rows: usize| (pressed(Ui::Down) as usize + pressed(Ui::Up) as usize * (rows - 1)) % rows;
         let back = pressed(Ui::Back);
-        // the Haxe engine's look: the pink background, lists in large letters (the key binds and the note colours stay plain lists)
-        match self.page {
-            Some(page) if page == PAGES.len() - 1 => text(&phrase(&format!("options_{}", PAGES[page]), PAGES[page]), 40.0, 60.0, 36, WHITE),
-            Some(0) => menus.backdrop(BLUE, dt),
-            _ => menus.backdrop(PINK, dt),
-        }
+        // the Haxe engine's look: the pink background (the key binds' blue), lists in large letters
+        menus.backdrop(if self.page == Some(0) { BLUE } else { PINK }, dt);
+        let colors = self.page == Some(PAGES.len() - 1);
         if self.binding {
         } else if back {
             menus.sound("cancelMenu", 1.0);
-        } else if pressed(Ui::Up) || pressed(Ui::Down) {
+        } else if (pressed(Ui::Up) || pressed(Ui::Down)) && !colors {
             menus.sound("scrollMenu", 1.0);
         }
         // a centred list that does not move, the chosen row marked (the first list, and the languages)
@@ -265,55 +327,7 @@ impl OptionsMenu {
         let fast = if is_key_down(KeyCode::LeftShift) || is_key_down(KeyCode::RightShift) { 10.0 } else { 1.0 };
         let steps = (pressed(Ui::Right) as i32 - pressed(Ui::Left) as i32) as f64;
         if page == PAGES.len() - 1 {
-            // three colours for each of the four lanes
-            text("Up/Down: choose   Left/Right: turn the hue (Shift: x10)   Enter: type a colour code", 40.0, 96.0, 18, GRAY);
-            text("R: back to its usual colour   Ctrl: the notes of pixel stages   Esc: back", 40.0, 118.0, 18, GRAY);
-            let (colors, usual) = if self.pixel { (&mut settings.pixel_note_colors, PIXEL_LANE_COLORS) } else { (&mut settings.note_colors, LANE_COLORS) };
-            if self.typing.is_none() {
-                self.row = (self.row + step(12)) % 12;
-            }
-            let (lane, part) = (self.row / 3, self.row % 3);
-            for index in 0..12 {
-                let code = match &self.typing {
-                    Some(typed) if index == self.row => format!("#{typed}_"),
-                    _ => format!("#{:06X}", colors[index / 3][index % 3]),
-                };
-                line(index, self.row, &format!("{} {}: {code}", DIRECTIONS[index / 3], ["body", "shine", "outline"][index % 3]), 170.0 + index as f32 * 30.0 + (index / 3) as f32 * 20.0);
-                if index % 3 == 1 {
-                    note(index / 3, self.pixel, 480.0, 162.0 + index as f32 * 30.0 + (index / 3) as f32 * 20.0);
-                }
-            }
-            text(if self.pixel { "Pixel stages" } else { "Other stages" }, 40.0, HEIGHT - 40.0, 18, GRAY);
-            if let Some(typed) = &mut self.typing {
-                while let Some(letter) = get_char_pressed() {
-                    if letter.is_ascii_hexdigit() && typed.len() < 6 {
-                        typed.push(letter.to_ascii_uppercase());
-                    }
-                }
-                if is_key_pressed(KeyCode::Backspace) {
-                    typed.pop();
-                }
-                // the sixth digit completes it
-                if let Some(color) = hex(typed) {
-                    (colors[lane][part], self.typing) = (color, None);
-                } else if is_key_pressed(KeyCode::Escape) {
-                    self.typing = None;
-                }
-                return false;
-            }
-            if steps != 0.0 {
-                colors[lane][part] = turned(colors[lane][part], (steps * fast * 3.0) as f32);
-            } else if pressed(Ui::Accept) {
-                self.typing = Some(String::new());
-            } else if pressed(Ui::Reset) {
-                colors[lane][part] = usual[lane][part];
-            } else if is_key_pressed(KeyCode::LeftControl) || is_key_pressed(KeyCode::RightControl) {
-                self.pixel ^= true;
-            }
-            if back {
-                (self.page, self.row) = (None, main_row(page));
-            }
-            return back && self.direct;
+            return self.colors(settings, menus, skin, text, note, back);
         }
 
         // a page of options: its name faint at the top, the options in a slanted list gliding to the chosen one (switches with
@@ -377,25 +391,217 @@ impl OptionsMenu {
         back && self.direct
     }
 
+    /// The note colours' page, as the Haxe engine's: the three parts of a note above the four lanes' strums and the chosen
+    /// lane's note, large; on the right the colour wheel, its brightness, a palette, and the colour's numbers and code. Up and
+    /// Down switch between parts and lanes, Left and Right choose, Ctrl shows the notes of pixel stages; the mouse picks
+    /// colours and, clicked on the code, types it (Enter does too, here).
+    #[allow(clippy::too_many_arguments)]
+    fn colors(&mut self, settings: &mut Settings, menus: &mut crate::menu::Menus, skin: &crate::Skin, text: &dyn Fn(&str, f32, f32, u16, Color), note: &dyn Fn(&str, usize, bool, Vec2, f32, f32), back: bool) -> bool {
+        if back {
+            (self.page, self.row, self.typing, self.dragging) = (None, main_row(PAGES.len() - 1), None, None);
+            return self.direct;
+        }
+        let (mouse, clicked) = (mouse_position(vec2(crate::WIDTH, HEIGHT)), is_mouse_pressed());
+        let on = |at: Vec2, size: Vec2| (at.x..at.x + size.x).contains(&mouse.x) && (at.y..at.y + size.y).contains(&mouse.y);
+        let toggled = is_key_pressed(KeyCode::LeftControl) || is_key_pressed(KeyCode::RightControl) || (clicked && on(vec2(48.0, 24.0), vec2(68.0, 68.0)));
+        if toggled {
+            self.pixel ^= true;
+            menus.sound("scrollMenu", 0.6);
+        }
+        let made = self.made.get_or_insert_with(|| {
+            let mut dot = Image::gen_image_color(16, 16, Color::new(1.0, 1.0, 1.0, 0.0));
+            let mut shade = Image::gen_image_color(1, 360, WHITE);
+            for at in 0..16 * 16 {
+                if (vec2((at % 16) as f32, (at / 16) as f32) - 7.5).length() <= 8.0 {
+                    dot.set_pixel(at % 16, at / 16, WHITE);
+                }
+            }
+            for y in 0..360 {
+                let light = 1.0 - y as f32 / 359.0;
+                shade.set_pixel(0, y, Color::new(light, light, light, 1.0));
+            }
+            let palette = menus.find("images/noteColorMenu/palette.png").and_then(|path| Image::from_file_with_format(&std::fs::read(path).ok()?, None).ok());
+            Made { dot: Texture2D::from_image(&dot), shade: Texture2D::from_image(&shade), palette }
+        });
+        let (dot, shade) = (made.dot.clone(), made.shade.clone());
+        let (colors, usual) = if self.pixel { (&mut settings.pixel_note_colors, PIXEL_LANE_COLORS) } else { (&mut settings.note_colors, LANE_COLORS) };
+        let (lane, part) = (self.lane, self.part);
+        let code = format!("{:06X}", colors[lane][part]);
+        // the code is written centred at x 980, at six tenths of the letters' size
+        let code_left = 980.0 - menus.width(skin, &code, true) * 0.3;
+        let digit_end: [f32; 7] = std::array::from_fn(|count| code_left + menus.width(skin, &code[..count], true) * 0.6);
+
+        if let Some(at) = self.typing {
+            let typed = std::iter::from_fn(get_char_pressed).find(char::is_ascii_hexdigit);
+            let moved = if is_key_pressed(KeyCode::Left) {
+                Some(at as i32 - 1)
+            } else if is_key_pressed(KeyCode::Right) {
+                Some(at as i32 + 1)
+            } else if let Some(digit) = typed {
+                // the digit replaces the one at the cursor, which moves on to the next
+                let mut digits = code.clone().into_bytes();
+                digits[at] = digit.to_ascii_uppercase() as u8;
+                colors[lane][part] = u32::from_str_radix(std::str::from_utf8(&digits).unwrap_or("0"), 16).unwrap_or(0);
+                self.stored = colors[lane][part];
+                Some(at as i32 + 1)
+            } else {
+                None
+            };
+            if let Some(moved) = moved {
+                // past the last digit, the typing is done
+                self.typing = (moved <= 5).then_some(moved.max(0) as usize);
+                self.typed_at = get_time();
+                menus.sound("scrollMenu", 0.6);
+            } else if is_key_pressed(KeyCode::Enter) {
+                self.typing = None;
+            }
+        } else {
+            let steps = pressed(Ui::Right) as usize + pressed(Ui::Left) as usize * 2;
+            if steps > 0 {
+                if self.on_lanes {
+                    self.lane = (self.lane + steps + steps / 2) % 4;
+                } else {
+                    self.part = (self.part + steps) % 3;
+                }
+                menus.sound("scrollMenu", 1.0);
+            }
+            if pressed(Ui::Up) || pressed(Ui::Down) {
+                self.on_lanes ^= true;
+            }
+            if pressed(Ui::Accept) {
+                (self.typing, self.typed_at) = (Some(0), get_time());
+            }
+        }
+
+        if clicked {
+            self.typing = None;
+            let part_at = (0..3).find(|&part| on(vec2(230.0 + 100.0 * part as f32, 100.0), vec2(85.0, 85.0)));
+            let lane_at = (0..4).find(|&lane| on(vec2(150.0 + 120.0 * lane as f32, 200.0), vec2(102.0, 102.0)));
+            if let Some(part) = part_at {
+                if part != self.part {
+                    (self.part, self.on_lanes) = (part, false);
+                    menus.sound("scrollMenu", 0.6);
+                }
+            } else if let Some(lane) = lane_at {
+                if lane != self.lane {
+                    (self.lane, self.on_lanes) = (lane, true);
+                    menus.sound("scrollMenu", 0.6);
+                }
+            } else if on(vec2(860.0, 200.0), vec2(360.0, 360.0)) {
+                (self.dragging, self.stored) = (Some(Drag::Wheel), colors[lane][part]);
+            } else if on(vec2(780.0, 200.0), vec2(60.0, 360.0)) {
+                (self.dragging, self.stored) = (Some(Drag::Shade), colors[lane][part]);
+            } else if on(vec2(820.0, 580.0), vec2(320.0, 80.0)) {
+                if let Some(palette) = self.made.as_ref().and_then(|made| made.palette.as_ref()) {
+                    let picked = palette.get_pixel(((mouse.x - 820.0) / 20.0) as u32, ((mouse.y - 580.0) / 20.0) as u32);
+                    colors[lane][part] = [picked.r, picked.g, picked.b].iter().fold(0, |code, channel| code << 8 | (channel * 255.0).round() as u32);
+                    menus.sound("scrollMenu", 0.6);
+                }
+            } else if (20.0..82.0).contains(&mouse.y) && (mouse.x - 1000.0).abs() <= 84.0 {
+                // the cursor goes before the digit clicked on
+                (self.typing, self.typed_at) = (Some((1..=6).take_while(|&count| digit_end[count] <= mouse.x).count().min(5)), get_time());
+            } else {
+                self.dragging = None;
+            }
+        }
+        if let Some(drag) = self.dragging {
+            if !is_mouse_down() {
+                self.dragging = None;
+                self.stored = colors[lane][part];
+                menus.sound("scrollMenu", 0.6);
+            } else if mouse_moved() || clicked {
+                let (hue, saturation, brightness) = to_hsv(self.stored);
+                let grey = |light: f32| from_hsv(0.0, 0.0, light);
+                colors[lane][part] = match drag {
+                    Drag::Shade => {
+                        let light = 1.0 - ((mouse.y - 200.0) / 360.0).clamp(0.0, 1.0);
+                        if brightness == 0.0 { grey(light) } else { from_hsv(hue, saturation, light) }
+                    }
+                    Drag::Wheel => {
+                        // straight up is red, and the further out the stronger
+                        let towards = vec2(1040.0, 380.0) - mouse;
+                        let hue = (towards.y.atan2(towards.x).to_degrees().trunc() - 90.0).rem_euclid(360.0);
+                        let saturation = (towards.length() / 180.0).min(1.0);
+                        if saturation == 0.0 { grey(brightness) } else { from_hsv(hue, saturation, brightness) }
+                    }
+                };
+            }
+        } else if pressed(Ui::Reset) && self.typing.is_none() {
+            // with Shift, the whole note
+            if is_key_down(KeyCode::LeftShift) || is_key_down(KeyCode::RightShift) {
+                colors[lane] = usual[lane];
+            }
+            colors[lane][part] = usual[lane][part];
+            menus.sound("cancelMenu", 0.6);
+        }
+
+        // the left side: the parts, the lanes, the chosen lane's note large
+        let (lane, part, color) = (self.lane, self.part, colors[self.lane][self.part]);
+        let (box_at, box_size) = if self.on_lanes { (vec2(140.0, 190.0), vec2(480.0, 125.0)) } else { (vec2(215.0, 85.0), vec2(315.0, 115.0)) };
+        draw_rectangle(box_at.x, box_at.y, box_size.x, box_size.y, Color::new(0.0, 0.0, 0.0, 0.4));
+        for (pixel, picture) in [(false, "noteColorMenu/note"), (true, "noteColorMenu/notePixel")] {
+            let Some(parts) = menus.picture(picture) else { continue };
+            let cell = if pixel { 17.0 } else { 160.0 };
+            parts.set_filter(if pixel { FilterMode::Nearest } else { FilterMode::Linear });
+            let frame = |index: usize, at: Vec2, size: f32, alpha: f32| {
+                let params = DrawTextureParams { dest_size: Some(vec2(size, size)), source: Some(Rect::new(index as f32 * cell, 0.0, cell, cell)), ..Default::default() };
+                draw_texture_ex(&parts, at.x, at.y, Color::new(1.0, 1.0, 1.0, alpha), params);
+            };
+            if pixel == self.pixel {
+                for index in 0..3 {
+                    frame(index, vec2(230.0 + 100.0 * index as f32, 100.0), 85.0, if index == part { 1.0 } else { 0.6 });
+                }
+            } else {
+                // the other kind of note, to switch to
+                frame(0, vec2(48.0, 24.0), 68.0, 1.0);
+            }
+        }
+        for index in 0..4 {
+            let pose = if index == lane { "confirm" } else { "press" };
+            note(&format!("{} {pose}0003", DIRECTIONS[index]), index, self.pixel, vec2(201.0 + 120.0 * index as f32, 251.0), 102.0, if index == lane { 1.0 } else { 0.6 });
+        }
+        note(&format!("{}0000", ["purple", "blue", "green", "red"][lane]), lane, self.pixel, vec2(375.0, 450.0), 250.0, 1.0);
+
+        // the right side: the wheel, the brightness, the palette, the colour's numbers and code
+        draw_rectangle(720.0, 0.0, crate::WIDTH - 720.0, HEIGHT, Color::new(0.0, 0.0, 0.0, 0.25));
+        draw_rectangle(750.0, 160.0, crate::WIDTH - 780.0, 540.0, Color::new(0.0, 0.0, 0.0, 0.25));
+        small(menus, skin, "CTRL", false, vec2(50.0, 86.0), 0.4, WHITE);
+        let (_, _, brightness) = to_hsv(color);
+        draw_texture_ex(&shade, 780.0, 200.0, WHITE, DrawTextureParams { dest_size: Some(vec2(60.0, 360.0)), ..Default::default() });
+        draw_rectangle(770.0, 195.0 + 360.0 * (1.0 - brightness), 80.0, 10.0, WHITE);
+        if let Some(palette) = menus.picture("noteColorMenu/palette") {
+            palette.set_filter(FilterMode::Nearest);
+            draw_texture_ex(&palette, 820.0, 580.0, WHITE, DrawTextureParams { dest_size: Some(vec2(320.0, 80.0)), ..Default::default() });
+        }
+        if let Some(wheel) = menus.picture("noteColorMenu/colorWheel") {
+            draw_texture_ex(&wheel, 860.0, 200.0, Color::new(brightness, brightness, brightness, 1.0), DrawTextureParams { dest_size: Some(vec2(360.0, 360.0)), ..Default::default() });
+        }
+        // the dot shows the colour held on to while its brightness is being dragged
+        let (hue, saturation, light) = to_hsv(if self.dragging == Some(Drag::Shade) { self.stored } else { color });
+        let reach = if light == 0.0 { Vec2::ZERO } else { vec2(hue.to_radians().sin(), -hue.to_radians().cos()) * 180.0 * saturation };
+        draw_texture(&dot, 1032.0 + reach.x, 372.0 + reach.y, Color::new(1.0, 1.0, 1.0, 0.6));
+        for (index, channel) in [16, 8, 0].into_iter().enumerate() {
+            small(menus, skin, &(color >> channel & 0xFF).to_string(), true, vec2(880.0 + 100.0 * index as f32, 90.0), 0.6, WHITE);
+        }
+        small(menus, skin, &format!("{color:06X}"), true, vec2(980.0, 35.0), 0.6, Color::from_hex(color));
+        if let Some(at) = self.typing.filter(|_| ((get_time() - self.typed_at) * 2.0) as i64 % 2 == 0) {
+            draw_rectangle(digit_end[at] + 5.0, 20.0, 5.0, 62.0, WHITE);
+        }
+        text(&phrase("note_colors_tip", "Press RESET to Reset the selected Note Part."), 20.0, 674.0, 16, WHITE);
+        let shift = phrase("note_colors_shift", "Shift");
+        text(&funkin_core::lang::phrase_with("note_colors_hold_tip", "Hold {1} + Press RESET key to fully reset the selected Note.", &[&shift]), 20.0, 698.0, 16, WHITE);
+        false
+    }
+
     /// The key binds' page, as the Haxe engine's: a row for each thing with its two keys, Left/Right choosing which; Enter
     /// waits for a key (Escape or Backspace held half a second: give up, or leave none).
     #[allow(clippy::too_many_arguments)]
     fn controls(&mut self, settings: &mut Settings, menus: &mut crate::menu::Menus, skin: &crate::Skin, text: &dyn Fn(&str, f32, f32, u16, Color), dt: f32, back: bool, raw_input: bool, bindable: &[KeyCode]) -> bool {
-        // light squares drifting down and to the right
-        let drift = (get_time() * 40.0 % 160.0) as f32;
-        for row in -1..5 {
-            for column in -1..8 {
-                for corner in [0.0, 80.0] {
-                    draw_rectangle(column as f32 * 160.0 + drift + corner, row as f32 * 160.0 + drift + corner, 80.0, 80.0, Color::new(1.0, 1.0, 1.0, 0.2));
-                }
-            }
-        }
+        grid();
         if let Some(sign) = menus.picture("controllertype") {
             draw_texture_ex(&sign, 50.0, 40.0, WHITE, DrawTextureParams { source: Some(Rect::new(0.0, 0.0, 82.0, 60.0)), ..Default::default() });
         }
-        push_model_matrix(Mat4::from_translation(vec3(60.0 - menus.width(skin, "CTRL", false) * 0.2, 90.0, 0.0)) * Mat4::from_scale(vec3(0.4, 0.4, 1.0)));
-        menus.write(skin, "CTRL", false, 0.0, 0.0, 1.0, 1.0);
-        pop_model_matrix();
+        small(menus, skin, "CTRL", false, vec2(60.0, 90.0), 0.4, WHITE);
 
         let rows: Vec<usize> = (0..BINDS.len()).filter(|&id| matches!(BINDS[id].0, Bind::Lane(_) | Bind::Action(_) | Bind::Defaults)).collect();
         if !self.binding {
@@ -545,18 +751,19 @@ mod tests {
     }
 
     #[test]
+    fn colours_go_to_hue_saturation_brightness_and_back() {
+        assert_eq!(to_hsv(0xFF0000), (0.0, 1.0, 1.0));
+        assert_eq!(to_hsv(0x000000), (0.0, 0.0, 0.0));
+        for color in [0xC24B99, 0x00FFFF, 0x12FA05, 0x651038, 0x808080, 0xFFFFFF] {
+            let (hue, saturation, brightness) = to_hsv(color);
+            assert_eq!(from_hsv(hue, saturation, brightness), color, "{color:06X}");
+        }
+    }
+
+    #[test]
     fn keys_are_named_as_in_the_haxe_engine() {
         use KeyCode::*;
         let names: Vec<String> = [Some(A), Some(Key7), Some(Kp3), Some(KpAdd), Some(Backspace), Some(LeftShift), Some(Left), None].map(key_name).to_vec();
         assert_eq!(names, ["A", "7", "#3", "#+", "BckSpc", "Left Shift", "Left", "---"]);
-    }
-
-    #[test]
-    fn a_hue_turns_all_the_way_round() {
-        assert_eq!((turned(0xFF0000, 120.0), turned(0xFF0000, -120.0), turned(0x808080, 50.0)), (0x00FF00, 0x0000FF, 0x808080));
-        // a third of the way round, three times, and each lane's colour is itself again
-        for color in LANE_COLORS.iter().chain(&PIXEL_LANE_COLORS).flatten() {
-            assert_eq!(turned(turned(turned(*color, 120.0), 120.0), 120.0), *color);
-        }
     }
 }
