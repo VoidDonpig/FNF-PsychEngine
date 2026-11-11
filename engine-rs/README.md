@@ -132,13 +132,13 @@ Done:
   best scores and accuracy, week totals, finished weeks, achievements, the title's hidden dancer); on the
   streets of weekend 1, Nene's knife (raised while the player's health is at a quarter or less) and her combo
   cheers, the shell off Pico's gun, the faint copy of him as he cocks it, the streets going dark at his shot,
-  and his flicker after the can hits him.
+  and his flicker after the can hits him; the fight's two rare turns when the player is nearly out (a badly
+  timed hit ducked under for an uppercut, or met with a high punch while one is wound up; the punch that ends it).
 
 Not there yet:
 
 - **Play screen**: the events and note types that belong to scripts (Set Property beyond the camera, custom
-  ones); what is left of weekend 1 (rain, light maps, the two rare turns of the fight when the player is
-  nearly out); the Haxe
+  ones); what is left of weekend 1 (rain, light maps); the Haxe
   fork's Display Lag Correction; the charting mode entries of the pause menu.
 - **Menus**: the mods menu's buttons (enable, disable, move: here they are keys) and per-mod settings;
   achievements of mods; the key binds' and note colours' pages look plain (the other pages look as in the Haxe

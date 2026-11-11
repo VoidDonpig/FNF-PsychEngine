@@ -2,7 +2,7 @@
 use crate::atlas::{Frame, Sheet};
 use funkin_core::chart::{Chart, ChartEvent, NoteKind};
 use funkin_core::content::Paths;
-use funkin_core::play::Event;
+use funkin_core::play::{Event, Rating};
 use crate::gfx::*;
 use serde_json::Value;
 use std::collections::HashMap;
@@ -1038,6 +1038,8 @@ pub struct Scene {
     /// The player's health (0 to 2) and combo, as of this frame; the play screen keeps them up to date.
     pub health: f64,
     pub combo: u32,
+    /// Practice mode: nothing the player misses ends the song.
+    pub practice: bool,
     /// Weekend 1's shells off Pico's gun (and their picture), how long since he cocked it (a shell flies out three frames
     /// in), the fading copy of him then, how long since the last shot (the streets darken), and since his miss (he flickers).
     casings: Vec<Casing>,
@@ -1172,6 +1174,7 @@ impl Scene {
             levels: [0.0; 7],
             health: 1.0,
             combo: 0,
+            practice: false,
             casings: Vec::new(),
             casing_sheet: None,
             cocked: None,
@@ -1474,10 +1477,10 @@ impl Scene {
         }
         for event in events {
             // the note decides who moves and how; a stray press has no note and is the player's plain miss
-            let (lane, note, side, missed, broken) = match *event {
-                Event::Hit { lane, note, .. } => (lane, Some(note), 1, false, 0),
-                Event::Miss { lane, note, combo } => (lane, note, 1, true, combo),
-                Event::OpponentHit { lane, note } => (lane, Some(note), 0, false, 0),
+            let (lane, note, side, missed, broken, rating) = match *event {
+                Event::Hit { lane, note, rating, .. } => (lane, Some(note), 1, false, 0, Some(rating)),
+                Event::Miss { lane, note, combo } => (lane, note, 1, true, combo, None),
+                Event::OpponentHit { lane, note } => (lane, Some(note), 0, false, 0, None),
             };
             self.bumping |= side == 0;
             let note = note.map(|index| &chart.notes[index]);
@@ -1489,7 +1492,8 @@ impl Scene {
                     _ => "",
                 };
                 let now = [&self.player, &self.opponent].map(|c| c.as_ref().map_or(String::new(), |c| c.current.clone()));
-                let (mine, his) = fight.moves(name, missed || side == 0, note.is_none(), (&now[0], &now[1]));
+                let plight = crate::fight::Plight { poor: matches!(rating, Some(Rating::Bad | Rating::Shit)), low: self.health <= 0.6, lethal: self.health <= 0.0 && !self.practice };
+                let (mine, his) = fight.moves(name, missed || side == 0, note.is_none(), (&now[0], &now[1]), plight);
                 for (who, moved) in [(1, mine), (0, his)] {
                     let Some(moved) = moved else { continue };
                     // going back to idle does not start an idle move over
