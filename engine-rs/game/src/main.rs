@@ -971,8 +971,6 @@ enum Screen {
     /// The options, and the menu they were opened from.
     Options(options::OptionsMenu, Page),
     Playing(Box<Playing>),
-    /// The finished run, and whether the player survived it.
-    Results(Box<Playing>, bool),
     Failed(String),
     /// What a new player is told before anything flashes.
     Warning,
@@ -1284,10 +1282,10 @@ fn main() {
                                 save.save(&base);
                                 Screen::Menu(Page::Story)
                             }
+                            // straight back to freeplay, as in the Haxe engine
                             None => {
                                 save.save(&base);
-                                let survived = play.health > 0.0;
-                                Screen::Results(playing, survived)
+                                Screen::Menu(Page::Freeplay)
                             }
                         }
                     }
@@ -1306,15 +1304,6 @@ fn main() {
                     }
                     Flow::Quit => Screen::Menu(if story.take().is_some() { Page::Story } else { Page::Freeplay }),
                 }
-            }
-            Screen::Results(playing, survived) => {
-                let play = &playing.play;
-                plain(if survived { "Song cleared" } else { "Game over" }, 40.0, 120.0, 48, if survived { GREEN } else { RED });
-                plain(&format!("{} [{}]", playing.entry.title, difficulty_name(&playing.entry.difficulty)), 40.0, 170.0, 28, WHITE);
-                let accuracy = play.accuracy().map_or("-".to_owned(), |a| format!("{:.2}%", a * 100.0));
-                plain(&format!("Score {}    Misses {}    Accuracy {}", play.score, play.misses, accuracy), 40.0, 220.0, 28, WHITE);
-                plain("Enter: back to freeplay", 40.0, 280.0, 20, GRAY);
-                if controls::pressed(Ui::Accept) || controls::pressed(Ui::Back) { Screen::Menu(Page::Freeplay) } else { Screen::Results(playing, survived) }
             }
             Screen::Loading(entry, talk, shown) => {
                 clear_background(Color::from_hex(0xCAFF4D));
@@ -1397,7 +1386,7 @@ fn main() {
         }
         if std::mem::take(&mut chime) {
             match &screen {
-                Screen::Playing(playing) | Screen::Results(playing, _) => playing.sound("confirmMenu", 0.5, false),
+                Screen::Playing(playing) => playing.sound("confirmMenu", 0.5, false),
                 _ => menus.chime = true,
             }
         }

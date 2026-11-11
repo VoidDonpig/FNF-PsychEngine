@@ -242,7 +242,6 @@ struct Mouse {
     at: Vec2,
     down: bool,
     pressed: bool,
-    released: bool,
     /// Notches turned this frame, away from the player positive.
     wheel: f32,
     moved: bool,
@@ -839,7 +838,7 @@ impl Context {
         self.released.clear();
         self.typed.clear(); // letters nobody read this frame were not meant for the next screen
         self.alt_enter = false;
-        (self.mouse.pressed, self.mouse.released, self.mouse.wheel, self.mouse.moved) = (false, false, 0.0, false);
+        (self.mouse.pressed, self.mouse.wheel, self.mouse.moved) = (false, 0.0, false);
         if let Some(mut event_loop) = self.event_loop.take() {
             if let winit::platform::pump_events::PumpStatus::Exit(_) = event_loop.pump_app_events(Some(Duration::ZERO), &mut self.app) {
                 self.open = false;
@@ -867,9 +866,8 @@ impl Context {
                     self.mouse.moved = true;
                 }
                 WindowEvent::MouseInput { state, button: winit::event::MouseButton::Left, .. } => {
-                    let down = state == ElementState::Pressed;
-                    (self.mouse.pressed, self.mouse.released) = (self.mouse.pressed || down, self.mouse.released || !down);
-                    self.mouse.down = down;
+                    self.mouse.down = state == ElementState::Pressed;
+                    self.mouse.pressed |= self.mouse.down;
                 }
                 WindowEvent::MouseWheel { delta, .. } => {
                     self.mouse.wheel += match delta {
@@ -1065,17 +1063,13 @@ pub fn mouse_position(size: Vec2) -> Vec2 {
     with(|context| context.mouse.at * size)
 }
 
-/// The left mouse button: went down this frame, is down, came up this frame.
+/// The left mouse button: went down this frame, is down.
 pub fn is_mouse_pressed() -> bool {
     with(|context| context.mouse.pressed)
 }
 
 pub fn is_mouse_down() -> bool {
     with(|context| context.mouse.down)
-}
-
-pub fn is_mouse_released() -> bool {
-    with(|context| context.mouse.released)
 }
 
 /// Notches the wheel turned this frame, away from the player positive.
