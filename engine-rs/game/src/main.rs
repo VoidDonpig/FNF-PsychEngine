@@ -391,6 +391,13 @@ impl Playing {
         self.scene.as_ref().is_some_and(|scene| scene.pixel)
     }
 
+    /// The pause menu's music, if one is chosen: it starts silent and creeps up, as in the Haxe engine.
+    fn pause_music(&mut self) {
+        if self.settings.pause_music > 0 {
+            self.sound(&funkin_core::content::song_path(settings::PAUSE_MUSIC[self.settings.pause_music]), 0.0, true);
+        }
+    }
+
     /// The game over: who falls, the sound of the fall, the music after it and at the retry. The chart's own, else the
     /// stage's, as the Haxe engine has them.
     fn death(&self) -> [String; 4] {
@@ -530,10 +537,7 @@ impl Playing {
         if !self.bowing && (controls::pressed(Ui::Pause) || (self.settings.auto_pause && !is_focused())) {
             self.song.pause();
             (self.paused, self.paused_at, self.pause_scroll) = (Some(0), get_time(), 0.0);
-            if self.settings.pause_music > 0 {
-                // it starts silent and creeps up, as in the Haxe engine
-                self.sound(&funkin_core::content::song_path(settings::PAUSE_MUSIC[self.settings.pause_music]), 0.0, true);
-            }
+            self.pause_music();
             return Flow::Continue;
         }
 
@@ -1285,11 +1289,12 @@ fn main() {
                     None => true,
                 };
                 // the screen for the delay brings its own music: everything else is quiet meanwhile
-                match (adjusting, menu.adjusting(), &held) {
+                match (adjusting, menu.adjusting(), &mut held) {
                     (false, true, None) => menus.quiet(),
-                    // shortcut: a paused song's pause music does not come back afterwards; start it again if that is missed.
                     (false, true, Some(held)) => held.song.stop_sounds(),
                     (true, false, None) => menus.music(),
+                    // a paused song's pause music comes back
+                    (true, false, Some(held)) => held.pause_music(),
                     _ => {}
                 }
                 skin.iter().for_each(|skin| skin.recolor(&settings.note_colors));
