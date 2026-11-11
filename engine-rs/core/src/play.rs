@@ -122,6 +122,16 @@ impl Play {
         self.first_open == self.state.len()
     }
 
+    /// The lanes of each side (opponent, player) whose hold note is being held at `pos` (ms).
+    pub fn holding(&self, pos: f64) -> [[bool; 4]; 2] {
+        let mut held = [[false; 4]; 2];
+        // (a held note is never done, so none lies before the first open one)
+        for (note, state) in self.chart.notes[self.first_open..].iter().zip(&self.state[self.first_open..]).take_while(|(note, _)| note.time <= pos) {
+            held[note.player as usize][note.lane] |= *state == NoteState::Held;
+        }
+        held
+    }
+
     /// Starts the run at `pos` (ms): every note before it is out of play and counts for nothing.
     pub fn skip_to(&mut self, pos: f64) {
         for (note, state) in self.chart.notes.iter().zip(&mut self.state) {
@@ -344,6 +354,10 @@ mod tests {
         held.release(3); // inside the release tolerance at the end
         assert_eq!(held.update(950.0), vec![]);
         assert!(held.finished() && held.misses == 0);
+
+        let mut both = play(&[(0.0, 1, false, 0.0), (0.0, 3, true, 1000.0)], true);
+        both.update(500.0);
+        assert_eq!(both.holding(500.0), [[false; 4], [false, false, false, true]], "only the hold, on the player's side");
 
         let mut dropped = play(&[(0.0, 3, true, 1000.0)], false);
         dropped.press(3, 0.0);

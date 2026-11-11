@@ -645,16 +645,15 @@ impl Playing {
             }
         }
 
+        let length = self.length();
         if let Some(scene) = &mut self.scene {
-            let mut held = [[false; 4]; 2];
-            for (note, state) in self.play.chart.notes.iter().zip(&self.play.state).take_while(|(note, _)| note.time <= judged) {
-                held[note.player as usize][note.lane] |= *state == NoteState::Held;
-            }
+            let held = self.play.holding(judged);
             // (only the speaker of weekend 1 shows them; working them out takes thousands of sines a frame)
             if scene.shows_levels() {
                 scene.levels = self.song.levels();
             }
             (scene.health, scene.combo, scene.practice) = (self.play.health, self.play.combo, self.settings.practice);
+            scene.progress = (judged / length) as f32;
             scene.update(dt * rate as f32, judged, &self.play.chart, &events, held);
         }
         self.stage_sounds();

@@ -349,6 +349,32 @@ fn pico_shown(since: f32) -> bool {
     }
 }
 
+/// How hard it rains on the streets of weekend 1 at the start of a song and at its end (as the Haxe engine sets it per song).
+fn rain_of(song: &str) -> Option<(f32, f32)> {
+    match song {
+        "darnell" => Some((0.0, 0.1)),
+        "lit-up" => Some((0.1, 0.2)),
+        "2hot" => Some((0.2, 0.4)),
+        _ => None,
+    }
+}
+
+/// The rain's streaks for a strength (0 to 1), `time` seconds in, on a screen of `screen`: corner, length, opacity of each.
+/// Each streak has its own place, speed and depth from its number; the nearer, the longer, faster and fainter.
+fn rain_streaks(strength: f32, time: f32, screen: Vec2) -> Vec<(Vec2, f32, f32)> {
+    // a scrambled number in 0..1 for a streak and a purpose
+    let hash = |index: u32, salt: u32| ((index.wrapping_mul(2654435761) ^ salt.wrapping_mul(40503)).wrapping_mul(2246822519) >> 8) as f32 / (1u32 << 24) as f32;
+    (0..(strength.clamp(0.0, 1.0) * 750.0) as u32).map(|index| {
+        let depth = 1.0 + 3.8 * hash(index, 1);
+        let (length, speed) = (40.0 * depth, 900.0 * depth);
+        let fall = screen.y + length;
+        let y = (hash(index, 2) * fall + time * speed) % fall - length;
+        // slanted a tenth to the right as it falls
+        let x = (hash(index, 3) * (screen.x + 100.0) + y * 0.1) % (screen.x + 100.0) - 50.0;
+        (vec2(x, y), length, 0.35 / depth)
+    }).collect()
+}
+
 /// A shell off Pico's gun: where it pops out, how long ago, and once it lies on the ground how it rolls (speed, slowing,
 /// angle, turning speed, how that slows).
 struct Casing {
@@ -1056,6 +1082,9 @@ pub struct Scene {
     fade: Option<(Vec2, f32)>,
     shot: f32,
     flicker: Option<f32>,
+    /// The streets' rain: how hard at the song's start and end; and how far the song is (0 to 1), which the play screen keeps.
+    rain: Option<(f32, f32)>,
+    pub progress: f32,
     /// The fist fight of weekend 1, on its stage; and whether the opponent stands in front of the player in it.
     fight: Option<crate::fight::Fight>,
     opponent_front: bool,
@@ -1189,6 +1218,8 @@ impl Scene {
             fade: None,
             shot: f32::MAX,
             flicker: None,
+            rain: if low || chart.stage != "phillyStreets" { None } else { rain_of(&funkin_core::content::song_path(&chart.song)) },
+            progress: 0.0,
             fight: (chart.stage == "phillyBlazin").then(Default::default),
             opponent_front: false,
             cast,
@@ -2307,6 +2338,15 @@ impl Scene {
         if age < length {
             cover(Color { a: color.a * (1.0 - age / length), ..color });
         }
+        // shortcut: the rain, a shader that bends the picture in the Haxe engine, is drawn as faint falling streaks; port the
+        // shader (drawing the stage to a picture first) if the difference shows.
+        if let Some((from, to)) = self.rain {
+            set_camera(&Camera2D { target: SCREEN / 2.0, zoom: vec2(2.0 / SCREEN.x, 2.0 / SCREEN.y), ..Default::default() });
+            for (at, length, alpha) in rain_streaks(from + (to - from) * self.progress.clamp(0.0, 1.0), self.position as f32 / 1000.0, SCREEN) {
+                draw_rectangle(at.x, at.y, 2.0, length, Color::new(0.75, 0.8, 0.95, alpha));
+            }
+            set_camera(&Camera2D { target: self.camera + shake, zoom: vec2(2.0 / SCREEN.x, 2.0 / SCREEN.y) * self.zoom, ..Default::default() });
+        }
         // lightning adds white light; the dark covers
         let light = |color: Color| {
             blend_add(true);
@@ -2339,6 +2379,19 @@ impl Scene {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn the_rain_falls_harder_as_the_song_goes_on() {
+        use super::{rain_of, rain_streaks, vec2};
+        assert_eq!((rain_of("darnell"), rain_of("2hot"), rain_of("blazin")), (Some((0.0, 0.1)), Some((0.2, 0.4)), None));
+        let screen = vec2(1280.0, 720.0);
+        let (light, hard) = (rain_streaks(0.1, 3.0, screen), rain_streaks(0.4, 3.0, screen));
+        assert_eq!((rain_streaks(0.0, 3.0, screen).len(), light.len(), hard.len()), (0, 75, 300));
+        // every streak is on the screen or just off it, and falls as time goes
+        assert!(hard.iter().all(|(at, length, alpha)| (-50.0..1330.0).contains(&at.x) && (-*length..720.0).contains(&at.y) && *alpha > 0.0));
+        let later = rain_streaks(0.4, 3.01, screen);
+        assert!(hard.iter().zip(&later).filter(|(now, then)| then.0.y > now.0.y).count() > 250);
+    }
+
     #[test]
     fn nene_raises_her_knife_when_the_player_is_nearly_out() {
         use super::{knife, pico_shown, shot_shade, Knife};

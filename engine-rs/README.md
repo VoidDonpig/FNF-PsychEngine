@@ -140,7 +140,8 @@ Done:
 Not there yet:
 
 - **Play screen**: the events and note types that belong to scripts (Set Property beyond the camera, custom
-  ones); the rain of weekend 1 (a shader in the Haxe engine); the Haxe
+  ones); the rain of weekend 1 is drawn as falling streaks, growing heavier through the song, not with the Haxe
+  engine's shader; the Haxe
   fork's Display Lag Correction; the charting mode entries of the pause menu.
 - **Menus**: the mods menu's buttons (enable, disable, move: here they are keys) and per-mod settings;
   achievements of mods; the key binds' and note colours' pages look plain (the other pages look as in the Haxe
