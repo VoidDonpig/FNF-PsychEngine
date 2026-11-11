@@ -1174,7 +1174,7 @@ impl Menus {
         let tip = if self.preview {
             phrase("musicplayer_tip", "Press SPACE to Pause / Press ESCAPE to Exit / Press R to Reset the Song / LEFT, RIGHT: wind / UP, DOWN: speed")
         } else {
-            phrase("freeplay_tip", "Press SPACE to listen to the Song / Press CTRL to open the Gameplay Changers Menu / Press R to Reset your Score and Accuracy.")
+            phrase("freeplay_tip", "Press SPACE to listen to the Song / Press CTRL to open the Gameplay Changers Menu / Press RESET to Reset your Score and Accuracy.")
         };
         let tip = tip.as_str();
         label(skin, tip, (WIDTH - wide(tip, 16)) / 2.0, HEIGHT - 22.0, 16, WHITE, false);

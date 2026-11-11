@@ -1048,6 +1048,10 @@ pub struct Scene {
     spots: [Vec2; 3],
     /// The player lost: only the fallen character is shown.
     dead: bool,
+    /// Weekend 1's game over: the sign asking for a retry over Pico (where, since when, whether it was taken), and Nene's
+    /// knife thrown at him (where, since when).
+    retry: Option<(Sheet, Vec2, f32, bool)>,
+    toss: Option<(Sheet, Vec2, f32)>,
     backdrop: Vec<Layer>,
     pub opponent: Option<Character>,
     gf: Option<Character>,
@@ -1194,6 +1198,8 @@ impl Scene {
             paths,
             spots,
             dead: false,
+            retry: None,
+            toss: None,
             backdrop,
             opponent,
             gf,
@@ -2297,6 +2303,13 @@ impl Scene {
         if let Ok(mut fallen) = Character::load(&self.paths, self.death().0, self.spots[1], true) {
             fallen.play("firstDeath");
             self.target = fallen.middle() + fallen.camera_offset;
+            let sheet = |name: &str| self.paths.find(&format!("images/{name}.png")).and_then(|path| Sheet::load(&path).ok());
+            if fallen.name == "pico-dead" {
+                self.retry = sheet("Pico_Death_Retry").map(|retry| (retry, fallen.position + vec2(205.0, -80.0), f32::NEG_INFINITY, false));
+                if self.gf.as_ref().is_some_and(|gf| gf.name == "nene") {
+                    self.toss = sheet("NeneKnifeToss").map(|toss| (toss, fallen.position + vec2(-450.0, -250.0), 0.0));
+                }
+            }
             self.player = Some(fallen);
         }
     }
@@ -2308,6 +2321,23 @@ impl Scene {
         self.zoom += (self.default_zoom - self.zoom) * ease;
         let Some(fallen) = &mut self.player else { return confirm };
         fallen.time += dt;
+        if let Some((_, _, since, taken)) = &mut self.retry {
+            *since += dt;
+            // the sign comes up on the 36th frame of his fall
+            let fall = fallen.animations.get("firstDeath").map_or(0.0, |fall| fall.fps);
+            if since.is_infinite() && (fallen.current != "firstDeath" || fallen.time * fall >= 35.0) {
+                *since = 0.0;
+            }
+            if confirm {
+                (*since, *taken) = (0.0, true);
+            }
+        }
+        if let Some((toss, _, since)) = &mut self.toss {
+            *since += dt;
+            if *since * 24.0 >= toss.animation("knife toss", &[]).len() as f32 {
+                self.toss = None;
+            }
+        }
         if confirm {
             fallen.play("deathConfirm");
         } else if fallen.current == "firstDeath" && fallen.finished() {
@@ -2322,7 +2352,20 @@ impl Scene {
         let shake = if left > 0.0 && !self.dead { vec2(rand::gen_range(-1.0, 1.0), rand::gen_range(-1.0, 1.0)) * strength * SCREEN / self.zoom } else { Vec2::ZERO };
         set_camera(&Camera2D { target: self.camera + shake, zoom: vec2(2.0 / SCREEN.x, 2.0 / SCREEN.y) * self.zoom, ..Default::default() });
         if self.dead {
+            if let Some((toss, at, since)) = &self.toss {
+                if let Some(frame) = toss.animation("knife toss", &[]).get((since * 24.0) as usize) {
+                    toss.draw(*frame, at.x, at.y, 1.0, false, WHITE);
+                }
+            }
             self.player.iter().for_each(|fallen| fallen.draw());
+            if let Some((retry, at, since, taken)) = self.retry.as_ref().filter(|retry| retry.2 >= 0.0) {
+                // the loop over and over; once taken, the confirmation once, set off as the Haxe engine sets it
+                let (frames, at) = if *taken { (retry.animation("Retry Text Confirm", &[]), *at - vec2(250.0, 200.0)) } else { (retry.animation("Retry Text Loop", &[]), *at) };
+                let step = (since * 24.0) as usize;
+                if let Some(frame) = if *taken { frames.get(step.min(frames.len().saturating_sub(1))) } else { frames.get(step % frames.len().max(1)) } {
+                    retry.draw(*frame, at.x, at.y, 1.0, false, WHITE);
+                }
+            }
             return;
         }
         let scroll = self.camera - SCREEN / 2.0;
