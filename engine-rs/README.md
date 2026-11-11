@@ -126,7 +126,8 @@ Done:
   menus take it (main menu items pointed at and clicked, the wheel in freeplay, story mode and the mods menu,
   a click on a mod, the rating and the combo count dragged on the delay screen), its pointer shown while it moves;
   the pause menu and the options as the Haxe engine draws them (large letters, tick boxes, the description box,
-  the list of languages).
+  the list of languages); Discord's "Playing" box (the Haxe engine's texts, the opponent's icon and the time
+  left, over Discord's local pipe without a library; the Discord Rich Presence option turns it off).
 
 Not there yet:
 
@@ -137,7 +138,7 @@ Not there yet:
   fork's Display Lag Correction; the charting mode entries of the pause menu.
 - **Menus**: the mods menu's buttons (enable, disable, move: here they are keys) and per-mod settings;
   achievements of mods; the key binds' and note colours' pages look plain (the other pages look as in the Haxe
-  engine); the Shaders and GPU Caching switches (nothing to switch here); Discord presence; update check.
+  engine); the Shaders and GPU Caching switches (nothing to switch here); update check.
 - **Saved data**: scores of the Haxe engine are not read (it keeps them in its own binary save).
 - **Cutscenes**: weekend 1's;
   videos; dialogue from a song's `dialogue.json` (the kind scripts start).
