@@ -113,7 +113,7 @@ Done:
   before every change of screen, as one uncovers the new; a chart's own note and splash pictures
   (`arrowSkin`, `splashSkin`) and notes left in the colours they were painted in (`disableNoteRGB`);
   sprite sheets described in JSON (Aseprite, TexturePacker) beside the XML and text kinds; note splashes
-  as coarse as the rest on pixel stages.
+  as coarse as the rest on pixel stages; the title screen's colours turned with Left and Right.
 
 Not there yet:
 
@@ -124,7 +124,7 @@ Not there yet:
   fork's Display Lag Correction; the charting mode entries of the pause menu.
 - **Stages**: objects of a stage file listed between two characters are drawn behind all three; `flipY`,
   colour names and the story-mode/freeplay filters of stage objects.
-- **Menus**: the title screen's colours turning with Left and Right; the mods menu's
+- **Menus**: the mods menu's
   mouse buttons and per-mod settings; achievements of mods; the options menu's look (it is a plain list)
   and its Shaders and GPU Caching switches (nothing to switch here); the screen for adjusting delay and
   placing the rating by dragging; Discord presence; update check; languages; the mouse anywhere.
