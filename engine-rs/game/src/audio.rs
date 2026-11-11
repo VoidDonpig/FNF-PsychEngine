@@ -230,6 +230,15 @@ mod output {
     }
 
     /// Decodes an Ogg Vorbis file to interleaved stereo.
+    /// One channel of a stereo track `at` a frame (between two frames: in between them). 0 past its end.
+    pub(super) fn sample_at(samples: &[i16], at: f64, channel: usize) -> f32 {
+        let (index, blend) = (at as usize, at.fract() as f32);
+        match (samples.get(index * 2 + channel), samples.get(index * 2 + 2 + channel)) {
+            (Some(&a), Some(&b)) => a as f32 * (1.0 - blend) + b as f32 * blend,
+            _ => 0.0,
+        }
+    }
+
     /// Kept as the file gives them (16 bits a sample): half the memory of floats.
     fn decode(path: &Path) -> Result<(Vec<i16>, u32), String> {
         let file = std::fs::File::open(path).map_err(|e| format!("{}: {e}", path.display()))?;
@@ -279,16 +288,11 @@ mod output {
             let mut decoded = tracks_of(tracks).into_iter();
             // no tracks: an output that only plays sounds, as the menus use it
             let (first, rate) = decoded.next().unwrap_or_else(|| Ok((Arc::default(), 44100)))?;
-            let mut loaded = vec![first.clone()];
-            for (track, other) in tracks.iter().skip(1).zip(decoded) {
+            // each track with how many of its frames pass for one of the instrumental's (the voices of a song may have another rate)
+            let mut loaded = vec![(first.clone(), 1.0)];
+            for other in decoded {
                 let (samples, track_rate) = other?;
-                if track_rate != rate {
-                    // shortcut: tracks of one song share a sample rate in every song seen so far; resample here if one does not.
-                    eprintln!("{} has another sample rate than the instrumental, left silent", track.display());
-                    loaded.push(Arc::default());
-                } else {
-                    loaded.push(samples);
-                }
+                loaded.push((samples, track_rate as f64 / rate as f64));
             }
             let volumes: Arc<Vec<AtomicU32>> = Arc::new(loaded.iter().map(|_| AtomicU32::new(1.0f32.to_bits())).collect());
             let for_mix = volumes.clone();
@@ -301,7 +305,7 @@ mod output {
             }
             let channels = config.channels() as usize;
             let step = rate as f64 / config.sample_rate().0 as f64;
-            let frames = loaded[0].len() / 2;
+            let frames = loaded[0].0.len() / 2;
             let shared = Arc::new(Shared { playing: AtomicBool::new(false), speed: AtomicU64::new(speed.to_bits()), seek: Mutex::new(None), anchor: Mutex::new(None), frozen: Mutex::new(None) });
             let for_callback = shared.clone();
             let sounds: Arc<Mutex<Vec<Voice>>> = Arc::new(Mutex::new(Vec::new()));
@@ -329,12 +333,9 @@ mod output {
                         // each track's loudness, read once for the whole buffer, with the 16 bit samples brought to -1..1
                         let volumes: Vec<f32> = for_mix.iter().map(|volume| f32::from_bits(volume.load(Ordering::Relaxed)) / 32768.0).collect();
                         for frame in data.chunks_mut(channels) {
-                            let (index, blend) = (cursor as usize, cursor.fract() as f32);
-                            for (channel, out) in frame.iter_mut().take(2).enumerate() {
-                                for (samples, volume) in loaded.iter().zip(&volumes) {
-                                    if let (Some(&a), Some(&b)) = (samples.get(index * 2 + channel), samples.get(index * 2 + 2 + channel)) {
-                                        *out += (a as f32 * (1.0 - blend) + b as f32 * blend) * volume;
-                                    }
+                            for ((samples, ratio), volume) in loaded.iter().zip(&volumes) {
+                                for (channel, out) in frame.iter_mut().take(2).enumerate() {
+                                    *out += sample_at(samples, cursor * ratio, channel) * volume;
                                 }
                             }
                             cursor += step;
@@ -450,6 +451,19 @@ mod tests {
         song.pause();
         song.seek(100.0);
         assert_eq!(song.position_ms(), 100.0);
+    }
+
+    #[cfg(feature = "audio")]
+    #[test]
+    fn a_track_at_another_rate_is_read_at_its_own_pace() {
+        use super::output::sample_at;
+        // left channel counts frames: 0, 10, 20...; right is silent
+        let track: Vec<i16> = (0..100).flat_map(|frame| [frame * 10, 0]).collect();
+        assert_eq!((sample_at(&track, 3.0, 0), sample_at(&track, 3.5, 0), sample_at(&track, 3.0, 1)), (30.0, 35.0, 0.0));
+        // a 48 kHz voice under a 44.1 kHz instrumental: frame 441 of the song is frame 480 of the voice
+        let ratio = 48000.0 / 44100.0;
+        assert!((sample_at(&track, 44.1 * ratio, 0) - 480.0).abs() < 1e-2);
+        assert_eq!(sample_at(&track, 99.0, 0), 0.0);
     }
 
     #[test]
