@@ -3,7 +3,8 @@
 //! Run it from a folder that has the game's `assets` (and optionally `mods`), or pass `--base <folder>`.
 //! `--bot` lets the game play itself, `--play <text>` starts the first song whose name contains the text.
 //! For checking a build without a screen: `--at <seconds>` starts at that point of the song, `--options`
-//! opens the options, and `--shot <file.png>` saves the picture after a few frames (or `--after <seconds>`) and quits.
+//! opens the options, and `--shot <file.png>` saves the picture after a few frames (or `--after <seconds>`, or
+//! once the song has reached `--when <seconds>`) and quits.
 mod atlas;
 mod audio;
 mod input;
@@ -11,6 +12,7 @@ mod scene;
 mod settings;
 
 use funkin_core::content::{discover, Paths, SongEntry};
+use funkin_core::chart::NoteKind;
 use funkin_core::play::{Event, NoteState, Play, Rating};
 use input::{KeyEvent, Keyboard};
 use macroquad::miniquad::{BlendFactor, BlendState, BlendValue, Equation, PipelineParams};
@@ -186,12 +188,22 @@ struct Playing {
     splashes: Vec<(usize, f64)>,
     /// Seconds since the player lost, and since they confirmed the retry.
     dead: Option<(f32, Option<f32>)>,
+    /// The next chart event to carry out.
+    next_event: usize,
+    /// Scroll speed right now, and the change a chart event is easing it through: from, to, start (ms), length (ms).
+    speed: f32,
+    speed_change: Option<(f32, f32, f64, f64)>,
 }
 
 impl Playing {
     fn open(base: &Path, entry: &SongEntry, settings: &Settings, start_at: f64) -> Result<Playing, String> {
         let text = std::fs::read_to_string(&entry.chart).map_err(|e| format!("{}: {e}", entry.chart.display()))?;
-        let chart = funkin_core::chart::parse(&text).map_err(|e| format!("{}: {e}", entry.chart.display()))?;
+        let mut chart = funkin_core::chart::parse(&text).map_err(|e| format!("{}: {e}", entry.chart.display()))?;
+        // events shared by all difficulties of the song sit in their own file
+        if let Some(shared) = std::fs::read_to_string(entry.chart.with_file_name("events.json")).ok().and_then(|text| funkin_core::chart::parse(&text).ok()) {
+            chart.events.extend(shared.events);
+            chart.events.sort_by(|a, b| a.time.total_cmp(&b.time));
+        }
         let mut tracks = vec![entry.inst.as_path()];
         tracks.extend(entry.voices_player.as_deref());
         let player_voice = entry.voices_player.as_ref().map(|_| 1);
@@ -201,11 +213,12 @@ impl Playing {
         let song = audio::Song::load(if start_at > 0.0 { &[] } else { &tracks });
         // five beats of countdown, as the Haxe engine does
         let lead_in = if start_at > 0.0 { 0.0 } else { 5.0 * 60000.0 / chart.bpm };
+        let speed = chart.speed as f32;
         let mut play = Play::new(chart, settings.botplay);
         play.ghost_tapping = settings.ghost_tapping;
         play.skip_to(start_at);
         Ok(Playing { entry: entry.clone(), play, song, player_voice, scene, waited: 0.0, started: false, paused: None, start_at, position: -lead_in, settings: settings.clone(), held_keys: Vec::new(), flash_until: [[f64::MIN; 4]; 2], judgement: None,
-            paths: Paths::new(base, &entry.source, ""), lead_in, counted: i64::MIN, popups: Vec::new(), splashes: Vec::new(), dead: None })
+            paths: Paths::new(base, &entry.source, ""), lead_in, counted: i64::MIN, popups: Vec::new(), splashes: Vec::new(), dead: None, next_event: 0, speed, speed_change: None })
     }
 
     /// Song position the notes are judged and drawn at.
@@ -298,6 +311,25 @@ impl Playing {
         }
 
         let judged = self.judged();
+        while let Some(event) = self.play.chart.events.get(self.next_event).filter(|e| e.time <= judged).cloned() {
+            self.next_event += 1;
+            let number = |value: &str| value.trim().parse::<f32>().ok();
+            match event.name.as_str() {
+                "Change Scroll Speed" => {
+                    let to = self.play.chart.speed as f32 * number(&event.value1).unwrap_or(1.0);
+                    self.speed_change = Some((self.speed, to, event.time, number(&event.value2).unwrap_or(0.0) as f64 * 1000.0));
+                }
+                "Play Sound" => self.sound(&event.value1, number(&event.value2).unwrap_or(1.0), false),
+                _ => self.scene.iter_mut().for_each(|scene| scene.event(&event)),
+            }
+        }
+        if let Some((from, to, start, length)) = self.speed_change {
+            let done = if length > 0.0 { ((judged - start) / length).clamp(0.0, 1.0) as f32 } else { 1.0 };
+            self.speed = from + (to - from) * done;
+            if done >= 1.0 {
+                self.speed_change = None;
+            }
+        }
         let mut events = Vec::new();
         for key in keys {
             let Some(lane) = self.settings.lane_of(key.key) else { continue };
@@ -317,7 +349,7 @@ impl Playing {
         events.extend(self.play.update(judged));
         for &event in &events {
             match event {
-                Event::Hit { lane, rating, diff_ms } => {
+                Event::Hit { lane, rating, diff_ms, .. } => {
                     self.flash_until[1][lane] = judged + 120.0;
                     let color = if diff_ms < 0.0 { Color::from_hex(0x7FC8FF) } else { Color::from_hex(0xFF9F7F) };
                     self.judgement = Some((format!("{:+.1} ms", diff_ms), color, judged));
@@ -344,7 +376,7 @@ impl Playing {
                     self.player_voice.iter().for_each(|&track| self.song.set_volume(track, 0.0));
                     self.sound(["missnote1", "missnote2", "missnote3"][self.play.misses as usize % 3], 0.15, false);
                 }
-                Event::OpponentHit { lane } => self.flash_until[0][lane] = judged + 120.0,
+                Event::OpponentHit { lane, .. } => self.flash_until[0][lane] = judged + 120.0,
             }
         }
 
@@ -382,16 +414,16 @@ impl Playing {
     fn draw(&self, skin: &Skin) {
         let (settings, position) = (&self.settings, self.judged());
         // the stage through its own moving camera, then notes and the rest of the HUD on top
-        let hud_zoom = self.scene.as_ref().map_or(1.0, |scene| {
+        let (hud_zoom, hud_shake) = self.scene.as_ref().map_or((1.0, Vec2::ZERO), |scene| {
             scene.draw();
-            scene.hud_zoom
+            (scene.hud_zoom, scene.hud_shake())
         });
-        set_camera(&Camera2D { target: vec2(WIDTH / 2.0, HEIGHT / 2.0), zoom: vec2(2.0 / WIDTH, 2.0 / HEIGHT) * hud_zoom, ..Default::default() });
+        set_camera(&Camera2D { target: vec2(WIDTH / 2.0, HEIGHT / 2.0) + hud_shake, zoom: vec2(2.0 / WIDTH, 2.0 / HEIGHT) * hud_zoom, ..Default::default() });
         if self.dead.is_some() {
             skin.centered("Enter: retry    Esc: back to the song list", HEIGHT - 30.0, 18, GRAY);
             return;
         }
-        let speed = self.play.chart.speed as f32;
+        let speed = self.speed;
         let strum_y = strum_y(settings);
         // notes come up from below, or with downscroll down from above
         let direction = if settings.downscroll { -1.0 } else { 1.0 };
@@ -436,7 +468,7 @@ impl Playing {
                     }
                 }
                 if pass == 1 && matches!(state, NoteState::Pending | NoteState::Missed) && on_screen(y_at(note.time)) {
-                    let tint = if note.hurt { None } else { Some(note.lane) }; // hurt notes show as raw masks
+                    let tint = if note.kind == NoteKind::Hurt { None } else { Some(note.lane) }; // hurt notes show as raw masks
                     skin.frame(&format!("{}0000", NOTE_NAMES[note.lane]), x, y_at(note.time), None, tint, alpha);
                 }
             }
@@ -543,6 +575,7 @@ async fn main() {
     let value = |name: &str| args.iter().position(|a| a == name).and_then(|i| args.get(i + 1)).cloned();
     let shot = value("--shot");
     let shot_after = value("--after").and_then(|s| s.parse::<f64>().ok()).unwrap_or(0.0);
+    let shot_when = value("--when").and_then(|s| s.parse::<f64>().ok()).map(|seconds| seconds * 1000.0);
     let start_at = value("--at").and_then(|s| s.parse::<f64>().ok()).unwrap_or(0.0) * 1000.0;
 
     // the game's files: where asked, else here, else next to the program
@@ -718,7 +751,11 @@ async fn main() {
         };
 
         frames += 1;
-        if let (Some(path), true) = (&shot, frames >= 5 && get_time() >= shot_after) {
+        let reached = match (&screen, shot_when) {
+            (Screen::Playing(playing), Some(when)) => playing.position >= when,
+            _ => true,
+        };
+        if let (Some(path), true) = (&shot, frames >= 5 && get_time() >= shot_after && reached) {
             // the frame is only drawn for real when it ends; push it out now to read it back
             unsafe { get_internal_gl() }.flush();
             get_screen_data().export_png(path);

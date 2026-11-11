@@ -11,8 +11,34 @@ pub struct Note {
     pub player: bool,
     /// Hold length in milliseconds, 0 for a tap.
     pub sustain: f64,
-    /// "Hurt Note": hitting it counts as a miss, letting it pass does not.
-    pub hurt: bool,
+    pub kind: NoteKind,
+}
+
+/// What a note does besides being hit. Charts name it by the note type's title.
+#[derive(Clone, Copy, Debug, Default, PartialEq)]
+pub enum NoteKind {
+    #[default]
+    Normal,
+    /// Hitting it counts as a miss, letting it pass does not.
+    Hurt,
+    /// Sung with the character's alternative poses.
+    Alt,
+    /// The singer cheers instead of singing.
+    Hey,
+    /// The girlfriend sings it.
+    GfSing,
+    /// Nobody moves for it.
+    NoAnimation,
+}
+
+/// Something a chart schedules besides notes: a camera zoom, a pose, a character swap.
+#[derive(Clone, Debug, PartialEq)]
+pub struct ChartEvent {
+    /// Milliseconds from the start of the song.
+    pub time: f64,
+    pub name: String,
+    pub value1: String,
+    pub value2: String,
 }
 
 /// A stretch of the chart (normally one bar) and who the camera looks at during it.
@@ -22,6 +48,8 @@ pub struct Section {
     pub start: f64,
     pub must_hit: bool,
     pub gf: bool,
+    /// The opponent sings this section with its alternative poses.
+    pub alt: bool,
 }
 
 #[derive(Clone, Debug, Default)]
@@ -32,6 +60,8 @@ pub struct Chart {
     pub speed: f64,
     /// Sorted by time.
     pub notes: Vec<Note>,
+    /// Sorted by time.
+    pub events: Vec<ChartEvent>,
     pub sections: Vec<Section>,
     /// Tempo changes as (time in ms, beat number there, BPM from there on); the first is at 0.
     pub tempo: Vec<(f64, f64, f64)>,
@@ -73,7 +103,18 @@ pub fn parse(text: &str) -> Result<Chart, String> {
     let mut tempo = vec![(0.0, 0.0, bpm)];
     let mut sections = Vec::new();
     let mut notes = Vec::new();
-    for section in root["notes"].as_array().ok_or("chart has no \"notes\" list")? {
+    // values are stored as text, but old charts have numbers in them
+    let text = |value: &Value| value.as_str().map(str::to_owned).unwrap_or_else(|| if value.is_null() { String::new() } else { value.to_string() });
+    let mut events = Vec::new();
+    for entry in root["events"].as_array().into_iter().flatten() {
+        for event in entry[1].as_array().into_iter().flatten() {
+            if let (Some(time), Some(name)) = (entry[0].as_f64(), event[0].as_str()) {
+                events.push(ChartEvent { time, name: name.to_owned(), value1: text(&event[1]), value2: text(&event[2]) });
+            }
+        }
+    }
+    // a song's events.json is a chart with events only
+    for section in root["notes"].as_array().into_iter().flatten() {
         let must_hit = section["mustHitSection"].as_bool().unwrap_or(false);
         if let (Some(true), Some(new)) = (section["changeBPM"].as_bool(), section["bpm"].as_f64().filter(|b| *b > 0.0)) {
             if new != bpm {
@@ -81,14 +122,19 @@ pub fn parse(text: &str) -> Result<Chart, String> {
                 tempo.push((time, beat, bpm));
             }
         }
-        sections.push(Section { start: time, must_hit, gf: section["gfSection"].as_bool().unwrap_or(false) });
+        let gf_section = section["gfSection"].as_bool().unwrap_or(false);
+        sections.push(Section { start: time, must_hit, gf: gf_section, alt: section["altAnim"].as_bool().unwrap_or(false) });
         let beats = section["sectionBeats"].as_f64().filter(|b| *b > 0.0).unwrap_or(4.0);
         time += beats * 60000.0 / bpm;
         beat += beats;
         for raw in section["sectionNotes"].as_array().into_iter().flatten() {
             let (Some(time), Some(column)) = (raw[0].as_f64(), raw[1].as_f64()) else { continue };
             if column < 0.0 {
-                continue; // an event stored as a note (pre-0.7 charts)
+                // an event stored as a note (pre-0.7 charts)
+                if let Some(name) = raw[2].as_str() {
+                    events.push(ChartEvent { time, name: name.to_owned(), value1: text(&raw[3]), value2: text(&raw[4]) });
+                }
+                continue;
             }
             let column = column as usize;
             // psych_v1: columns 0-3 are the player's. Before: 0-3 belong to whoever the section focuses on.
@@ -103,13 +149,23 @@ pub fn parse(text: &str) -> Result<Chart, String> {
                 lane: column % 4,
                 player,
                 sustain: raw[2].as_f64().filter(|s| s.is_finite()).unwrap_or(0.0).max(0.0),
-                hurt: kind == "Hurt Note",
+                kind: match kind {
+                    "Hurt Note" => NoteKind::Hurt,
+                    "Alt Animation" => NoteKind::Alt,
+                    "Hey!" => NoteKind::Hey,
+                    "No Animation" => NoteKind::NoAnimation,
+                    "GF Sing" => NoteKind::GfSing,
+                    // in a girlfriend section, the notes of the side in focus are hers
+                    _ if gf_section && player == must_hit => NoteKind::GfSing,
+                    _ => NoteKind::Normal,
+                },
             });
         }
     }
     notes.sort_by(|a, b| a.time.total_cmp(&b.time));
     // Charts sometimes stack two notes on the same spot; the game plays one.
     notes.dedup_by(|b, a| a.lane == b.lane && a.player == b.player && (a.time - b.time).abs() < 1e-3);
+    events.sort_by(|a, b| a.time.total_cmp(&b.time));
 
     let name = |keys: &[&str], default: &str| keys.iter().find_map(|k| root[*k].as_str()).filter(|s| !s.is_empty()).unwrap_or(default).to_owned();
     Ok(Chart {
@@ -117,6 +173,7 @@ pub fn parse(text: &str) -> Result<Chart, String> {
         bpm: tempo[0].2,
         speed: root["speed"].as_f64().unwrap_or(1.0),
         notes,
+        events,
         sections,
         tempo,
         player: name(&["player1"], "bf"),
@@ -136,8 +193,8 @@ mod tests {
             {"mustHitSection":false,"sectionNotes":[[500,2,0],[0,5,250,"Hurt Note"]]}]}"#).unwrap();
         assert_eq!(chart.speed, 2.5);
         assert_eq!(chart.notes, vec![
-            Note { time: 0.0, lane: 1, player: false, sustain: 250.0, hurt: true },
-            Note { time: 500.0, lane: 2, player: true, sustain: 0.0, hurt: false },
+            Note { time: 0.0, lane: 1, player: false, sustain: 250.0, kind: NoteKind::Hurt },
+            Note { time: 500.0, lane: 2, player: true, sustain: 0.0, kind: NoteKind::Normal },
         ]);
     }
 
@@ -146,8 +203,9 @@ mod tests {
         let chart = parse(r#"{"song":{"song":"T","bpm":100,"notes":[
             {"mustHitSection":true,"sectionNotes":[[0,0,0],[100,4,0],[200,-1,"Event","",""]]},
             {"mustHitSection":false,"sectionNotes":[[300,0,0],[400,7,0,3]]}]}}"#).unwrap();
-        let sides: Vec<(bool, usize, bool)> = chart.notes.iter().map(|n| (n.player, n.lane, n.hurt)).collect();
+        let sides: Vec<(bool, usize, bool)> = chart.notes.iter().map(|n| (n.player, n.lane, n.kind == NoteKind::Hurt)).collect();
         assert_eq!(sides, vec![(true, 0, false), (false, 0, false), (false, 0, false), (true, 3, true)]);
+        assert_eq!(chart.events, vec![ChartEvent { time: 200.0, name: "Event".to_owned(), value1: String::new(), value2: String::new() }]);
     }
 
     #[test]
@@ -162,6 +220,26 @@ mod tests {
         assert_eq!(chart.section_at(2499.0).map(|s| s.must_hit), Some(false));
         assert!(chart.section_at(9999.0).unwrap().gf);
         assert_eq!((chart.opponent.as_str(), chart.player.as_str(), chart.gf.as_str(), chart.stage.as_str()), ("mom", "bf", "gf", "stage"));
+    }
+
+    #[test]
+    fn events_and_note_kinds() {
+        let chart = parse(r#"{"song":"T","format":"psych_v1","events":[[900,[["Add Camera Zoom","0.1",""],["Hey!",1,0.6]]],[100,[["Set GF Speed","2",""]]]],"notes":[
+            {"mustHitSection":true,"gfSection":true,"altAnim":true,"sectionNotes":[[0,0,0],[0,4,0],[10,1,0,"Alt Animation"],[20,2,0,"Hey!"],[30,3,0,"No Animation"],[40,5,0,"GF Sing"]]}]}"#).unwrap();
+        assert_eq!(chart.events.iter().map(|e| (e.time, e.name.as_str(), e.value1.as_str(), e.value2.as_str())).collect::<Vec<_>>(),
+                   [(100.0, "Set GF Speed", "2", ""), (900.0, "Add Camera Zoom", "0.1", ""), (900.0, "Hey!", "1", "0.6")]);
+        let kinds: Vec<NoteKind> = chart.notes.iter().map(|n| n.kind).collect();
+        // sorted by time: the player's note of the girlfriend section, the opponent's, then the typed ones
+        assert_eq!(kinds, [NoteKind::GfSing, NoteKind::Normal, NoteKind::Alt, NoteKind::Hey, NoteKind::NoAnimation, NoteKind::GfSing]);
+        assert!(chart.sections[0].alt);
+    }
+
+    #[test]
+    fn an_events_file_is_a_chart_without_notes() {
+        let chart = parse(r#"{"song":{"events":[[4290,[["Hey!","0",""]]]],"format":"psych_v1"}}"#).unwrap();
+        assert!(chart.notes.is_empty());
+        assert_eq!(chart.events.len(), 1);
+        assert!(parse("not json").is_err());
     }
 
     #[test]

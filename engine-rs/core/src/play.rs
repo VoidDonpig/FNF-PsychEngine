@@ -1,5 +1,5 @@
 //! One run of a song: which notes were hit, how well, and what that did to score and health.
-use crate::chart::Chart;
+use crate::chart::{Chart, NoteKind};
 
 /// Timing windows in milliseconds (the engine's defaults).
 pub const SICK_MS: f64 = 45.0;
@@ -35,10 +35,11 @@ pub enum NoteState { Pending, Held, Done, Missed }
 
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub enum Event {
-    /// The player hit a note `diff_ms` after (+) or before (-) its time.
-    Hit { lane: usize, rating: Rating, diff_ms: f64 },
-    Miss { lane: usize },
-    OpponentHit { lane: usize },
+    /// The player hit chart note `note`, `diff_ms` after (+) or before (-) its time.
+    Hit { lane: usize, rating: Rating, diff_ms: f64, note: usize },
+    /// A note got away or was dropped, or (without `note`) a press hit nothing.
+    Miss { lane: usize, note: Option<usize> },
+    OpponentHit { lane: usize, note: usize },
 }
 
 pub struct Play {
@@ -100,15 +101,15 @@ impl Play {
             }
             self.score -= 10;
             self.health += MISS_HEALTH / 2.0; // a stray press costs half of what a missed note does
-            return Some(self.miss(lane));
+            return Some(self.miss(lane, None));
         };
-        let (time, sustain, hurt) = { let n = &self.chart.notes[index]; (n.time, n.sustain, n.hurt) };
+        let (time, sustain, hurt) = { let n = &self.chart.notes[index]; (n.time, n.sustain, n.kind == NoteKind::Hurt) };
         if hurt {
             self.state[index] = NoteState::Done;
-            return Some(self.miss(lane));
+            return Some(self.miss(lane, Some(index)));
         }
         self.state[index] = if sustain > 0.0 { NoteState::Held } else { NoteState::Done };
-        Some(self.hit(lane, pos - time))
+        Some(self.hit(lane, pos - time, index))
     }
 
     pub fn release(&mut self, lane: usize) {
@@ -124,20 +125,21 @@ impl Play {
                 break;
             }
             let auto = !note.player || self.botplay;
+            let hurt = note.kind == NoteKind::Hurt;
             match self.state[i] {
                 NoteState::Pending if auto && note.time <= pos => {
-                    if note.player && note.hurt {
+                    if note.player && hurt {
                         self.state[i] = NoteState::Done;
                         continue;
                     }
                     self.state[i] = if note.sustain > 0.0 { NoteState::Held } else { NoteState::Done };
                     // Botplay is rated at the note's own time, not at the frame that noticed it.
-                    events.push(if note.player { self.hit(note.lane, 0.0) } else { Event::OpponentHit { lane: note.lane } });
+                    events.push(if note.player { self.hit(note.lane, 0.0, i) } else { Event::OpponentHit { lane: note.lane, note: i } });
                 }
                 NoteState::Pending if !auto && pos > note.time + SAFE_MS => {
-                    self.state[i] = if note.hurt { NoteState::Done } else { NoteState::Missed };
-                    if !note.hurt {
-                        events.push(self.miss(note.lane));
+                    self.state[i] = if hurt { NoteState::Done } else { NoteState::Missed };
+                    if !hurt {
+                        events.push(self.miss(note.lane, Some(i)));
                     }
                 }
                 NoteState::Held => {
@@ -147,7 +149,7 @@ impl Play {
                     } else if !auto && !self.held[note.lane] {
                         // Letting go early loses the rest of the hold as one miss.
                         self.state[i] = NoteState::Missed;
-                        events.push(self.miss(note.lane));
+                        events.push(self.miss(note.lane, Some(i)));
                     }
                 }
                 _ => {}
@@ -159,17 +161,17 @@ impl Play {
         events
     }
 
-    fn hit(&mut self, lane: usize, diff_ms: f64) -> Event {
+    fn hit(&mut self, lane: usize, diff_ms: f64, note: usize) -> Event {
         let rating = Rating::of(diff_ms);
         self.score += rating.score();
         self.combo += 1;
         self.rated += 1;
         self.weight += rating.weight();
         self.health = (self.health + HIT_HEALTH).min(2.0);
-        Event::Hit { lane, rating, diff_ms }
+        Event::Hit { lane, rating, diff_ms, note }
     }
 
-    fn miss(&mut self, lane: usize) -> Event {
+    fn miss(&mut self, lane: usize, note: Option<usize>) -> Event {
         self.misses += 1;
         self.combo = 0;
         self.rated += 1;
@@ -177,7 +179,7 @@ impl Play {
         if self.health < 1e-9 {
             self.health = 0.0; // ten misses from full must empty the bar, whatever the rounding says
         }
-        Event::Miss { lane }
+        Event::Miss { lane, note }
     }
 }
 
@@ -187,7 +189,7 @@ mod tests {
     use crate::chart::Note;
 
     fn play(notes: &[(f64, usize, bool, f64)], botplay: bool) -> Play {
-        let notes = notes.iter().map(|&(time, lane, player, sustain)| Note { time, lane, player, sustain, hurt: false }).collect();
+        let notes = notes.iter().map(|&(time, lane, player, sustain)| Note { time, lane, player, sustain, kind: NoteKind::Normal }).collect();
         Play::new(Chart { bpm: 120.0, speed: 1.0, notes, ..Default::default() }, botplay)
     }
 
@@ -200,8 +202,8 @@ mod tests {
     #[test]
     fn press_takes_the_earliest_note_in_reach() {
         let mut p = play(&[(1000.0, 0, true, 0.0), (1100.0, 0, true, 0.0), (1000.0, 1, true, 0.0)], false);
-        assert_eq!(p.press(0, 1030.0), Some(Event::Hit { lane: 0, rating: Rating::Sick, diff_ms: 30.0 }));
-        assert_eq!(p.press(0, 1030.0), Some(Event::Hit { lane: 0, rating: Rating::Good, diff_ms: -70.0 }));
+        assert_eq!(p.press(0, 1030.0), Some(Event::Hit { lane: 0, rating: Rating::Sick, diff_ms: 30.0, note: 0 }));
+        assert_eq!(p.press(0, 1030.0), Some(Event::Hit { lane: 0, rating: Rating::Good, diff_ms: -70.0, note: 1 }));
         assert_eq!(p.press(0, 1030.0), None, "nothing left on this lane: a ghost tap");
         assert_eq!((p.score, p.combo, p.misses), (550, 2, 0));
         assert_eq!(p.accuracy(), Some((1.0 + 0.67) / 2.0));
@@ -212,7 +214,7 @@ mod tests {
         let mut p = play(&[(1000.0, 2, true, 0.0)], false);
         assert_eq!(p.press(2, 1000.0 - SAFE_MS - 1.0), None);
         assert_eq!(p.update(1000.0 + SAFE_MS), vec![]);
-        assert_eq!(p.update(1000.0 + SAFE_MS + 1.0), vec![Event::Miss { lane: 2 }]);
+        assert_eq!(p.update(1000.0 + SAFE_MS + 1.0), vec![Event::Miss { lane: 2, note: Some(0) }]);
         assert_eq!((p.misses, p.combo, p.accuracy(), p.finished()), (1, 0, Some(0.0), true));
         assert!(p.health < 1.0);
     }
@@ -229,7 +231,7 @@ mod tests {
         let mut dropped = play(&[(0.0, 3, true, 1000.0)], false);
         dropped.press(3, 0.0);
         dropped.release(3);
-        assert_eq!(dropped.update(300.0), vec![Event::Miss { lane: 3 }]);
+        assert_eq!(dropped.update(300.0), vec![Event::Miss { lane: 3, note: Some(0) }]);
         assert_eq!(dropped.update(600.0), vec![], "only once");
     }
 
@@ -237,7 +239,7 @@ mod tests {
     fn botplay_and_opponent_play_themselves() {
         let mut p = play(&[(100.0, 0, false, 0.0), (200.0, 1, true, 300.0)], true);
         assert_eq!(p.update(99.0), vec![]);
-        assert_eq!(p.update(250.0), vec![Event::OpponentHit { lane: 0 }, Event::Hit { lane: 1, rating: Rating::Sick, diff_ms: 0.0 }]);
+        assert_eq!(p.update(250.0), vec![Event::OpponentHit { lane: 0, note: 0 }, Event::Hit { lane: 1, rating: Rating::Sick, diff_ms: 0.0, note: 1 }]);
         assert!(!p.finished());
         p.update(500.0);
         assert!(p.finished() && p.accuracy() == Some(1.0) && p.score == 350);
@@ -248,7 +250,7 @@ mod tests {
         let mut p = play(&[(5000.0, 0, true, 0.0)], false);
         assert_eq!(p.press(0, 100.0), None);
         p.ghost_tapping = false;
-        assert_eq!(p.press(0, 100.0), Some(Event::Miss { lane: 0 }));
+        assert_eq!(p.press(0, 100.0), Some(Event::Miss { lane: 0, note: None }));
         assert_eq!((p.misses, p.score), (1, -10));
         assert!((p.health - 0.95).abs() < 1e-9);
     }
@@ -274,9 +276,9 @@ mod tests {
 
     #[test]
     fn hurt_notes_hurt_only_when_hit() {
-        let hurt = |time| Note { time, lane: 0, player: true, sustain: 0.0, hurt: true };
+        let hurt = |time| Note { time, lane: 0, player: true, sustain: 0.0, kind: NoteKind::Hurt };
         let mut p = Play::new(Chart { bpm: 120.0, speed: 1.0, notes: vec![hurt(0.0), hurt(1000.0)], ..Default::default() }, false);
-        assert_eq!(p.press(0, 10.0), Some(Event::Miss { lane: 0 }));
+        assert_eq!(p.press(0, 10.0), Some(Event::Miss { lane: 0, note: Some(0) }));
         assert_eq!(p.update(2000.0), vec![]);
         assert!(p.finished() && p.misses == 1);
     }

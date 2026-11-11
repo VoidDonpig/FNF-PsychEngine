@@ -29,6 +29,10 @@ Done:
 - **Stage**: characters from their `characters/*.json` (Sparrow sheets, idle on the beat, sing and miss
   poses), the week 1 backdrop, the camera following the singer and bumping on the beat, health icons and
   bar colours, pause menu, results.
+- **Chart events**: Hey!, Set GF Speed, Add Camera Zoom, Play Animation, Camera Follow Pos, Alt Idle
+  Animation, Screen Shake, Change Character, Change Scroll Speed, Play Sound, from the chart and from the
+  song's `events.json`. Note types: Hurt Note, Alt Animation, Hey!, GF Sing, No Animation, and sections
+  marked for alternative poses or for the girlfriend.
 - **HUD**: countdown with its sounds, rating and combo pictures, note splashes, hold end caps, time bar,
   miss sounds, the game over scene (fall, music, retry).
 - **Sound**: instrumental and vocals as separate tracks (the player's voice drops out on a miss), song
@@ -38,9 +42,10 @@ Done:
 
 Not there yet:
 
-- **Play screen**: chart events, note types other than Hurt Note, gameplay changers (speed, playback
-  rate, health gain/loss, instakill, practice), the backdrops and mechanics of the other ten stages,
-  pixel stages, characters made of several sheets or of Animate atlases, other note and splash skins.
+- **Play screen**: the events and note types that belong to one stage or to scripts (Set Property,
+  Philly Glow, the weekend 1 fight notes, custom ones), gameplay changers (speed, playback rate, health
+  gain/loss, instakill, practice), the backdrops and mechanics of the other ten stages, pixel stages,
+  characters made of several sheets or of Animate atlases, other note and splash skins.
 - **Menus**: title, main menu, story mode, freeplay as in the Haxe engine (scores, previews), credits,
   mods (enable, order, settings), achievements, the rest of the options (graphics, visuals, note colours,
   gamepad, languages), transitions, loading screen.
