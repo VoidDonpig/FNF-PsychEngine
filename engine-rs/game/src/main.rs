@@ -591,8 +591,8 @@ async fn main() {
         if here.join("assets").is_dir() { here } else { beside.filter(|p| p.join("assets").is_dir()).unwrap_or(here) }
     });
 
-    let weeks = find_weeks(&base);
-    let songs = find_songs(&weeks);
+    let mut weeks = find_weeks(&base);
+    let mut songs = find_songs(&weeks);
     let mut save = Save::load(&base);
     let mut menus = Menus::new(&base);
     // story mode: the week being played, the songs still to come, and the score so far
@@ -606,6 +606,8 @@ async fn main() {
         Some("main") => Page::Main,
         Some("story") => Page::Story,
         Some("freeplay") => Page::Freeplay,
+        Some("mods") => Page::Mods,
+        Some("credits") => Page::Credits,
         _ => Page::Title,
     };
     let (skin, mut screen) = match Skin::load(&base) {
@@ -789,6 +791,11 @@ async fn main() {
                 Screen::Failed(message)
             }
         };
+
+        if std::mem::take(&mut menus.reload) {
+            weeks = find_weeks(&base);
+            songs = find_songs(&weeks);
+        }
 
         frames += 1;
         let reached = match (&screen, shot_when) {

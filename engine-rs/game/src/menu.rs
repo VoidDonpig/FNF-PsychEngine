@@ -2,7 +2,7 @@
 use crate::atlas::{draw_frame, Frame, Sheet};
 use crate::audio::Song;
 use crate::{Skin, HEIGHT, WIDTH};
-use funkin_core::content::{song_path, Paths, SongEntry, Week};
+use funkin_core::content::{mods as find_mods, save_mods, song_path, Paths, SongEntry, Week};
 use funkin_core::save::Save;
 use macroquad::prelude::*;
 use std::collections::HashMap;
@@ -15,6 +15,8 @@ pub enum Page {
     Main,
     Story,
     Freeplay,
+    Mods,
+    Credits,
 }
 
 /// What a menu wants next.
@@ -53,48 +55,97 @@ fn label(skin: &Skin, text: &str, x: f32, top: f32, size: u16, color: Color, rig
     x
 }
 
-/// Where the letters of a line of bold text go (each with its left and top), and the line's width.
+/// Where the letters of a line of menu text go (each with its left and top), and the line's width.
+/// Bold text is all capitals standing on a line 70 px down; plain text keeps its case on a line 110 px down.
 /// `size` gives a letter's frame size and its nudge from alphabet.json; letters it does not know are left out.
-fn place(text: &str, size: impl Fn(char) -> Option<(Vec2, Vec2)>) -> (Vec<(char, Vec2)>, f32) {
+// shortcut: one line only; plain text does not wrap at 65% of the screen as dialogue will need.
+fn place(text: &str, bold: bool, size: impl Fn(char) -> Option<(Vec2, Vec2)>) -> (Vec<(char, Vec2)>, f32) {
     let (mut placed, mut x, mut spaces) = (Vec::new(), 0.0, 0.0);
-    for letter in text.chars().flat_map(char::to_lowercase) {
-        if letter == ' ' || letter == '_' {
+    let (line, gap) = if bold { (70.0, 0.0) } else { (110.0, 2.0) };
+    let letters: Vec<char> = if bold { text.chars().flat_map(char::to_lowercase).collect() } else { text.chars().collect() };
+    for letter in letters {
+        if letter == ' ' || (bold && letter == '_') {
             spaces += 1.0;
             continue;
         }
         let Some((frame, nudge)) = size(letter) else { continue };
         x += 28.0 * spaces;
         spaces = 0.0;
-        // letters stand on a line 70 px down
-        placed.push((letter, vec2(x - nudge.x, 70.0 - frame.y - nudge.y)));
-        x += frame.x + nudge.x;
+        placed.push((letter, vec2(x - nudge.x, line - frame.y - nudge.y)));
+        x += frame.x + nudge.x + gap;
     }
     (placed, x)
 }
 
-/// The bold, wiggling menu letters.
+/// Text broken into lines no wider than `width`, at spaces.
+fn wrap(text: &str, width: f32, measure: impl Fn(&str) -> f32) -> Vec<String> {
+    let mut lines = Vec::new();
+    for paragraph in text.lines() {
+        let mut line = String::new();
+        for word in paragraph.split(' ') {
+            let longer = if line.is_empty() { word.to_owned() } else { format!("{line} {word}") };
+            if measure(&longer) > width && !line.is_empty() {
+                lines.push(std::mem::replace(&mut line, word.to_owned()));
+            } else {
+                line = longer;
+            }
+        }
+        lines.push(line);
+    }
+    lines
+}
+
+/// Opens a web page in the player's browser. Links come from mods' files, so only web addresses pass, and no shell sees them.
+fn open_link(link: &str) {
+    if !(link.starts_with("https://") || link.starts_with("http://")) {
+        return;
+    }
+    #[cfg(windows)]
+    let (program, first): (&str, Option<&str>) = ("rundll32", Some("url.dll,FileProtocolHandler"));
+    #[cfg(target_os = "macos")]
+    let (program, first): (&str, Option<&str>) = ("open", None);
+    #[cfg(not(any(windows, target_os = "macos")))]
+    let (program, first): (&str, Option<&str>) = ("xdg-open", None);
+    if let Err(error) = std::process::Command::new(program).args(first).arg(link).spawn() {
+        eprintln!("Could not open {link}: {error}");
+    }
+}
+
+/// The wiggling menu letters, bold and plain.
 struct Alphabet {
     texture: Texture2D,
-    /// A letter's frames and its nudge.
-    letters: HashMap<char, (Vec<Frame>, Vec2)>,
+    /// The frames and the nudge of a letter, bold (true) or plain.
+    letters: HashMap<(char, bool), (Vec<Frame>, Vec2)>,
 }
 
 impl Alphabet {
     fn load(paths: &Paths) -> Option<Alphabet> {
         let sheet = Sheet::load(&paths.find("images/alphabet.png")?).ok()?;
         let json: serde_json::Value = serde_json::from_str(&std::fs::read_to_string(paths.find("images/alphabet.json")?).ok()?).ok()?;
-        let letters = json["allowed"].as_str()?.chars().filter_map(|letter| {
+        let mut letters = HashMap::new();
+        for letter in json["allowed"].as_str()?.chars() {
             let entry = &json["characters"][letter.to_string()];
             let name = entry["animation"].as_str().map_or(letter.to_string(), str::to_owned);
-            let frames = sheet.animation(&format!("{name} bold"), &[]);
-            let nudge = vec2(entry["bold"][0].as_f64().unwrap_or(0.0) as f32, entry["bold"][1].as_f64().unwrap_or(0.0) as f32);
-            (!frames.is_empty()).then_some((letter, (frames, nudge)))
-        }).collect();
+            let nudge = |style: &str| vec2(entry[style][0].as_f64().unwrap_or(0.0) as f32, entry[style][1].as_f64().unwrap_or(0.0) as f32);
+            let mut add = |key: (char, bool), animation: String, style: &str| {
+                let frames = sheet.animation(&animation, &[]);
+                if !frames.is_empty() {
+                    letters.insert(key, (frames, nudge(style)));
+                }
+            };
+            add((letter, true), format!("{name} bold"), "bold");
+            if letter.is_alphabetic() {
+                add((letter, false), format!("{name} lowercase"), "normal");
+                add((letter.to_uppercase().next().unwrap_or(letter), false), format!("{name} uppercase"), "normal");
+            } else {
+                add((letter, false), format!("{name} normal"), "normal");
+            }
+        }
         Some(Alphabet { texture: sheet.texture, letters })
     }
 
-    fn size(&self, letter: char) -> Option<(Vec2, Vec2)> {
-        self.letters.get(&letter).map(|(frames, nudge)| (frames[0].size, *nudge))
+    fn size(&self, letter: char, bold: bool) -> Option<(Vec2, Vec2)> {
+        self.letters.get(&(letter, bold)).map(|(frames, nudge)| (frames[0].size, *nudge))
     }
 }
 
@@ -124,6 +175,12 @@ impl Art {
             let path = Paths::new(base, source, "").find(&format!("images/{name}.png"))?;
             Some(Texture2D::from_file_with_format(&std::fs::read(path).ok()?, None))
         }).clone()
+    }
+
+    /// A mod's own picture, the "pack.png" in its folder.
+    fn pack(&mut self, folder: &str) -> Option<Texture2D> {
+        let path = self.base.join("mods").join(folder).join("pack.png");
+        self.images.entry(format!("{folder}/pack.png")).or_insert_with(|| Some(Texture2D::from_file_with_format(&std::fs::read(path).ok()?, None))).clone()
     }
 
     fn sheet(&mut self, source: &str, name: &str) -> Option<Rc<Sheet>> {
@@ -167,6 +224,68 @@ struct Row {
     entries: Vec<usize>,
 }
 
+/// A line of the credits: someone to thank, or (without an icon and the rest) a heading or a gap.
+struct Credit {
+    name: String,
+    person: bool,
+    icon: String,
+    text: String,
+    link: String,
+    color: Vec3,
+    /// The mod whose credits file it is from.
+    source: String,
+}
+
+/// Name, icon, what for, link and background colour of the credits that are always there. One entry alone is a heading or a gap.
+const CREDITS: &[&[&str]] = &[
+    &["Psych Engine Team"],
+    &["Shadow Mario", "shadowmario", "Main Programmer and Head of Psych Engine", "https://ko-fi.com/shadowmario", "444444"],
+    &["Riveren", "riveren", "Main Artist/Animator of Psych Engine", "https://x.com/riverennn", "14967B"],
+    &[""],
+    &["Former Engine Members"],
+    &["bb-panzu", "bb", "Ex-Programmer of Psych Engine", "https://x.com/bbsub3", "3E813A"],
+    &[""],
+    &["Engine Contributors"],
+    &["crowplexus", "crowplexus", "Linux Support, HScript Iris, Input System v3, and Other PRs", "https://twitter.com/IamMorwen", "CFCFCF"],
+    &["Kamizeta", "kamizeta", "Creator of Pessy, Psych Engine's mascot.", "https://www.instagram.com/cewweey/", "D21C11"],
+    &["MaxNeton", "maxneton", "Loading Screen Easter Egg Artist/Animator.", "https://bsky.app/profile/maxneton.bsky.social", "3C2E4E"],
+    &["Keoiki", "keoiki", "Note Splash Animations and Latin Alphabet", "https://x.com/Keoiki_", "D2D2D2"],
+    &["SqirraRNG", "sqirra", "Crash Handler and Base code for\nChart Editor's Waveform", "https://x.com/gedehari", "E1843A"],
+    &["EliteMasterEric", "mastereric", "Runtime Shaders support and Other PRs", "https://x.com/EliteMasterEric", "FFBD40"],
+    &["MAJigsaw77", "majigsaw", ".MP4 Video Loader Library (hxvlc)", "https://x.com/MAJigsaw77", "5F5F5F"],
+    &["iFlicky", "flicky", "Composer of Psync and Tea Time\nAnd some sound effects", "https://x.com/flicky_i", "9E29CF"],
+    &["KadeDev", "kade", "Fixed some issues on Chart Editor and Other PRs", "https://x.com/kade0912", "64A250"],
+    &["superpowers04", "superpowers04", "LUA JIT Fork", "https://x.com/superpowers04", "B957ED"],
+    &["CheemsAndFriends", "cheems", "Creator of FlxAnimate", "https://x.com/CheemsnFriendos", "E1E1E1"],
+    &[""],
+    &["Funkin' Crew"],
+    &["ninjamuffin99", "ninjamuffin99", "Programmer of Friday Night Funkin'", "https://x.com/ninja_muffin99", "CF2D2D"],
+    &["PhantomArcade", "phantomarcade", "Animator of Friday Night Funkin'", "https://x.com/PhantomArcade3K", "FADC45"],
+    &["evilsk8r", "evilsk8r", "Artist of Friday Night Funkin'", "https://x.com/evilsk8r", "5ABD4B"],
+    &["kawaisprite", "kawaisprite", "Composer of Friday Night Funkin'", "https://x.com/kawaisprite", "378FC7"],
+    &[""],
+    &["Psych Engine Discord"],
+    &["Join the Psych Ward!", "discord", "", "https://discord.gg/2ka77eMXDv", "5165F6"],
+];
+
+/// A credits line from its fields, as the constant above and a mod's `data/credits.txt` (fields split by "::") give them.
+fn credit(fields: &[&str], source: &str) -> Credit {
+    let field = |index: usize| fields.get(index).map_or(String::new(), |text| text.trim().replace("\\n", "\n"));
+    let color = u32::from_str_radix(field(4).trim_start_matches('#').trim_start_matches("0x"), 16).unwrap_or(0xFFFFFF);
+    let color = vec3((color >> 16 & 255) as f32, (color >> 8 & 255) as f32, (color & 255) as f32) / 255.0;
+    Credit { name: field(0), person: fields.len() > 1, icon: field(1), text: field(2), link: field(3), color, source: source.to_owned() }
+}
+
+/// A mod in the mods menu.
+struct ModRow {
+    folder: String,
+    on: bool,
+    /// From its pack.json, when it has one.
+    name: String,
+    text: String,
+    color: Vec3,
+}
+
 pub struct Menus {
     art: Art,
     paths: Paths,
@@ -196,6 +315,14 @@ pub struct Menus {
     tint: Vec3,
     /// Score and accuracy as shown: they count up to the real ones.
     shown: (f64, f64),
+    credits: Vec<Credit>,
+    credit: usize,
+    credit_scroll: f32,
+    mods: Vec<ModRow>,
+    mod_row: usize,
+    mods_changed: bool,
+    /// The mods were switched or moved: the weeks and songs have to be found again.
+    pub reload: bool,
 }
 
 /// The lines of the title screen's opening at a beat, how far down they are shifted, and whether the Newgrounds logo shows.
@@ -244,6 +371,7 @@ impl Menus {
             art: Art { base: base.to_path_buf(), images: HashMap::new(), sheets: HashMap::new(), characters: HashMap::new() },
             alphabet: Alphabet::load(&paths), paths, audio: None, music_at: 0.0, intro: true, wacky: [wacky.0.to_owned(), wacky.1.to_owned()], flash: (f64::MIN, 1.0), chosen: None,
             main_row: 0, main_side: false, main_slide: 0.0, week: 0, week_scroll: 0.0, difficulty: "Normal".to_owned(), rows: Vec::new(), song: 0, song_scroll: 0.0, tint: Vec3::ONE, shown: (0.0, 0.0),
+            credits: Vec::new(), credit: 0, credit_scroll: 0.0, mods: Vec::new(), mod_row: 0, mods_changed: false, reload: false,
         }
     }
 
@@ -260,24 +388,32 @@ impl Menus {
         }
     }
 
-    /// Width of a line of bold text.
-    fn bold_width(&self, skin: &Skin, text: &str) -> f32 {
+    /// Width of a line of menu letters.
+    fn width(&self, skin: &Skin, text: &str, bold: bool) -> f32 {
         match &self.alphabet {
-            Some(alphabet) => place(text, |letter| alphabet.size(letter)).1,
+            Some(alphabet) => place(text, bold, |letter| alphabet.size(letter, bold)).1,
             None => measure_text(text, skin.font.as_ref(), 48, 1.0).width,
         }
     }
 
-    /// Bold text with its top left at (x, y), squeezed sideways by `squeeze`.
-    fn bold(&self, skin: &Skin, text: &str, x: f32, y: f32, squeeze: f32, alpha: f32) {
+    /// Menu letters with their top left at (x, y), squeezed sideways by `squeeze`.
+    fn write(&self, skin: &Skin, text: &str, bold: bool, x: f32, y: f32, squeeze: f32, alpha: f32) {
         // without the letter sheet the plain font has to do
         let Some(alphabet) = &self.alphabet else { return skin.text(text, x, y + 55.0, 48, white(alpha)) };
         let step = (get_time() * 24.0) as usize;
-        for (letter, at) in place(text, |letter| alphabet.size(letter)).0 {
-            let frames = &alphabet.letters[&letter].0;
+        for (letter, at) in place(text, bold, |letter| alphabet.size(letter, bold)).0 {
+            let frames = &alphabet.letters[&(letter, bold)].0;
             let frame = frames[step % frames.len()];
             let params = DrawTextureParams { dest_size: Some(vec2(frame.source.w * squeeze, frame.source.h)), source: Some(frame.source), ..Default::default() };
             draw_texture_ex(&alphabet.texture, x + (at.x + frame.offset.x) * squeeze, y + at.y + frame.offset.y, white(alpha), params);
+        }
+    }
+
+    /// The menu background in a colour that follows `target`.
+    fn backdrop(&mut self, target: Vec3, dt: f32) {
+        self.tint += (target - self.tint) * (1.0 - (-dt * 5.0).exp());
+        if let Some(picture) = self.art.image("", "menuDesat") {
+            draw_texture(&picture, (WIDTH - picture.width()) / 2.0, (HEIGHT - picture.height()) / 2.0, Color::new(self.tint.x, self.tint.y, self.tint.z, 1.0));
         }
     }
 
@@ -296,6 +432,8 @@ impl Menus {
             Page::Main => self.main_menu(skin),
             Page::Story => self.story(skin, weeks, songs, save),
             Page::Freeplay => self.freeplay(skin, weeks, songs, save),
+            Page::Mods => self.mods_menu(skin),
+            Page::Credits => self.credits_roll(skin),
         };
         let flash = 1.0 - (get_time() - self.flash.0) / self.flash.1;
         if flash > 0.0 {
@@ -320,7 +458,7 @@ impl Menus {
             clear_background(BLACK);
             let (lines, shift, logo) = opening(beat as u32, &self.wacky);
             for (row, line) in lines.iter().enumerate() {
-                self.bold(skin, line, (WIDTH - self.bold_width(skin, line)) / 2.0, row as f32 * 60.0 + 200.0 + shift, 1.0, 1.0);
+                self.write(skin, line, true, (WIDTH - self.width(skin, line, true)) / 2.0, row as f32 * 60.0 + 200.0 + shift, 1.0, 1.0);
             }
             if let Some(picture) = self.art.image("", "newgrounds_logo").filter(|_| logo) {
                 let size = picture.size() * 0.8;
@@ -368,8 +506,8 @@ impl Menus {
     }
 
     fn main_menu(&mut self, skin: &Skin) -> Go {
-        // shortcut: only what exists so far; mods, credits and achievements join the list with their screens.
-        const MIDDLE: [&str; 2] = ["story_mode", "freeplay"];
+        // shortcut: achievements join at the left side with their screen.
+        const MIDDLE: [&str; 4] = ["story_mode", "freeplay", "mods", "credits"];
         const SIDE: &str = "options";
         let (now, dt) = (get_time(), get_frame_time().min(0.1));
         let since = self.chosen.map(|at| (now - at) as f32);
@@ -428,7 +566,9 @@ impl Menus {
             Some(t) if t >= 1.0 => match (self.main_side, self.main_row) {
                 (true, _) => Go::Options,
                 (false, 0) => Go::Page(Page::Story),
-                (false, _) => Go::Page(Page::Freeplay),
+                (false, 1) => Go::Page(Page::Freeplay),
+                (false, 2) => Go::Page(Page::Mods),
+                (false, _) => Go::Page(Page::Credits),
             },
             Some(_) => Go::Stay,
             None if pressed(&ACCEPT) => {
@@ -600,19 +740,17 @@ impl Menus {
         }
 
         // the background takes the colour of the selected song
-        let target = Vec3::from(row.color.map(|c| c as f32 / 255.0));
-        self.tint += (target - self.tint) * (1.0 - (-dt * 5.0).exp());
-        if let Some(picture) = self.art.image("", "menuDesat") {
-            draw_texture(&picture, (WIDTH - picture.width()) / 2.0, (HEIGHT - picture.height()) / 2.0, Color::new(self.tint.x, self.tint.y, self.tint.z, 1.0));
-        }
+        let chosen = row.entries[difficulty];
+        self.backdrop(Vec3::from(row.color.map(|c| c as f32 / 255.0)), dt);
+        let row = &self.rows[self.song];
         self.song_scroll += (self.song as f32 - self.song_scroll) * (1.0 - (-dt * 9.6).exp());
         let near = |row: f32| (row.round().max(0.0) as usize).min(self.rows.len());
         for index in near(self.song_scroll - 4.0)..near(self.song_scroll + 4.0) {
             let (row, away) = (&self.rows[index], index as f32 - self.song_scroll);
             let (x, y, alpha) = (away * 20.0 + 90.0, away * 156.0 + 320.0, if index == self.song { 1.0 } else { 0.6 });
-            let width = self.bold_width(skin, &row.title);
+            let width = self.width(skin, &row.title, true);
             let squeeze = (980.0 / width).min(1.0);
-            self.bold(skin, &row.title, x, y, squeeze, alpha);
+            self.write(skin, &row.title, true, x, y, squeeze, alpha);
             let icon = [format!("icons/{}", row.icon), format!("icons/icon-{}", row.icon), "icons/icon-face".to_owned()].iter().find_map(|name| self.art.image(&row.source, name));
             if let Some(icon) = icon {
                 // an icon file holds the normal and the losing face side by side
@@ -637,13 +775,182 @@ impl Menus {
         label(skin, tip, (WIDTH - measure_text(tip, skin.font.as_ref(), 16, 1.0).width) / 2.0, HEIGHT - 22.0, 16, WHITE, false);
 
         if pressed(&ACCEPT) {
-            Go::Play(vec![row.entries[difficulty]], None)
+            Go::Play(vec![chosen], None)
         } else if pressed(&BACK) {
             self.sound("cancelMenu", 1.0);
             Go::Page(Page::Main)
         } else {
             Go::Stay
         }
+    }
+
+    fn credits_roll(&mut self, skin: &Skin) -> Go {
+        let dt = get_frame_time().min(0.1);
+        if self.credits.is_empty() {
+            // the credits of the mods that are switched on come first
+            for (folder, _) in find_mods(&self.art.base).into_iter().filter(|(_, on)| *on) {
+                let Ok(text) = std::fs::read_to_string(self.art.base.join("mods").join(&folder).join("data/credits.txt")) else { continue };
+                self.credits.extend(text.lines().map(|line| credit(&line.split("::").collect::<Vec<_>>(), &folder)));
+                self.credits.push(credit(&[""], ""));
+            }
+            self.credits.extend(CREDITS.iter().map(|fields| credit(fields, "")));
+            self.credit = self.credits.iter().position(|credit| credit.person).unwrap_or(0);
+            self.credit_scroll = self.credit as f32;
+        }
+        let count = self.credits.len();
+        let step = (pressed(&DOWN) as usize + pressed(&UP) as usize * (count - 1)) % count;
+        if step != 0 && self.credits.iter().any(|credit| credit.person) {
+            // Shift goes three at a time; headings and gaps are stepped over
+            let times = if is_key_down(KeyCode::LeftShift) || is_key_down(KeyCode::RightShift) { 3 } else { 1 };
+            self.credit = (self.credit + step * times) % count;
+            while !self.credits[self.credit].person {
+                self.credit = (self.credit + step) % count;
+            }
+            self.sound("scrollMenu", 0.4);
+        }
+        self.backdrop(self.credits[self.credit].color, dt);
+        self.credit_scroll += (self.credit as f32 - self.credit_scroll) * (1.0 - (-dt * 9.6).exp());
+        let near = |row: f32| (row.round().max(0.0) as usize).min(count);
+        for index in near(self.credit_scroll - 4.0)..near(self.credit_scroll + 4.0) {
+            let (credit, away) = (&self.credits[index], index as f32 - self.credit_scroll);
+            let y = away * 156.0 + 300.0;
+            let width = self.width(skin, &credit.name, !credit.person);
+            if !credit.person {
+                self.write(skin, &credit.name, true, (WIDTH - width) / 2.0, y, 1.0, 1.0);
+                continue;
+            }
+            // names step in from the left as they near the middle row, where the selected one sits centred
+            let (aside, centred) = (200.0 - 40.0 * away.abs(), (WIDTH - width) / 2.0 - 70.0);
+            let x = aside + (centred - aside) * (1.0 - away.abs()).clamp(0.0, 1.0);
+            let alpha = if index == self.credit { 1.0 } else { 0.6 };
+            self.write(skin, &credit.name, false, x, y, 1.0, alpha);
+            let icon = [format!("credits/{}", credit.icon), format!("credits/{}-pixel", credit.icon), "credits/missing_icon".to_owned()].iter().find_map(|name| self.art.image(&credit.source, name));
+            if let Some(icon) = icon {
+                draw_texture(&icon, x + width + 10.0, y, white(alpha));
+            }
+        }
+        let credit = &self.credits[self.credit];
+        if !credit.text.trim().is_empty() {
+            let lines: Vec<&str> = credit.text.lines().collect();
+            let height = lines.len() as f32 * 36.0 + 4.0;
+            let top = HEIGHT - height - 60.0;
+            draw_rectangle(40.0, top - 10.0, 1200.0, height + 25.0, Color::new(0.0, 0.0, 0.0, 0.6));
+            for (row, line) in lines.iter().enumerate() {
+                label(skin, line, (WIDTH - measure_text(line, skin.font.as_ref(), 32, 1.0).width) / 2.0, top + row as f32 * 36.0, 32, WHITE, false);
+            }
+        }
+        if pressed(&ACCEPT) {
+            open_link(&credit.link);
+        }
+        if pressed(&BACK) {
+            self.sound("cancelMenu", 1.0);
+            self.credits.clear(); // read again next time: the mods may change
+            return Go::Page(Page::Main);
+        }
+        Go::Stay
+    }
+
+    fn mods_menu(&mut self, skin: &Skin) -> Go {
+        let dt = get_frame_time().min(0.1);
+        let base = self.art.base.clone();
+        if self.mods.is_empty() {
+            for (folder, on) in find_mods(&base) {
+                let pack: serde_json::Value = std::fs::read_to_string(base.join("mods").join(&folder).join("pack.json")).ok().and_then(|text| serde_json::from_str(&text).ok()).unwrap_or_default();
+                let text = |key: &str, or: &str| pack[key].as_str().filter(|text| !text.trim().is_empty()).unwrap_or(or).to_owned();
+                let color = [0, 1, 2].map(|i| pack["color"][i].as_f64().map(|c| c as f32 / 255.0));
+                let color = if color.contains(&None) { vec3(0.4, 0.353, 1.0) } else { Vec3::from(color.map(Option::unwrap_or_default)) };
+                self.mods.push(ModRow { name: text("name", &folder), text: text("description", "No description provided."), color, folder, on });
+            }
+            self.mod_row = self.mod_row.min(self.mods.len().saturating_sub(1));
+        }
+        let panel = Color::new(0.0, 0.0, 0.0, 0.6);
+        if self.mods.is_empty() {
+            self.backdrop(vec3(0.4, 0.353, 1.0), dt);
+            draw_rectangle(40.0, 40.0, 340.0, 440.0, panel);
+            label(skin, "No Mods found.", 55.0, 55.0, 16, WHITE, false);
+            for (row, line) in ["NO MODS INSTALLED", "PRESS BACK TO EXIT OR INSTALL A MOD"].iter().enumerate() {
+                label(skin, line, 400.0 + (860.0 - measure_text(line, skin.font.as_ref(), 32, 1.0).width) / 2.0, 320.0 + row as f32 * 40.0, 32, WHITE, false);
+            }
+            return if pressed(&BACK) { Go::Page(Page::Main) } else { Go::Stay };
+        }
+
+        let count = self.mods.len();
+        let step = (pressed(&DOWN) as usize + pressed(&UP) as usize * (count - 1)) % count;
+        if step != 0 {
+            let next = (self.mod_row + step) % count;
+            // with Shift the selected mod moves through the list: mods higher up are looked in first
+            if is_key_down(KeyCode::LeftShift) || is_key_down(KeyCode::RightShift) {
+                let moved = self.mods.remove(self.mod_row);
+                self.mods.insert(next, moved);
+                self.mods_changed = true;
+            }
+            self.mod_row = next;
+            self.sound("scrollMenu", 0.6);
+        }
+        if pressed(&ACCEPT) {
+            self.mods[self.mod_row].on ^= true;
+            self.mods_changed = true;
+            self.sound("scrollMenu", 0.6);
+        }
+
+        self.backdrop(self.mods[self.mod_row].color, dt);
+        let icon = |art: &mut Art, folder: &str, x: f32, y: f32, size: f32, alpha: f32| {
+            if let Some(picture) = art.pack(folder).or_else(|| art.image("", "unknownMod")) {
+                // a pack picture may hold several frames of 150 px; the first is shown
+                let params = DrawTextureParams { dest_size: Some(vec2(size, size)), source: Some(Rect::new(0.0, 0.0, picture.width().min(150.0), picture.height().min(150.0))), ..Default::default() };
+                draw_texture_ex(&picture, x, y, white(alpha), params);
+            }
+        };
+        // the list, with the selected mod on its middle row
+        draw_rectangle(40.0, 40.0, 340.0, 440.0, panel);
+        for (index, row) in self.mods.iter().enumerate() {
+            let slot = index as i64 - self.mod_row as i64 + 2;
+            if !(0..5).contains(&slot) {
+                continue;
+            }
+            let (y, alpha) = (45.0 + 86.0 * slot as f32, if row.on { 1.0 } else { 0.4 });
+            if index == self.mod_row {
+                draw_rectangle(45.0, y, 330.0, 85.0, white(0.25));
+            }
+            icon(&mut self.art, &row.folder, 50.0, y + 5.0, 75.0, alpha);
+            let name: String = row.name.chars().take(22).collect();
+            label(skin, &name, 140.0, y + 22.0, 16, white(alpha), false);
+            label(skin, if row.on { "ON" } else { "OFF" }, 140.0, y + 46.0, 16, if row.on { GREEN } else { GRAY }, false);
+        }
+        label(skin, "Enter: on/off", 55.0, 500.0, 16, WHITE, false);
+        label(skin, "Shift+Up/Down: move up or down", 55.0, 524.0, 16, WHITE, false);
+        label(skin, "Esc: save and go back", 55.0, 548.0, 16, WHITE, false);
+
+        let row = &self.mods[self.mod_row];
+        draw_rectangle(400.0, 40.0, 840.0, 180.0, panel);
+        icon(&mut self.art, &row.folder, 415.0, 55.0, 150.0, 1.0);
+        let width = self.width(skin, &row.name, true);
+        self.write(skin, &row.name, true, 580.0, 95.0, (640.0 / width).min(1.0), 1.0);
+        draw_rectangle(400.0, 240.0, 840.0, 450.0, panel);
+        let measure = |text: &str| measure_text(text, skin.font.as_ref(), 24, 1.0).width;
+        for (line, text) in wrap(&row.text, 810.0, measure).iter().take(14).enumerate() {
+            label(skin, text, 415.0, 255.0 + line as f32 * 28.0, 24, WHITE, false);
+        }
+        label(skin, "Mods higher in the list are looked in first. Changes take effect when you go back.", 415.0, 660.0, 16, GRAY, false);
+
+        if pressed(&BACK) {
+            self.sound("cancelMenu", 1.0);
+            if self.mods_changed {
+                let list: Vec<(String, bool)> = self.mods.iter().map(|row| (row.folder.clone(), row.on)).collect();
+                if let Err(error) = save_mods(&base, &list) {
+                    eprintln!("Could not save modsList.txt: {error}");
+                }
+                // everything found through the mods is found again
+                (self.reload, self.mods_changed) = (true, false);
+                self.paths = Paths::new(&base, "", "");
+                self.art = Art { base, images: HashMap::new(), sheets: HashMap::new(), characters: HashMap::new() };
+                self.rows.clear();
+                (self.week, self.song) = (0, 0);
+            }
+            self.mods.clear();
+            return Go::Page(Page::Main);
+        }
+        Go::Stay
     }
 }
 
@@ -658,10 +965,27 @@ mod tests {
             '\'' => Some((vec2(20.0, 25.0), vec2(0.0, 40.0))),
             _ => None,
         };
-        let (placed, width) = place("A a'?", size);
+        let (placed, width) = place("A a'?", true, size);
         // capitals use the same letters; the unknown "?" is left out
         assert_eq!(placed, [('a', vec2(0.0, 2.0)), ('a', vec2(78.0, 2.0)), ('\'', vec2(128.0, 5.0))]);
         assert_eq!(width, 148.0);
+        // plain letters keep their case (no capital A here), stand lower and sit 2 px apart
+        let (placed, width) = place("Aa a", false, size);
+        assert_eq!(placed, [('a', vec2(0.0, 42.0)), ('a', vec2(80.0, 42.0))]);
+        assert_eq!(width, 132.0);
+    }
+
+    #[test]
+    fn text_wraps_at_spaces() {
+        let lines = wrap("one two three\nfour", 7.0, |text| text.len() as f32);
+        assert_eq!(lines, ["one two", "three", "four"]);
+    }
+
+    #[test]
+    fn credits_lines_are_people_or_headings() {
+        let person = credit(&"Someone::icon::Did\\nthings::https://example.com::FF8000".split("::").collect::<Vec<_>>(), "My Mod");
+        assert!(person.person && person.text == "Did\nthings" && person.color == vec3(1.0, 128.0 / 255.0, 0.0) && person.source == "My Mod");
+        assert!(!credit(&["A heading"], "").person && !credit(&[""], "").person);
     }
 
     #[test]

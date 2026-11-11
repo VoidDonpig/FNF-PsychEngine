@@ -33,6 +33,8 @@ impl Paths {
         if !source.is_empty() {
             roots.push(base.join("mods").join(source));
         }
+        // mods that say they run globally lend their files to every song
+        roots.extend(mods(base).into_iter().filter(|(name, on)| *on && name != source && runs_globally(base, name)).map(|(name, _)| base.join("mods").join(name)));
         roots.extend([base.join("mods"), assets.join("shared"), assets.join("base_game/shared")]);
         if !directory.is_empty() {
             roots.extend([assets.join(directory), assets.join("base_game").join(directory)]);
@@ -54,6 +56,36 @@ pub fn song_path(name: &str) -> String {
         .collect::<String>()
         .trim()
         .to_lowercase()
+}
+
+/// Folders under `mods` that hold loose files for every mod, not a mod of their own.
+const NOT_MODS: [&str; 15] = ["characters", "custom_events", "custom_notetypes", "data", "songs", "music", "sounds", "shaders", "videos", "images", "stages", "weeks", "fonts", "scripts", "achievements"];
+
+/// The mods under `base` in the player's order, each with whether it is switched on.
+/// `modsList.txt` keeps the order and the switches; folders it does not know yet come last, switched on.
+pub fn mods(base: &Path) -> Vec<(String, bool)> {
+    let is_mod = |name: &str| !name.is_empty() && !NOT_MODS.contains(&name.to_lowercase().as_str()) && base.join("mods").join(name).is_dir();
+    let mut list: Vec<(String, bool)> = Vec::new();
+    let listed = std::fs::read_to_string(base.join("modsList.txt")).unwrap_or_default();
+    let listed = listed.lines().map(|line| line.trim().split_once('|').map_or((line.trim(), false), |(name, on)| (name, on == "1")));
+    let folders = sorted(&base.join("mods"));
+    let found = folders.iter().filter_map(|dir| Some((dir.file_name()?.to_str()?, true)));
+    for (name, on) in listed.chain(found) {
+        if is_mod(name) && !list.iter().any(|(known, _)| known == name) {
+            list.push((name.to_owned(), on));
+        }
+    }
+    list
+}
+
+pub fn save_mods(base: &Path, list: &[(String, bool)]) -> std::io::Result<()> {
+    let lines: Vec<String> = list.iter().map(|(name, on)| format!("{name}|{}", *on as u8)).collect();
+    std::fs::write(base.join("modsList.txt"), lines.join("\n"))
+}
+
+fn runs_globally(base: &Path, name: &str) -> bool {
+    let pack = std::fs::read_to_string(base.join("mods").join(name).join("pack.json")).ok().and_then(|text| serde_json::from_str::<Value>(&text).ok());
+    pack.is_some_and(|pack| pack["runsGlobally"].as_bool().unwrap_or(false))
 }
 
 /// What a difficulty adds to a song's chart name and to the names scores are kept under.
@@ -95,11 +127,12 @@ pub fn weeks(base: &Path) -> Vec<Week> {
     // The repository keeps the base game's songs apart; a built game has them merged into the line above.
     let base_game = assets.join("base_game");
     roots.push((String::new(), base_game.join("shared/weeks"), base_game.join("shared/data"), base_game.join("songs")));
-    for dir in sorted(&base.join("mods")) {
-        if dir.is_dir() {
-            let name = dir.file_name().unwrap_or_default().to_string_lossy().into_owned();
-            roots.push((name, dir.join("weeks"), dir.join("data"), dir.join("songs")));
-        }
+    // loose files straight under "mods", then the mods that are switched on, in the player's order
+    let loose = base.join("mods");
+    roots.push((String::new(), loose.join("weeks"), loose.join("data"), loose.join("songs")));
+    for (name, _) in mods(base).into_iter().filter(|(_, on)| *on) {
+        let dir = loose.join(&name);
+        roots.push((name, dir.join("weeks"), dir.join("data"), dir.join("songs")));
     }
 
     // weekList.txt names the weeks that come first, in its order; the game's list also covers the base_game folder
@@ -206,7 +239,23 @@ mod tests {
         std::fs::write(m.join("songs/my-song/Inst.ogg"), "").unwrap();
         let listed = weeks(&dir);
         let found = super::songs(&listed);
+
+        // the mod list: known mods in their saved order, new folders after them, asset folders are no mods
+        for folder in ["mods/A Mod", "mods/images", "mods/Global/images"] { std::fs::create_dir_all(dir.join(folder)).unwrap(); }
+        std::fs::write(dir.join("mods/Global/pack.json"), r#"{"runsGlobally": true}"#).unwrap();
+        std::fs::write(dir.join("mods/Global/images/shared.png"), "").unwrap();
+        std::fs::write(dir.join("modsList.txt"), "My Mod|0\nGone|1\nGlobal|1").unwrap();
+        let order = mods(&dir);
+        let off = weeks(&dir);
+        let lent = Paths::new(&dir, "A Mod", "").find("images/shared.png").is_some();
+        save_mods(&dir, &order).unwrap();
+        let saved = std::fs::read_to_string(dir.join("modsList.txt")).unwrap();
         std::fs::remove_dir_all(&dir).unwrap();
+        assert_eq!(order, [("My Mod".to_owned(), false), ("Global".to_owned(), true), ("A Mod".to_owned(), true)]);
+        assert!(off.is_empty(), "a mod switched off brings no weeks");
+        assert!(lent, "a global mod's files are found from another mod");
+        assert_eq!(saved, "My Mod|0\nGlobal|1\nA Mod|1");
+
         assert_eq!(listed.iter().map(|w| w.file.as_str()).collect::<Vec<_>>(), ["w", "a"], "weekList.txt goes before the alphabet");
         assert!(!listed[1].start_unlocked && listed[0].start_unlocked);
         assert_eq!(found.len(), 1);
