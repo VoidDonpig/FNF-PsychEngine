@@ -172,6 +172,7 @@ fn backdrop(stage: &str) -> Vec<LayerDef> {
             LayerDef { flip: true, ..moving("car1", Still, layer("phillyStreets/phillyCars", 1200.0, 818.0, 0.9, 1.0)) },
             moving("redtogreen", Once, layer("phillyStreets/phillyTraffic", 1840.0, 608.0, 0.9, 1.0)),
             layer("phillyStreets/phillyForeground", 88.0, 317.0, 1.0, 1.0),
+            front(layer("SpraycanPile", 920.0, 1045.0, 1.0, 1.0)),
         ],
         _ => Vec::new(),
     }
@@ -783,6 +784,11 @@ pub struct Scene {
     /// Characters a chart event will swap in, loaded ahead so that the swap does not stall the song.
     spares: HashMap<String, Character>,
     own: Own,
+    /// On the weekend 1 stages: the speaker the girlfriend sits on, and the spray can of the songs that have one.
+    abot: Option<crate::props::ABot>,
+    can: Option<crate::props::Can>,
+    /// How loud seven bands of the music are right now; the play screen keeps this up to date.
+    pub levels: [f32; 7],
     /// The fist fight of weekend 1, on its stage; and whether the opponent stands in front of the player in it.
     fight: Option<crate::fight::Fight>,
     opponent_front: bool,
@@ -871,6 +877,9 @@ impl Scene {
                 "tank" => Own::Tank { angle: rand::gen_range(-90.0, 45.0), speed: rand::gen_range(5.0, 7.0) },
                 _ => Own::Nothing,
             },
+            abot: None,
+            can: None,
+            levels: [0.0; 7],
             fight: (chart.stage == "phillyBlazin").then(Default::default),
             opponent_front: false,
             glow: None,
@@ -898,6 +907,12 @@ impl Scene {
                 }).collect();
                 scene.soldiers = Some(Soldiers { running: sheet.animation("tankman running", &[]), falling: [sheet.animation("John Shot 1", &[]), sheet.animation("John Shot 2", &[])], sheet, list });
             }
+        }
+        if matches!(chart.stage.as_str(), "phillyStreets" | "phillyBlazin") {
+            scene.abot = Some(crate::props::ABot::load(&scene.paths, scene.spots[2]));
+        }
+        if chart.stage == "phillyStreets" && chart.notes.iter().any(|note| note.kind == NoteKind::KickCan) {
+            scene.can = crate::props::Can::load(&scene.paths);
         }
         // what only some songs' events use is only loaded for them
         let uses = |name: &str| chart.events.iter().any(|event| event.name == name);
@@ -1180,6 +1195,9 @@ impl Scene {
                     };
                     self.opponent.iter_mut().for_each(|c| c.pose(pose, None));
                     self.sounds.extend(self.paths.find(&format!("sounds/{sound}.ogg")).map(|path| (path, 1.0)));
+                    if kind == NoteKind::KickCan {
+                        self.can.iter_mut().for_each(|can| can.kick());
+                    }
                     let on_him = self.opponent.as_ref().map(|c| c.middle() + vec2(150.0, -100.0) + c.camera_offset + self.camera_offsets[0]);
                     match (kind, on_him, self.pinned) {
                         (NoteKind::LightCan, Some(on_him), _) => {
@@ -1194,8 +1212,11 @@ impl Scene {
                     }
                 }
                 // and the player cocks the gun and shoots the can down, or is hit by it
-                // shortcut: the can itself, its blast and the shell flying off are not drawn (the can is an Animate atlas).
+                // shortcut: the shell flying off the gun and the stage going dark at the shot are not drawn.
                 NoteKind::CockGun | NoteKind::FireGun if side == 1 => {
+                    if kind == NoteKind::FireGun && !missed {
+                        self.can.iter_mut().for_each(|can| can.shoot());
+                    }
                     let (pose, sound) = match (kind, missed) {
                         (NoteKind::FireGun, true) => ("shootMISS", "Pico_Bonk".to_owned()),
                         (NoteKind::FireGun, false) => ("shoot", format!("shots/shot{}", rand::gen_range(1, 5))),
@@ -1242,6 +1263,12 @@ impl Scene {
         }
         self.backdrop.iter_mut().for_each(|layer| layer.time += dt);
         self.flash.1 += dt;
+        self.can.iter_mut().for_each(|can| can.update(dt));
+        if let Some(abot) = &mut self.abot {
+            abot.update(dt, self.levels, chart.section_at(position).is_some_and(|section| section.must_hit));
+            // it stands in the same light as the girlfriend on it
+            abot.tint = self.gf.as_ref().map_or(WHITE, |gf| gf.tint);
+        }
         if let Some(left) = &mut self.unpin_in {
             *left -= dt;
             if *left <= 0.0 {
@@ -1622,11 +1649,13 @@ impl Scene {
                 draw_texture_ex(&spot.smoke, at.x, at.y, Color::new(1.0, 1.0, 1.0, spot.fog), params);
             }
         }
+        self.abot.iter().for_each(|abot| abot.draw());
         // whoever throws the punch stands in front
         let fighters = if self.opponent_front { [&self.gf, &self.player, &self.opponent] } else { [&self.gf, &self.opponent, &self.player] };
         for character in fighters.into_iter().flatten() {
             character.draw();
         }
+        self.can.iter().for_each(|can| can.draw());
         self.backdrop.iter().filter(|layer| layer.def.front).for_each(|layer| layer.draw(scroll));
         let (color, age, length) = self.flash;
         if age < length {

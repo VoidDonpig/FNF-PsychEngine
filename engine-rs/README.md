@@ -51,6 +51,9 @@ Done:
 - **The fist fight of weekend 1** (Blazin'): the two fighters' moves for every note hit or missed, who
   stands in front, the screen shaking on a hit, the blurred street under a drifting sky, lightning, and
   its game over.
+- **The props of weekend 1**: the speaker the girlfriend sits on (its bars follow seven bands of the
+  music, its eyes whoever sings, its body thumps on loud moments), and the spray can: kicked up, then
+  shot out of the air or bursting on the player.
 - **Pixel stages**: notes, holds, ratings, combo digits and countdown in their pixel look and colours,
   the pixel countdown and game over sounds, and the pixel game over character.
 - **Dialogue**: the talks before Senpai, Roses and Thorns in story mode: the text boxes, portraits,
@@ -83,9 +86,9 @@ Done:
 Not there yet:
 
 - **Play screen**: the events and note types that belong to scripts (Set Property beyond the
-  camera, the weekend 1 fight notes, custom ones), what is left of weekend 1 (the speaker under Nene
-  and her knife, the spray can itself and its blast, rain, light maps, the two rare turns of the fight
-  when the player is nearly out), coarse note splashes on pixel stages, other note and splash skins.
+  camera, the weekend 1 fight notes, custom ones), what is left of weekend 1 (Nene's knife and
+  cheers, the shell flying off the gun, the stage going dark at the shot, rain, light maps, the two rare
+  turns of the fight when the player is nearly out), coarse note splashes on pixel stages, other note and splash skins.
 - **Menus**: the mods menu's mouse buttons, per-mod settings and restart flag, the achievements
   that need features not here yet (the henchmen count, the toaster one, the title easter egg), those of mods, and resetting one, the rest of the options (graphics, note
   colours and skins, delay and combo placement, auto pause, gamepad, languages; the options menu is a plain

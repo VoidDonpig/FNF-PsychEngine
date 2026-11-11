@@ -13,6 +13,7 @@ mod fight;
 mod input;
 mod menu;
 mod options;
+mod props;
 mod scene;
 mod settings;
 
@@ -531,6 +532,7 @@ impl Playing {
             for (note, state) in self.play.chart.notes.iter().zip(&self.play.state).take_while(|(note, _)| note.time <= judged) {
                 held[note.player as usize][note.lane] |= *state == NoteState::Held;
             }
+            scene.levels = self.song.levels();
             scene.update(dt * rate as f32, judged, &self.play.chart, &events, held);
             for (path, volume) in scene.sounds.drain(..) {
                 self.song.play_sound(&path, volume, false);

@@ -3,6 +3,24 @@
 use std::path::Path;
 use std::time::Instant;
 
+/// How loud seven bands of a stretch of sound are, low to high, each from 0 (silent) to 1.
+/// `window` is one channel's samples, `rate` how many of them make a second.
+pub fn bands(window: &[f32], rate: f32) -> [f32; 7] {
+    [60.0, 135.0, 300.0, 680.0, 1500.0, 3400.0, 7500.0].map(|pitch: f32| {
+        let (mut along, mut across) = (0.0, 0.0);
+        for (index, sample) in window.iter().enumerate() {
+            // faded in and out, so that the cut ends of the stretch do not ring
+            let fade = 0.5 - 0.5 * (std::f32::consts::TAU * index as f32 / window.len() as f32).cos();
+            let turn = std::f32::consts::TAU * pitch * index as f32 / rate;
+            along += sample * fade * turn.cos();
+            across += sample * fade * turn.sin();
+        }
+        let loudness = (along * along + across * across).sqrt() / (window.len().max(1) as f32 / 4.0);
+        // from -50 dB up to -10 dB
+        ((20.0 * (loudness + 1e-9).log10() + 50.0) / 40.0).clamp(0.0, 1.0)
+    })
+}
+
 pub struct Song {
     /// Silent clock: ms played before the current run, and when that run began.
     played: f64,
@@ -59,6 +77,15 @@ impl Song {
         }
         #[cfg(not(feature = "audio"))]
         let _ = (track, volume);
+    }
+
+    /// How loud seven bands of the instrumental are right now, low to high (0 to 1). All silent without sound.
+    pub fn levels(&self) -> [f32; 7] {
+        #[cfg(feature = "audio")]
+        if let Some(output) = &self.output {
+            return output.levels();
+        }
+        [0.0; 7]
     }
 
     /// Milliseconds of the song heard so far.
@@ -131,6 +158,8 @@ mod output {
         pub volumes: Arc<Vec<AtomicU32>>,
         rate: f64,
         speed: f64,
+        /// The instrumental's samples, for showing how it sounds.
+        first: Arc<Vec<f32>>,
         pub length_ms: f64,
     }
 
@@ -152,15 +181,16 @@ mod output {
     impl Output {
         pub fn open(tracks: &[&Path], speed: f64) -> Result<Output, String> {
             let (first, rate) = decode(tracks.first().ok_or("no track")?)?;
-            let mut loaded = vec![first];
+            let first = Arc::new(first);
+            let mut loaded = vec![first.clone()];
             for track in &tracks[1..] {
                 let (samples, track_rate) = decode(track)?;
                 if track_rate != rate {
                     // shortcut: tracks of one song share a sample rate in every song seen so far; resample here if one does not.
                     eprintln!("{} has another sample rate than the instrumental, left silent", track.display());
-                    loaded.push(Vec::new());
+                    loaded.push(Arc::default());
                 } else {
-                    loaded.push(samples);
+                    loaded.push(Arc::new(samples));
                 }
             }
             let volumes: Arc<Vec<AtomicU32>> = Arc::new(loaded.iter().map(|_| AtomicU32::new(1.0f32.to_bits())).collect());
@@ -227,7 +257,7 @@ mod output {
                 None,
             ).map_err(|e| e.to_string())?;
             stream.play().map_err(|e| e.to_string())?;
-            Ok(Output { _stream: stream, shared, sounds, device_rate, volumes, rate: rate as f64, speed, length_ms: frames as f64 / rate as f64 * 1000.0 })
+            Ok(Output { _stream: stream, shared, sounds, device_rate, volumes, rate: rate as f64, speed, first, length_ms: frames as f64 / rate as f64 * 1000.0 })
         }
 
         pub fn play(&self) {
@@ -249,6 +279,14 @@ mod output {
             *self.shared.anchor.lock().unwrap() = None;
         }
 
+        /// The bands of the instrumental around what is heard now.
+        pub fn levels(&self) -> [f32; 7] {
+            let Some(heard) = self.heard_ms() else { return [0.0; 7] };
+            let from = (heard / 1000.0 * self.rate) as usize;
+            let window: Vec<f32> = self.first.chunks(2).skip(from).take(1024).map(|frame| frame.iter().sum::<f32>() / 2.0).collect();
+            if window.len() < 64 { [0.0; 7] } else { super::bands(&window, self.rate as f32) }
+        }
+
         /// None until the first buffer of the song is on its way out.
         pub fn heard_ms(&self) -> Option<f64> {
             let Some((frame, at)) = *self.shared.anchor.lock().unwrap() else { return *self.shared.frozen.lock().unwrap() };
@@ -256,5 +294,18 @@ mod output {
             let since = if now >= at { (now - at).as_secs_f64() } else { -(at - now).as_secs_f64() };
             Some(((frame / self.rate + since * self.speed) * 1000.0).min(self.length_ms))
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    #[test]
+    fn a_tone_shows_in_its_own_band() {
+        let rate = 44100.0;
+        let tone: Vec<f32> = (0..1024).map(|index| 0.5 * (std::f32::consts::TAU * 300.0 * index as f32 / rate).sin()).collect();
+        let levels = super::bands(&tone, rate);
+        assert!(levels[2] > 0.9, "{levels:?}");
+        assert!(levels.iter().enumerate().all(|(band, level)| band == 2 || *level < levels[2] - 0.3), "{levels:?}");
+        assert_eq!(super::bands(&[0.0; 1024], rate), [0.0; 7]);
     }
 }
