@@ -996,6 +996,11 @@ pub fn get_fps() -> i32 {
     (1.0 / get_frame_time()) as i32
 }
 
+/// How many pictures a second the display the window is on shows, where the system says.
+pub fn refresh_rate() -> Option<f64> {
+    with(|context| context.window.current_monitor()?.refresh_rate_millihertz().map(|rate| rate as f64 / 1000.0))
+}
+
 /// `exclusive`: the display is taken for the game alone, instead of covered by a window without borders.
 pub fn set_fullscreen(on: bool, exclusive: bool) {
     with(|context| context.fullscreen(on, exclusive));

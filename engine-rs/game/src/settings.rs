@@ -86,7 +86,7 @@ pub const OPTIONS: &[Opt] = &[
     Opt { page: 3, key: "botplay", name: "Botplay", about: "The game plays the player's notes itself. Scores are not kept.", kind: Kind::Flag(|s| &mut s.botplay) },
     Opt { page: 4, key: "low_quality", name: "Low Quality", about: "If checked, disables some background details, decreases loading times and improves performance.", kind: Kind::Flag(|s| &mut s.low_quality) },
     Opt { page: 4, key: "antialiasing", name: "Anti-Aliasing", about: "If unchecked, disables anti-aliasing, increases performance at the cost of sharper visuals.", kind: Kind::Flag(|s| &mut s.antialiasing) },
-    Opt { page: 4, key: "framerate", name: "Framerate", about: "Pretty self explanatory, isn't it?", kind: Kind::Number(|s| &mut s.framerate, 60.0, 240.0, 1.0, "FPS") },
+    Opt { page: 4, key: "framerate", name: "Framerate", about: "Pretty self explanatory, isn't it? Enter sets it to what the display shows.", kind: Kind::Number(|s| &mut s.framerate, 60.0, 1000.0, 1.0, "FPS") },
     Opt { page: 4, key: "graphics_api", name: "Graphics API", about: "What the game is drawn with: DirectX (12, Windows only), Vulkan or OpenGL. One this machine does not have is replaced by one it has. Restart the game to apply.", kind: Kind::Choice(|s| &mut s.graphics_api, &GRAPHICS_APIS) },
     Opt { page: 4, key: "fullscreen", name: "Fullscreen", about: "The game takes the whole screen. F11 switches it at any time.", kind: Kind::Flag(|s| &mut s.fullscreen) },
     Opt { page: 4, key: "exclusive_fullscreen", name: "Exclusive Fullscreen", about: "If checked, fullscreen takes the whole display for the game alone. If unchecked, fullscreen is a borderless window.", kind: Kind::Flag(|s| &mut s.exclusive_fullscreen) },
@@ -190,7 +190,7 @@ impl Default for Settings {
             splash_alpha: 0.6, hide_hud: false, time_bar: 0, flashing: true, cam_zooms: true, score_zoom: true, health_bar_alpha: 1.0, show_fps: true,
             pause_music: 1, combo_stacking: true, show_ms: false,
             scroll_type: 0, scroll_speed: 1.0, playback_rate: 1.0, health_gain: 1.0, health_loss: 1.0, instakill: false, practice: false,
-            combo_offset: [0.0; 4], low_quality: false, antialiasing: true, framerate: refresh_rate().clamp(60.0, 240.0), graphics_api: if cfg!(windows) { 1 } else { 2 }, fullscreen: false, exclusive_fullscreen: false, note_colors: LANE_COLORS, pixel_note_colors: PIXEL_LANE_COLORS,
+            combo_offset: [0.0; 4], low_quality: false, antialiasing: true, framerate: refresh_rate().clamp(60.0, 1000.0), graphics_api: if cfg!(windows) { 1 } else { 2 }, fullscreen: false, exclusive_fullscreen: false, note_colors: LANE_COLORS, pixel_note_colors: PIXEL_LANE_COLORS,
             keys: [[Some(A), Some(Left)], [Some(S), Some(Down)], [Some(W), Some(Up)], [Some(D), Some(Right)]],
         }
     }

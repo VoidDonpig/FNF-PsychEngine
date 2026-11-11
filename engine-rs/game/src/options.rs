@@ -193,8 +193,12 @@ impl OptionsMenu {
         if steps != 0.0 {
             change(&selected.kind, settings, steps * fast);
         } else if is_key_pressed(KeyCode::Enter) {
-            // Enter flips a switch and steps through a list
-            change(&selected.kind, settings, if matches!(selected.kind, Kind::Choice(..)) { 1.0 } else { 0.0 });
+            match (selected.key, &selected.kind) {
+                // the frame rate takes the display's own
+                ("framerate", &Kind::Number(get, low, high, ..)) => *get(settings) = refresh_rate().map_or(*get(settings), |rate| rate.round().clamp(low, high)),
+                // Enter flips a switch and steps through a list
+                _ => change(&selected.kind, settings, if matches!(selected.kind, Kind::Choice(..)) { 1.0 } else { 0.0 }),
+            }
         }
         if back {
             (self.page, self.row) = (None, page);
