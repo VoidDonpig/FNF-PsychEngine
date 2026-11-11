@@ -33,6 +33,9 @@ Done:
 - **Backdrops**: the pictures of ten stages (week 1 to week 7 and the weekend 1 streets), with their
   looping and on-the-beat animations and foreground layers. Base game songs without a stage in their chart
   get their usual one.
+- **Stage mechanics**: lightning over the haunted house (thunder, scared poses, flash), the window lights
+  and the passing train of week 3 (with the girlfriend's hair blowing), the car speeding past the limo,
+  the tank rolling round the hill of week 7.
 - **Chart events**: Hey!, Set GF Speed, Add Camera Zoom, Play Animation, Camera Follow Pos, Alt Idle
   Animation, Screen Shake, Change Character, Change Scroll Speed, Play Sound, from the chart and from the
   song's `events.json`. Note types: Hurt Note, Alt Animation, Hey!, GF Sing, No Animation, and sections
@@ -54,8 +57,8 @@ Not there yet:
 
 - **Play screen**: the events and note types that belong to one stage or to scripts (Set Property,
   Philly Glow, the weekend 1 fight notes, custom ones), gameplay changers (speed, playback rate, health
-  gain/loss, instakill, practice), what moves by its own rules on the stages (train, cars, lightning,
-  window lights, rolling tank, running soldiers, crowd reactions, the speaker of weekend 1), the weekend 1
+  gain/loss, instakill, practice), the rest of what stages do by themselves (the limo's henchmen, the
+  running soldiers of Stress, crowd reactions to events, the speaker and lighting of weekend 1), the weekend 1
   fight stage, the pixel look of notes and HUD on pixel stages, characters made of several sheets or of
   Animate atlases, other note and splash skins.
 - **Menus**: credits, mods (enable, order, settings), achievements, the rest of the options (graphics,

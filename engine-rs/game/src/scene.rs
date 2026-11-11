@@ -26,6 +26,8 @@ enum Motion {
     Beat,
     /// Alternates on every beat between the first so many frames and the rest (dancers stepping left and right).
     Sway(usize),
+    /// Rests on its last frame until the stage plays it through once.
+    Once,
 }
 
 /// One picture of a stage's backdrop.
@@ -53,7 +55,7 @@ fn layer(image: &'static str, x: f32, y: f32, scroll_x: f32, scroll_y: f32) -> L
 }
 
 /// The backdrop of a stage, back to front. The numbers are those of source/states/stages.
-// shortcut: pictures only. What moves by its own rules (the train, cars, lightning, window lights, the rolling tank, running soldiers, crowd reactions) and the weekend 1 lighting are not here yet.
+// shortcut: the running soldiers, the crowds' reactions to events, the limo's henchmen and the weekend 1 lighting are not here yet. What `Own` moves is.
 fn backdrop(stage: &str) -> Vec<LayerDef> {
     use Motion::*;
     use Size::*;
@@ -71,11 +73,14 @@ fn backdrop(stage: &str) -> Vec<LayerDef> {
             LayerDef { flip: true, ..sized(Times(1.1), layer("stage_light", 1225.0, -100.0, 0.9, 0.9)) },
             sized(Times(0.9), layer("stagecurtains", -500.0, -300.0, 1.3, 1.3)),
         ],
-        "spooky" => vec![moving("halloweem bg0", Still, layer("halloween_bg", -200.0, -100.0, 1.0, 1.0))],
+        // the strike ends on the picture of the quiet house
+        "spooky" => vec![moving("halloweem bg lightning strike", Once, layer("halloween_bg", -200.0, -100.0, 1.0, 1.0))],
         "philly" => vec![
             layer("philly/sky", -100.0, 0.0, 0.1, 0.1),
             sized(Times(0.85), layer("philly/city", -10.0, 0.0, 0.3, 0.3)),
+            sized(Times(0.85), layer("philly/window", -10.0, 0.0, 0.3, 0.3)),
             layer("philly/behindTrain", -40.0, 50.0, 1.0, 1.0),
+            layer("philly/train", 2000.0, 360.0, 1.0, 1.0),
             layer("philly/street", -40.0, 50.0, 1.0, 1.0),
         ],
         "limo" => {
@@ -84,6 +89,7 @@ fn backdrop(stage: &str) -> Vec<LayerDef> {
                 moving("background limo pink", Loop, layer("limo/bgLimo", -150.0, 480.0, 0.4, 0.4)),
             ];
             layers.extend((0..5).map(|i| moving("bg dancer sketch PINK", Sway(15), layer("limo/limoDancer", 370.0 * i as f32 + 170.0, 80.0, 0.4, 0.4))));
+            layers.push(layer("limo/fastCarLol", -12600.0, 160.0, 1.0, 1.0));
             layers.push(moving("Limo stage", Loop, layer("limo/limoDrive", -120.0, 550.0, 1.0, 1.0)));
             layers
         }
@@ -120,6 +126,7 @@ fn backdrop(stage: &str) -> Vec<LayerDef> {
             moving("SmokeBlurLeft", Loop, layer("smokeLeft", -200.0, -100.0, 0.4, 0.4)),
             moving("SmokeRight", Loop, layer("smokeRight", 1100.0, -100.0, 0.4, 0.4)),
             moving("watchtower gradient color", Beat, layer("tankWatchtower", 100.0, 50.0, 0.5, 0.5)),
+            moving("BG tank w lighting", Loop, layer("tankRolling", 0.0, 0.0, 0.5, 0.5)),
             sized(Times(1.15), layer("tankGround", -420.0, -150.0, 1.0, 1.0)),
             front(moving("fg", Beat, layer("tank0", -500.0, 650.0, 1.7, 1.5))),
             front(moving("fg", Beat, layer("tank1", -300.0, 750.0, 2.0, 0.2))),
@@ -153,6 +160,80 @@ struct Layer {
     time: f32,
     /// Sway: on the second half of its frames.
     swayed: bool,
+    tint: Color,
+    /// Turned around its middle, in radians.
+    angle: f32,
+}
+
+/// The train of the philly stage: it waits off screen to the right, and when its sound has played for a while its cars rush past.
+struct Train {
+    x: f32,
+    /// Seconds since its sound began, while it passes.
+    passing: Option<f32>,
+    cars: i32,
+    /// It moves in steps, 24 a second at most.
+    tick: f32,
+    /// Beats since it last left.
+    cooldown: i32,
+}
+
+#[derive(PartialEq, Debug)]
+enum TrainNow {
+    Quiet,
+    /// It is rushing past: hair blows.
+    Rushing,
+    /// It has just gone.
+    Gone,
+}
+
+impl Train {
+    fn new() -> Train {
+        Train { x: 2000.0, passing: None, cars: 8, tick: 0.0, cooldown: 0 }
+    }
+
+    fn step(&mut self, dt: f32) -> TrainNow {
+        let Some(since) = self.passing.as_mut() else { return TrainNow::Quiet };
+        *since += dt;
+        self.tick += dt;
+        if self.tick < 1.0 / 24.0 || *since < 4.7 {
+            return TrainNow::Quiet;
+        }
+        self.tick = 0.0;
+        self.x -= 400.0;
+        if self.x < -2000.0 && self.cars > 0 {
+            // the same picture comes round again as the next car
+            self.x = -1150.0;
+            self.cars -= 1;
+        }
+        if self.x < -4000.0 && self.cars <= 0 {
+            *self = Train { x: SCREEN.x + 200.0, ..Train::new() };
+            return TrainNow::Gone;
+        }
+        TrainNow::Rushing
+    }
+}
+
+/// What a stage moves by its own rules, as its class in source/states/stages does.
+enum Own {
+    Nothing,
+    /// Lightning: the beat of the last strike, the beats to wait after it, and the seconds since it.
+    Spooky { struck: i64, wait: i64, since: f32 },
+    /// The colour of the window lights, and the train.
+    Philly { light: usize, train: Train },
+    /// The car speeding past: its speed (px/s) and the seconds until it is back at its start.
+    Limo { speed: f32, back_in: Option<f32> },
+    /// The tank rolling round behind the ground: where on its circle it is (degrees) and how fast it goes.
+    Tank { angle: f32, speed: f32 },
+}
+
+const WINDOW_LIGHTS: [u32; 5] = [0x31A2FD, 0x31FD8C, 0xFB33F5, 0xFD4531, 0xFBA633];
+
+fn chance(share: f32) -> bool {
+    rand::gen_range(0.0, 1.0) < share
+}
+
+fn find<'a>(backdrop: &'a mut [Layer], image: &str) -> Option<&'a mut Layer> {
+    backdrop.iter_mut().find(|layer| layer.def.image == image)
 }
 
 impl Layer {
@@ -169,7 +250,8 @@ impl Layer {
         if def.pixel {
             texture.set_filter(FilterMode::Nearest);
         }
-        Some(Layer { def, texture, frames, time: 0.0, swayed: false })
+        let time = if matches!(def.anim, Some((_, Motion::Once))) { 1e9 } else { 0.0 };
+        Some(Layer { def, texture, frames, time, swayed: false, tint: WHITE, angle: 0.0 })
     }
 
     fn beat(&mut self) {
@@ -194,7 +276,7 @@ impl Layer {
                 let (first, len) = if self.swayed { (half.min(count - 1), count.saturating_sub(half).max(1)) } else { (0, half.min(count)) };
                 Some(first + step.min(len - 1))
             }
-            Some((_, Motion::Beat)) => Some(step.min(count - 1)),
+            Some((_, Motion::Beat | Motion::Once)) => Some(step.min(count - 1)),
             _ => Some(0),
         };
         let size = frame.map_or(self.texture.size(), |f| self.frames[f].size);
@@ -206,9 +288,21 @@ impl Layer {
         if self.def.centered {
             at -= size * (scale - 1.0) / 2.0;
         }
+        if self.tint.a <= 0.0 {
+            return;
+        }
+        // a turned layer is drawn upright with everything turned around its middle
+        let gl = unsafe { get_internal_gl() }.quad_gl;
+        if self.angle != 0.0 {
+            let middle = (at + size * scale / 2.0).extend(0.0);
+            gl.push_model_matrix(Mat4::from_translation(middle) * Mat4::from_rotation_z(self.angle) * Mat4::from_translation(-middle));
+        }
         match frame {
-            Some(f) => crate::atlas::draw_frame(&self.texture, self.frames[f], at.x, at.y, scale, self.def.flip, WHITE),
-            None => draw_texture_ex(&self.texture, at.x, at.y, WHITE, DrawTextureParams { dest_size: Some(size * scale), flip_x: self.def.flip, ..Default::default() }),
+            Some(f) => crate::atlas::draw_frame(&self.texture, self.frames[f], at.x, at.y, scale, self.def.flip, self.tint),
+            None => draw_texture_ex(&self.texture, at.x, at.y, self.tint, DrawTextureParams { dest_size: Some(size * scale), flip_x: self.def.flip, ..Default::default() }),
+        }
+        if self.angle != 0.0 {
+            gl.pop_model_matrix();
         }
     }
 }
@@ -412,6 +506,9 @@ pub struct Scene {
     shake: [(f32, f32); 2],
     /// Characters a chart event will swap in, loaded ahead so that the swap does not stall the song.
     spares: HashMap<String, Character>,
+    own: Own,
+    /// Sounds the stage wants played (file and volume); the play screen takes them.
+    pub sounds: Vec<(std::path::PathBuf, f32)>,
 }
 
 /// Who a chart event means: 0 the opponent, 1 the player, 2 the girlfriend.
@@ -458,7 +555,18 @@ impl Scene {
             pinned: None,
             shake: [(0.0, 0.0); 2],
             spares: HashMap::new(),
+            own: match chart.stage.as_str() {
+                "spooky" => Own::Spooky { struck: 0, wait: 8, since: 1e9 },
+                "philly" => Own::Philly { light: 0, train: Train::new() },
+                "limo" => Own::Limo { speed: 0.0, back_in: None },
+                "tank" => Own::Tank { angle: rand::gen_range(-90.0, 45.0), speed: rand::gen_range(5.0, 7.0) },
+                _ => Own::Nothing,
+            },
+            sounds: Vec::new(),
         };
+        if let Some(window) = find(&mut scene.backdrop, "philly/window") {
+            window.tint.a = 0.0; // dark until the first light
+        }
         for event in chart.events.iter().filter(|e| e.name == "Change Character") {
             let (role, spot) = scene.role(&event.value1);
             if !scene.spares.contains_key(&event.value2) {
@@ -612,7 +720,9 @@ impl Scene {
         self.backdrop.iter_mut().for_each(|layer| layer.time += dt);
 
         let beat = chart.beat_at(position).floor() as i64;
-        if beat != self.beat {
+        let on_beat = beat != self.beat;
+        self.run_own(dt, on_beat.then_some(beat), chart.step_ms(position) as f32 * 4.0 / 1000.0);
+        if on_beat {
             self.beat = beat;
             self.icon_scale = 1.2;
             self.backdrop.iter_mut().for_each(Layer::beat);
@@ -636,6 +746,81 @@ impl Scene {
         self.zoom += (self.default_zoom - self.zoom) * ease(3.125);
         self.hud_zoom += (1.0 - self.hud_zoom) * ease(3.125);
         self.icon_scale += (1.0 - self.icon_scale) * ease(9.0);
+    }
+
+    /// Moves what the stage moves by its own rules. `beat` is the beat that has just begun, if one has; `beat_s` a beat's length.
+    fn run_own(&mut self, dt: f32, beat: Option<i64>, beat_s: f32) {
+        let (paths, sounds) = (&self.paths, &mut self.sounds);
+        let mut sound = |name: &str, volume: f32| sounds.extend(paths.find(&format!("sounds/{name}.ogg")).map(|path| (path, volume)));
+        match &mut self.own {
+            Own::Nothing => {}
+            Own::Spooky { struck, wait, since } => {
+                *since += dt;
+                if beat.is_some_and(|beat| beat > *struck + *wait) && chance(0.1) {
+                    sound(&format!("thunder_{}", rand::gen_range(1, 3)), 1.0);
+                    (*struck, *wait, *since) = (beat.unwrap_or(0), rand::gen_range(8, 25), 0.0);
+                    find(&mut self.backdrop, "halloween_bg").into_iter().for_each(|house| house.time = 0.0);
+                    for character in [&mut self.opponent, &mut self.gf, &mut self.player].into_iter().flatten() {
+                        character.play("scared");
+                    }
+                    self.zoom += 0.015;
+                    self.hud_zoom += 0.03;
+                }
+            }
+            Own::Philly { light, train } => {
+                if let Some(window) = find(&mut self.backdrop, "philly/window") {
+                    // every fourth beat the windows light up in another colour, then dim
+                    if beat.is_some_and(|beat| beat % 4 == 0) {
+                        *light = (*light + rand::gen_range(1, WINDOW_LIGHTS.len())) % WINDOW_LIGHTS.len();
+                        window.tint = Color::from_hex(WINDOW_LIGHTS[*light]);
+                    } else {
+                        window.tint.a = (window.tint.a - beat_s * dt * 1.5).max(0.0);
+                    }
+                }
+                if let (Some(beat), None) = (beat, train.passing) {
+                    train.cooldown += 1;
+                    if beat % 8 == 4 && train.cooldown > 8 && chance(0.3) {
+                        train.cooldown = rand::gen_range(-4, 1);
+                        train.passing = Some(0.0);
+                        sound("train_passes", 1.0);
+                    }
+                }
+                match (train.step(dt), &mut self.gf) {
+                    // her hair blows for as long as it passes, and falls back when it has gone
+                    (TrainNow::Rushing, Some(gf)) if gf.current != "hairBlow" || gf.finished() => gf.pose("hairBlow", None),
+                    (TrainNow::Gone, Some(gf)) => {
+                        gf.pose("hairFall", None);
+                        gf.swayed_right = false;
+                    }
+                    _ => {}
+                }
+                find(&mut self.backdrop, "philly/train").into_iter().for_each(|picture| picture.def.at.x = train.x);
+            }
+            Own::Limo { speed, back_in } => {
+                let Some(car) = find(&mut self.backdrop, "limo/fastCarLol") else { return };
+                car.def.at.x += *speed * dt;
+                match back_in {
+                    Some(left) if *left <= dt => {
+                        car.def.at = vec2(-12600.0, rand::gen_range(140.0, 250.0));
+                        (*speed, *back_in) = (0.0, None);
+                    }
+                    Some(left) => *left -= dt,
+                    None if beat.is_some() && chance(0.1) => {
+                        sound(&format!("carPass{}", rand::gen_range(0, 2)), 0.7);
+                        (*speed, *back_in) = (rand::gen_range(30600.0, 39600.0), Some(2.0));
+                    }
+                    None => {}
+                }
+            }
+            Own::Tank { angle, speed } => {
+                *angle += dt * *speed;
+                if let Some(tank) = find(&mut self.backdrop, "tankRolling") {
+                    let around = (*angle + 180.0).to_radians();
+                    tank.def.at = vec2(400.0 + 1500.0 * around.cos(), 1300.0 + 1100.0 * around.sin());
+                    tank.angle = (*angle - 90.0 + 15.0).to_radians();
+                }
+            }
+        }
     }
 
     /// The player lost: swaps in the fallen character and turns the camera to it.
@@ -679,11 +864,46 @@ impl Scene {
             character.draw();
         }
         self.backdrop.iter().filter(|layer| layer.def.front).for_each(|layer| layer.draw(scroll));
+        if let Own::Spooky { since, .. } = self.own {
+            // the lightning whitens everything: up at once, held, then gone
+            let alpha = match since {
+                t if t < 0.075 => 0.4 + 0.1 * t / 0.075,
+                t if t < 0.15 => 0.5,
+                t => 0.5 * (1.0 - (t - 0.15) / 0.25),
+            };
+            if alpha > 0.0 {
+                let view = SCREEN / self.zoom;
+                draw_rectangle(self.camera.x - view.x, self.camera.y - view.y, view.x * 2.0, view.y * 2.0, Color::new(1.0, 1.0, 1.0, alpha));
+            }
+        }
     }
 }
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn the_train_waits_for_its_sound_then_passes_car_by_car() {
+        use super::{Train, TrainNow};
+        let mut train = Train::new();
+        assert_eq!((train.step(1.0), train.x), (TrainNow::Quiet, 2000.0), "nothing moves until it is called");
+        train.passing = Some(0.0);
+        let frame = 1.0 / 60.0;
+        let (mut quiet, mut rushing) = (0.0, 0);
+        loop {
+            match train.step(frame) {
+                TrainNow::Quiet if rushing == 0 => quiet += frame,
+                TrainNow::Quiet => {}
+                TrainNow::Rushing => rushing += 1,
+                TrainNow::Gone => break,
+            }
+            assert!(quiet + (rushing as f32) < 1000.0, "it never left");
+        }
+        // 4.7 s of sound first; then 8 cars of 3 steps each after the first approach, and the way out
+        assert!((4.65..4.75).contains(&quiet), "{quiet}"); // the frame it first moves in counts as rushing
+        assert!((30..45).contains(&rushing), "{rushing}");
+        assert_eq!((train.x, train.passing, train.cars), (1480.0, None, 8));
+    }
+
     #[test]
     fn events_name_singers_by_word_or_number() {
         assert_eq!(["dad", "", "0", "BF", " boyfriend ", "1", "gf", "Girlfriend", "2"].map(super::who), [0, 0, 0, 1, 1, 1, 2, 2, 2]);

@@ -389,6 +389,9 @@ impl Playing {
                 held[note.player as usize][note.lane] |= *state == NoteState::Held;
             }
             scene.update(dt, judged, &self.play.chart, &events, held);
+            for (path, volume) in scene.sounds.drain(..) {
+                self.song.play_sound(&path, volume, false);
+            }
         }
 
         self.splashes.retain(|&(_, at)| judged - at < 300.0);
