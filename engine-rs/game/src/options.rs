@@ -314,7 +314,7 @@ impl OptionsMenu {
                 match MAIN[self.row] {
                     "Adjust Delay and Combo" => self.adjust = Some(Box::new(crate::adjust::Adjust::open(base, settings))),
                     "Language" => self.language = Some(next_language(languages, &settings.language, 0)),
-                    name => (self.page, self.row, self.scroll) = (PAGES.iter().position(|page| *page == name), 0, 0.0),
+                    name => (self.page, self.row, self.scroll, self.alt) = (PAGES.iter().position(|page| *page == name), 0, 0.0, false),
                 }
             }
             return back;
@@ -492,8 +492,10 @@ impl OptionsMenu {
             } else if on(vec2(780.0, 200.0), vec2(60.0, 360.0)) {
                 (self.dragging, self.stored) = (Some(Drag::Shade), colors[lane][part]);
             } else if on(vec2(820.0, 580.0), vec2(320.0, 80.0)) {
-                if let Some(palette) = self.made.as_ref().and_then(|made| made.palette.as_ref()) {
-                    let picked = palette.get_pixel(((mouse.x - 820.0) / 20.0) as u32, ((mouse.y - 580.0) / 20.0) as u32);
+                // (a mod's palette may be of another size: it is stretched over the same place)
+                if let Some(palette) = self.made.as_ref().and_then(|made| made.palette.as_ref()).filter(|palette| palette.width > 0 && palette.height > 0) {
+                    let (x, y) = ((mouse.x - 820.0) / 320.0 * palette.width as f32, (mouse.y - 580.0) / 80.0 * palette.height as f32);
+                    let picked = palette.get_pixel((x as u32).min(palette.width as u32 - 1), (y as u32).min(palette.height as u32 - 1));
                     colors[lane][part] = [picked.r, picked.g, picked.b].iter().fold(0, |code, channel| code << 8 | (channel * 255.0).round() as u32);
                     menus.sound("scrollMenu", 0.6);
                 }

@@ -1101,12 +1101,12 @@ pub fn get_time() -> f64 {
     with(|context| context.started.elapsed().as_secs_f64())
 }
 
-/// How long the last frame took, in seconds.
 /// How far behind the start of its frame a picture is on screen, on average, in ms.
 pub fn display_lag() -> f64 {
     with(|context| context.display_lag)
 }
 
+/// How long the last frame took, in seconds.
 pub fn get_frame_time() -> f32 {
     with(|context| context.frame_time)
 }

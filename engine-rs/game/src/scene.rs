@@ -368,9 +368,9 @@ fn rain_streaks(strength: f32, time: f32, screen: Vec2) -> Vec<(Vec2, f32, f32)>
         let depth = 1.0 + 3.8 * hash(index, 1);
         let (length, speed) = (40.0 * depth, 900.0 * depth);
         let fall = screen.y + length;
-        let y = (hash(index, 2) * fall + time * speed) % fall - length;
+        let y = (hash(index, 2) * fall + time * speed).rem_euclid(fall) - length;
         // slanted a tenth to the right as it falls
-        let x = (hash(index, 3) * (screen.x + 100.0) + y * 0.1) % (screen.x + 100.0) - 50.0;
+        let x = (hash(index, 3) * (screen.x + 100.0) + y * 0.1).rem_euclid(screen.x + 100.0) - 50.0;
         (vec2(x, y), length, 0.35 / depth)
     }).collect()
 }
@@ -639,6 +639,8 @@ enum Stunt {
     Ugh,
     Guns,
     Stress,
+    /// Weekend 1: before Darnell, he lights a can and kicks it up, and the player shoots it down.
+    Darnell,
 }
 
 /// 0 to 1, slow at both ends.
@@ -682,7 +684,24 @@ fn stunt_at(stunt: Stunt, t: f32) -> (f32, f32, bool, bool) {
         Stunt::Ugh => (0.0, 1.0, false, t >= 12.0),
         Stunt::Guns => (0.0, 1.0, false, t >= 11.5),
         Stunt::Stress => (0.0, 1.0, false, t >= 35.5),
+        Stunt::Darnell => (0.0, 1.0, false, t >= 10.0),
     }
+}
+
+/// 0 to 1, overshooting a little before it settles.
+fn back_out(part: f32) -> f32 {
+    let (part, c1) = (part.clamp(0.0, 1.0) - 1.0, 1.70158);
+    1.0 + (c1 + 1.0) * part.powi(3) + c1 * part.powi(2)
+}
+
+/// Where the camera looks and how close, `t` seconds into the scene before Darnell: close on him (`him`, the view of the
+/// opponent), then out over the whole street to the player (`player`, his view), with a jolt as the gun is cocked.
+fn darnell_view(t: f32, him: Vec2, player: Vec2) -> (Vec2, f32) {
+    let out = in_out((t - 2.0) / 2.5);
+    let from = him + vec2(250.0, 0.0);
+    let mut view = from + (player + vec2(200.0, 0.0) - from) * out;
+    view.x += 80.0 * back_out((t - 6.0) / 0.4) * (t >= 6.0) as u8 as f32 - 80.0 * in_out((t - 7.1) / 2.5);
+    (view, 1.3 + (0.66 - 1.3) * out)
 }
 
 fn chance(share: f32) -> bool {
@@ -1483,14 +1502,17 @@ impl Scene {
             return;
         }
         let Some(section) = chart.section_at(position) else { return };
-        let target = if section.gf && self.gf.is_some() {
-            self.gf.as_ref().map(|c| c.middle() + c.camera_offset + self.camera_offsets[2])
-        } else if section.must_hit {
-            self.player.as_ref().map(|c| c.middle() + vec2(-100.0 - c.camera_offset.x, -100.0 + c.camera_offset.y) + self.camera_offsets[1])
-        } else {
-            self.opponent.as_ref().map(|c| c.middle() + vec2(150.0, -100.0) + c.camera_offset + self.camera_offsets[0])
-        };
+        let target = if section.gf && self.gf.is_some() { self.view_of(2) } else { self.view_of(section.must_hit as usize) };
         self.target = target.unwrap_or(self.target);
+    }
+
+    /// Where the camera looks to show the opponent (0), the player (1) or the girlfriend (2).
+    fn view_of(&self, side: usize) -> Option<Vec2> {
+        match side {
+            0 => self.opponent.as_ref().map(|c| c.middle() + vec2(150.0, -100.0) + c.camera_offset + self.camera_offsets[0]),
+            1 => self.player.as_ref().map(|c| c.middle() + vec2(-100.0 - c.camera_offset.x, -100.0 + c.camera_offset.y) + self.camera_offsets[1]),
+            _ => self.gf.as_ref().map(|c| c.middle() + c.camera_offset + self.camera_offsets[2]),
+        }
     }
 
     /// Advances by `dt` seconds to song position `position` (ms). `held` says which lanes have a hold running, per side.
@@ -1566,7 +1588,7 @@ impl Scene {
                     if kind == NoteKind::KickCan {
                         self.can.iter_mut().for_each(|can| can.kick());
                     }
-                    let on_him = self.opponent.as_ref().map(|c| c.middle() + vec2(150.0, -100.0) + c.camera_offset + self.camera_offsets[0]);
+                    let on_him = self.view_of(0);
                     match (kind, on_him, self.pinned) {
                         (NoteKind::LightCan, Some(on_him), _) => {
                             (self.pinned, self.camera_speed) = (Some(on_him - vec2(100.0, 0.0)), 2.0);
@@ -2039,6 +2061,15 @@ impl Scene {
                 self.begin(Stunt::Lightning, &format!("thunder_{}", rand::gen_range(1, 3)), view)
             }
             ("mallEvil", "winter-horrorland") => self.begin(Stunt::LightsOn, "Lights_Turn_On", vec2(400.0, -2050.0)),
+            ("phillyStreets", "darnell") => {
+                // (the Haxe engine first plays a video, which this game cannot)
+                self.player.iter_mut().for_each(|pico| _ = pico.play("intro1"));
+                // (the song's own notes may kick no can)
+                if self.can.is_none() {
+                    self.can = crate::props::Can::load(&self.paths);
+                }
+                self.begin(Stunt::Darnell, "", Vec2::ZERO)
+            }
             _ => false,
         }
     }
@@ -2048,11 +2079,82 @@ impl Scene {
         self.stage == "mall" && next == "winter-horrorland" && self.begin(Stunt::LightsOut, "Lights_Shut_off", self.camera)
     }
 
+    /// Whether the scene is skipped: Accept (`skip`) has been held for a second, from `before` to `now` seconds in.
+    fn skipped(&mut self, before: f32, now: f32, skip: bool) -> bool {
+        self.skipping = if skip { self.skipping + now - before } else { (self.skipping - 3.0 * (now - before)).max(0.0) };
+        self.skipping >= 1.0
+    }
+
+    /// The scene before Darnell, from `before` to `now` seconds in. True when it is over.
+    fn darnell(&mut self, before: f32, now: f32, skip: bool) -> bool {
+        let skipped = self.skipped(before, now, skip);
+        if let (Some(him), Some(player)) = (self.view_of(0), self.view_of(1)) {
+            (self.camera, self.zoom) = darnell_view(now, him, player);
+            self.target = self.camera;
+        }
+        let crossed = |at: f32| before < at && now >= at;
+        let (paths, sounds) = (&self.paths, &mut self.sounds);
+        let mut sound = |name: &str, volume: f32| sounds.extend(paths.find(&format!("sounds/{name}.ogg")).map(|path| (path, volume)));
+        if crossed(0.7) {
+            self.tune = self.paths.find("music/darnellCanCutscene.ogg").map(|path| (path, 1.0));
+        }
+        // the two keep to their idle moves until they laugh
+        for (character, until) in [(&mut self.opponent, 7.9), (&mut self.gf, 8.2)] {
+            if let Some(character) = character.as_mut().filter(|c| now < until && c.special.is_none() && c.finished()) {
+                character.dance();
+            }
+        }
+        let (him, pico) = (&mut self.opponent, &mut self.player);
+        let act = |who: &mut Option<Character>, pose: &str| who.iter_mut().for_each(|c| c.pose(pose, None));
+        if crossed(5.0) {
+            act(him, "lightCan");
+            sound("Darnell_Lighter", 1.0);
+        }
+        if crossed(6.0) {
+            pico.iter_mut().for_each(|c| _ = c.play("cock"));
+            sound("Gun_Prep", 1.0);
+            self.cocked = Some(0.0).filter(|_| !self.low);
+        }
+        if crossed(6.4) {
+            act(him, "kickCan");
+            self.can.iter_mut().for_each(|can| can.kick());
+            sound("Kick_Can_UP", 1.0);
+        }
+        if crossed(6.8) {
+            act(him, "kneeCan");
+            sound("Kick_Can_FORWARD", 1.0);
+        }
+        if crossed(7.1) {
+            pico.iter_mut().for_each(|c| _ = c.play("intro2"));
+            sound(&format!("shots/shot{}", rand::gen_range(1, 5)), 1.0);
+            self.can.iter_mut().for_each(|can| can.shoot());
+            self.shot = 0.0;
+        }
+        // and they laugh at him
+        if crossed(7.9) {
+            him.iter_mut().for_each(|c| _ = c.play("laughCutscene"));
+            sound("cutscene/darnell_laugh", 0.6);
+        }
+        if crossed(8.2) {
+            self.gf.iter_mut().for_each(|c| _ = c.play("laughCutscene"));
+            sound("cutscene/nene_laugh", 0.6);
+        }
+        if !skipped && now < 10.0 {
+            return false;
+        }
+        (self.tune, self.skipping) = (None, 0.0);
+        if skipped {
+            for character in [&mut self.opponent, &mut self.gf, &mut self.player].into_iter().flatten() {
+                character.special = None;
+                character.dance();
+            }
+        }
+        true
+    }
+
     /// Tankman's talk, from `before` to `now` seconds in. `skip`: Accept is held. True when it is over.
     fn talk(&mut self, stunt: Stunt, before: f32, now: f32, skip: bool) -> bool {
-        // holding Accept for a second skips it
-        self.skipping = if skip { self.skipping + now - before } else { (self.skipping - 3.0 * (now - before)).max(0.0) };
-        let skipped = self.skipping >= 1.0;
+        let skipped = self.skipped(before, now, skip);
         self.zoom = self.default_zoom * talk_zoom(stunt, now);
         self.tune.iter_mut().for_each(|(_, volume)| *volume = now.min(1.0));
         let (paths, sounds) = (&self.paths, &mut self.sounds);
@@ -2146,6 +2248,7 @@ impl Scene {
         let (_, back, _, mut over) = stunt_at(stunt, now);
         match stunt {
             Stunt::Ugh | Stunt::Guns | Stunt::Stress => over = self.talk(stunt, before, now, skip),
+            Stunt::Darnell => over = self.darnell(before, now, skip),
             // the view stays where the scene put it, as close as the scene wants it
             Stunt::LightsOn => (self.camera, self.zoom) = (view, 1.5 + (self.default_zoom - 1.5) * back),
             _ => self.camera = view,
@@ -2388,6 +2491,9 @@ mod tests {
         assert_eq!((rain_streaks(0.0, 3.0, screen).len(), light.len(), hard.len()), (0, 75, 300));
         // every streak is on the screen or just off it, and falls as time goes
         assert!(hard.iter().all(|(at, length, alpha)| (-50.0..1330.0).contains(&at.x) && (-*length..720.0).contains(&at.y) && *alpha > 0.0));
+        // the countdown is before the song's start: it rains then too
+        let early = rain_streaks(0.4, -2.0, screen);
+        assert!(early.iter().all(|(at, length, _)| (-50.0..1330.0).contains(&at.x) && (-*length..720.0).contains(&at.y)));
         let later = rain_streaks(0.4, 3.01, screen);
         assert!(hard.iter().zip(&later).filter(|(now, then)| then.0.y > now.0.y).count() > 250);
     }
@@ -2429,6 +2535,19 @@ mod tests {
         let stress = |t: f32| super::talk_zoom(Stunt::Stress, t);
         assert!(near(stress(5.0), 1.2) && near(stress(17.45), 1.44) && near(stress(17.5), super::FAR) && near(stress(25.0), super::FAR));
         assert!(stress(31.25) > 1.44 && near(stress(31.5), 1.44) && near(stress(32.2), super::FAR) && stunt_at(Stunt::Stress, 35.5).3);
+    }
+
+    #[test]
+    fn the_scene_before_darnell_swings_from_him_to_the_player() {
+        use crate::gfx::vec2;
+        let (him, player) = (vec2(0.0, 0.0), vec2(1000.0, 100.0));
+        let at = |t: f32| super::darnell_view(t, him, player);
+        assert_eq!(at(1.0), (vec2(250.0, 0.0), 1.3));
+        // out over the street to the player, then a jolt at the cocking that settles back after the shot
+        assert_eq!(at(4.5), (vec2(1200.0, 100.0), 0.66));
+        assert!((at(6.4).0.x - 1280.0).abs() < 1e-3 && at(6.2).0.x > 1280.0 - 80.0);
+        assert!((at(9.6).0.x - 1200.0).abs() < 1e-3);
+        assert!(super::stunt_at(super::Stunt::Darnell, 10.0).3 && !super::stunt_at(super::Stunt::Darnell, 9.9).3);
     }
 
     #[test]

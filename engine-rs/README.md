@@ -147,8 +147,8 @@ Not there yet:
 - **Menus**: per-mod settings (the mods menu's settings button stays off);
   achievements of mods; the note colours' copy and paste buttons (no clipboard here); the key binds' gamepad
   side (no gamepads yet) and debug keys (no editors yet); the Shaders and GPU Caching switches (nothing to switch here); update check.
-- **Cutscenes**: weekend 1's;
-  videos; dialogue from a song's `dialogue.json` (the kind scripts start).
+- **Cutscenes**: videos (so weekend 1's video before Darnell and after 2hot; the scene with the can after the
+  first is there); dialogue from a song's `dialogue.json` (the kind scripts start).
 - **Scripts**: Lua (about 225 functions and the callbacks). HScript is Haxe code run against the Haxe
   engine's own classes, so mods that use it cannot run here as they are. Custom shaders.
 - **Editors**: chart, character, stage, week, menu character, dialogue, dialogue character, note splash.

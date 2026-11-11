@@ -1463,7 +1463,7 @@ impl Menus {
             if row != menus.mod_row {
                 menus.sound("scrollMenu", 0.6);
             }
-            menus.mod_row = row;
+            (menus.mod_row, menus.mod_dragging) = (row, false);
             if menus.mod_row.abs_diff(menus.mod_center) > 2 {
                 menus.mod_center = if menus.mod_center < menus.mod_row { menus.mod_row - 2 } else { menus.mod_row + 2 };
             }
@@ -1476,6 +1476,9 @@ impl Menus {
                 select(self, row);
                 self.mod_dragging = false;
             }
+        }
+        if !is_mouse_down() {
+            self.mod_dragging = false;
         }
         match self.mod_focus {
             _ if count == 0 => {
@@ -1524,9 +1527,7 @@ impl Menus {
                 if is_mouse_down() && !clicked && mouse_moved() && row_pointed == Some(self.mod_row) {
                     self.mod_dragging = true;
                 }
-                if !is_mouse_down() {
-                    self.mod_dragging = false;
-                } else if let Some(row) = row_pointed.filter(|&row| self.mod_dragging && row != self.mod_row) {
+                if let Some(row) = row_pointed.filter(|&row| self.mod_dragging && row != self.mod_row) {
                     self.move_mod(row);
                 }
             }
@@ -1568,7 +1569,9 @@ impl Menus {
                     }
                 }
                 // (the order kept, the selected mod stays selected)
-                (self.mods, self.mods_scan) = (Vec::new(), 0.0);
+                (self.mods, self.mods_scan, self.mod_focus, self.mod_hover) = (Vec::new(), 0.0, None, None);
+                // a pack picture changed meanwhile is read again
+                self.art.images.retain(|key, _| !key.ends_with("/pack.png") && !key.ends_with("/pack-pixel.png"));
                 self.sound("scrollMenu", 0.6);
                 return Go::Stay;
             }
@@ -1712,7 +1715,7 @@ impl Menus {
                 self.rows.clear();
                 (self.week, self.song) = (0, 0);
             }
-            self.mods.clear();
+            (self.mods, self.mods_scan, self.mod_hover) = (Vec::new(), 0.0, None);
             if std::mem::take(&mut self.restart) {
                 // from the top: the title screen and its music again
                 (self.audio, self.intro) = (None, true);
