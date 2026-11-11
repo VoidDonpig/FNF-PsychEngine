@@ -83,6 +83,7 @@ pub const OPTIONS: &[Opt] = &[
     Opt { page: 2, key: "score_zoom", name: "Score Text Grow on Hit", about: "If unchecked, disables the Score text growing everytime you hit a note.", kind: Kind::Flag(|s| &mut s.score_zoom) },
     Opt { page: 2, key: "health_bar_alpha", name: "Health Bar Opacity", about: "How much transparent should the health bar and icons be.", kind: Kind::Number(|s| &mut s.health_bar_alpha, 0.0, 1.0, 0.1, "%") },
     Opt { page: 2, key: "show_fps", name: "FPS Counter", about: "If unchecked, hides the FPS Counter.", kind: Kind::Flag(|s| &mut s.show_fps) },
+    Opt { page: 2, key: "discord_rpc", name: "Discord Rich Presence", about: "Uncheck this to prevent accidental leaks, it will hide the Application from your \"Playing\" box on Discord", kind: Kind::Flag(|s| &mut s.discord_rpc) },
     Opt { page: 2, key: "pause_music", name: "Pause Music", about: "What song do you prefer for the Pause Screen?", kind: Kind::Choice(|s| &mut s.pause_music, &PAUSE_MUSIC) },
     Opt { page: 2, key: "combo_stacking", name: "Combo Stacking", about: "If unchecked, Ratings and Combo won't stack, saving on System Memory and making them easier to read.", kind: Kind::Flag(|s| &mut s.combo_stacking) },
     Opt { page: 2, key: "show_ms", name: "Hit Timing (ms)", about: "If checked, shows how many milliseconds early or late each hit was.", kind: Kind::Flag(|s| &mut s.show_ms) },
@@ -173,6 +174,8 @@ pub struct Settings {
     pub score_zoom: bool,
     pub health_bar_alpha: f64,
     pub show_fps: bool,
+    /// What is being played shows in Discord.
+    pub discord_rpc: bool,
     /// Index into `PAUSE_MUSIC`.
     pub pause_music: usize,
     pub combo_stacking: bool,
@@ -212,7 +215,7 @@ impl Default for Settings {
         Settings {
             downscroll: false, middlescroll: false, opponent_strums: true, ghost_tapping: true, no_reset: false, one_note_holds: true, auto_pause: true, volume: 1.0, botplay: false,
             hitsound_volume: 0.0, rating_offset: 0.0, sick_window: 45.0, good_window: 90.0, bad_window: 135.0, safe_frames: 10.0, offset_ms: 0.0,
-            note_skin: 0, splash_skin: 0, splash_alpha: 0.6, hide_hud: false, time_bar: 0, flashing: true, cam_zooms: true, score_zoom: true, health_bar_alpha: 1.0, show_fps: true,
+            note_skin: 0, splash_skin: 0, splash_alpha: 0.6, hide_hud: false, time_bar: 0, flashing: true, cam_zooms: true, score_zoom: true, health_bar_alpha: 1.0, show_fps: true, discord_rpc: true,
             pause_music: 1, combo_stacking: true, show_ms: false,
             scroll_type: 0, scroll_speed: 1.0, playback_rate: 1.0, health_gain: 1.0, health_loss: 1.0, instakill: false, practice: false,
             combo_offset: [0.0; 4], low_quality: false, antialiasing: true, framerate: refresh_rate().clamp(60.0, 1000.0), graphics_api: if cfg!(windows) { 1 } else { 2 }, fullscreen: false, exclusive_fullscreen: false, note_colors: LANE_COLORS, pixel_note_colors: PIXEL_LANE_COLORS,

@@ -773,6 +773,8 @@ pub struct Character {
     /// A pose a chart asked for is showing: seconds until the idle move may take over (infinite = until the pose ends).
     special: Option<f32>,
     pub icon: Option<Texture2D>,
+    /// The icon's name ("dad"), as Discord knows the picture.
+    pub icon_name: String,
     /// The colour of the light on the character (white: as drawn).
     tint: Color,
     /// Has no idle move: whatever it does is done to it from outside.
@@ -852,6 +854,7 @@ impl Character {
             idle_suffix: String::new(),
             special: None,
             icon,
+            icon_name: icon_name.to_owned(),
             tint: WHITE,
             skip_dance: false,
             color: Color::from_rgba(channel(0), channel(1), channel(2), 255),

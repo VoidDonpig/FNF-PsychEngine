@@ -11,6 +11,7 @@ mod atlas;
 mod audio;
 mod controls;
 mod dialogue;
+mod discord;
 mod fight;
 mod gfx;
 mod input;
@@ -938,6 +939,34 @@ impl Playing {
     }
 }
 
+/// What Discord shows of a screen, in the Haxe engine's words.
+fn presence(screen: &Screen, weeks: &[funkin_core::content::Week]) -> discord::Presence {
+    let details = match screen {
+        Screen::Menu(Page::Achievements) => "Achievements Menu",
+        Screen::Options(..) => "Options Menu",
+        Screen::Playing(_) => "",
+        _ => "In the Menus",
+    };
+    let Screen::Playing(playing) = screen else { return discord::Presence { details: details.to_owned(), ..Default::default() } };
+    let mode = if playing.story { format!("Story Mode: {}", weeks.get(playing.entry.week).map_or("", |week| week.name.as_str())) } else { "Freeplay".to_owned() };
+    let details = match (playing.dead.is_some(), playing.paused.is_some()) {
+        (true, _) => format!("Game Over - {mode}"),
+        (_, true) => format!("Paused - {mode}"),
+        _ => mode,
+    };
+    // while the song plays, the time it has left
+    let now = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map_or(0, |since| since.as_secs());
+    let running = playing.started && playing.paused.is_none() && playing.dead.is_none();
+    let left = ((playing.length() - playing.position).max(0.0) / 1000.0) as u64;
+    discord::Presence {
+        details,
+        state: Some(format!("{} ({})", playing.entry.title, playing.entry.difficulty)),
+        small_image: playing.scene.as_ref().and_then(|scene| scene.opponent.as_ref()).map(|opponent| opponent.icon_name.clone()),
+        start: running.then_some(now),
+        end: running.then_some(now + left),
+    }
+}
+
 /// A difficulty as the player's language calls it.
 fn difficulty_name(name: &str) -> String {
     phrase(&format!("difficulty_{name}"), name)
@@ -1130,6 +1159,8 @@ fn main() {
     let mut closing: Option<(Texture2D, f64)> = None;
     // when the mouse last moved: the pointer shows over the menus for two seconds after
     let mut pointer_moved = f64::MIN;
+    // what Discord was last told: whether it may show anything, and of which screen (it is told again only when this changes)
+    let mut told_discord = (false, (0u8, 0usize, false, false, false));
     loop {
         // the change itself may have taken long (a song loading): the wipe starts when the new screen first shows
         if wiped == f64::MAX {
@@ -1447,6 +1478,20 @@ fn main() {
             pointer_moved = get_time();
         }
         show_mouse(matches!(screen, Screen::Menu(_) | Screen::Options(..)) && get_time() - pointer_moved < 2.0);
+        let showing = match &screen {
+            Screen::Playing(playing) => (3, &**playing as *const Playing as usize, playing.paused.is_some(), playing.dead.is_some(), playing.started),
+            Screen::Menu(page) => (1, *page as usize, false, false, false),
+            Screen::Options(..) => (2, 0, false, false, false),
+            _ => (0, 0, false, false, false),
+        };
+        if (settings.discord_rpc, showing) != told_discord {
+            if settings.discord_rpc {
+                discord::show(Some(presence(&screen, &weeks)));
+            } else if told_discord.0 {
+                discord::show(None);
+            }
+            told_discord = (settings.discord_rpc, showing);
+        }
         let reload = std::mem::take(&mut menus.reload);
         if reload {
             weeks = find_weeks(&base);
