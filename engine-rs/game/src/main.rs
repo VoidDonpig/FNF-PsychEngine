@@ -290,7 +290,8 @@ struct Playing {
 
 impl Playing {
     /// `story`: played in story mode, where some songs open with a talk.
-    fn open(base: &Path, entry: &SongEntry, songs: &[SongEntry], settings: &Settings, start_at: f64, story: bool) -> Result<Playing, String> {
+    /// `seen`: the talk and the stage's own opening scene were seen already (a retry): they do not come again.
+    fn open(base: &Path, entry: &SongEntry, songs: &[SongEntry], settings: &Settings, start_at: f64, story: bool, seen: bool) -> Result<Playing, String> {
         let text = std::fs::read_to_string(&entry.chart).map_err(|e| format!("{}: {e}", entry.chart.display()))?;
         let mut chart = funkin_core::chart::parse(&text).map_err(|e| format!("{}: {e}", entry.chart.display()))?;
         // events shared by all difficulties of the song sit in their own file
@@ -318,20 +319,30 @@ impl Playing {
         // sounds may sit in the stage's own folder
         let directory = scene.as_ref().map_or(String::new(), |scene| scene.directory.clone());
         let paths = Paths::new(base, &entry.source, &directory);
-        let cutscene = if story && start_at <= 0.0 { dialogue::Dialogue::load(base, &paths, &funkin_core::content::song_path(&entry.title), &chart.stage) } else { None };
+        let cutscene = if story && start_at <= 0.0 && !seen { dialogue::Dialogue::load(base, &paths, &funkin_core::content::song_path(&entry.title), &chart.stage) } else { None };
+        // --bot plays every song by itself without becoming the saved setting
+        let settings = &Settings { botplay: settings.botplay || std::env::args().any(|arg| arg == "--bot"), ..settings.clone() };
         let mut play = Play::new(chart, settings.botplay);
         play.skip_to(start_at);
         // shortcut: in story mode the week goes on at the difficulty it began with; let the rest of the week change with it if that is missed
         let difficulties = if story { Vec::new() } else { songs.iter().filter(|other| other.week == entry.week && other.title == entry.title).map(|other| other.difficulty.clone()).collect() };
         atlas::forget_unused();
         let mut scene = scene;
-        let staged = story && start_at <= 0.0 && scene.as_mut().is_some_and(|scene| scene.open_with(&funkin_core::content::song_path(&entry.title), 60.0 / play.chart.bpm as f32));
+        let staged = story && start_at <= 0.0 && !seen && scene.as_mut().is_some_and(|scene| scene.open_with(&funkin_core::content::song_path(&entry.title), 60.0 / play.chart.bpm as f32));
         Ok(Playing { entry: entry.clone(), play, song, player_voice, own_skin: None, base: base.to_path_buf(), staged, bowing: false, tune: false, scene, waited: 0.0, clock: Default::default(), ticked: std::time::Instant::now(), started: false, paused: None, choosing: None, difficulties, story, taunt_until: None, start_at, position: -lead_in, settings: settings.clone(), held_keys: Vec::new(), flash_until: [[f64::MIN; 4]; 2], judgement: None, last_hit: f64::MIN, lanes_used: [false; 4], idled: false, idle_for: 0.0, sang_for: 0.0,
             paths, cutscene, lead_in, counted: i64::MIN, popups: Vec::new(), splashes: Vec::new(), dead: None, next_event: 0, speed, speed_change: None }.with(settings))
     }
 
     /// Takes the player's settings, at the start and when the options were changed from the pause menu.
     fn with(mut self, settings: &Settings) -> Playing {
+        // what the song was opened with stays: the gameplay changers (who plays it, how fast, whether it counts), as in the Haxe
+        // engine, whose pause menu cannot reach them
+        let kept = &self.settings;
+        let settings = &Settings {
+            botplay: kept.botplay, playback_rate: kept.playback_rate, practice: kept.practice, instakill: kept.instakill, health_gain: kept.health_gain,
+            health_loss: kept.health_loss, scroll_type: kept.scroll_type, scroll_speed: kept.scroll_speed, ..settings.clone()
+        };
+        self.forget_released();
         let play = &mut self.play;
         (play.ghost_tapping, play.timing, play.one_note_holds) = (settings.ghost_tapping, settings.timing(), settings.one_note_holds);
         (play.health_gain, play.health_loss, play.instakill) = (settings.health_gain, settings.health_loss, settings.instakill);
@@ -347,8 +358,7 @@ impl Playing {
                 skin.recolor(if self.pixel() { &settings.pixel_note_colors } else { &settings.note_colors });
             }
         }
-        // what the song was opened with stays: who plays it, and how fast
-        self.settings = Settings { botplay: self.settings.botplay, playback_rate: self.settings.playback_rate, ..settings.clone() };
+        self.settings = settings.clone();
         self
     }
 
@@ -475,6 +485,7 @@ impl Playing {
             return match chosen {
                 Some("Resume") => {
                     self.paused = None;
+                    self.forget_released();
                     self.song.stop_sounds();
                     if self.started {
                         self.song.start();
@@ -601,7 +612,8 @@ impl Playing {
                         let at = rating_at + vec2(left, (HEIGHT - picture.height() * scale) / 2.0 - 60.0);
                         self.popups.push(Popup { texture: picture.clone(), at, scale, motion: (160.0, 550.0), born: judged, stays: crochet });
                     }
-                    if self.play.combo >= 10 && !skin.digits.is_empty() {
+                    // the combo in three digits or more, on every hit ("001"), as the Haxe engine shows it
+                    if !skin.digits.is_empty() {
                         for (place, digit) in format!("{:03}", self.play.combo).bytes().enumerate() {
                             let picture = &skin.digits[(digit - b'0') as usize];
                             let scale = skin.popup_scales[1];
@@ -626,7 +638,10 @@ impl Playing {
             for (note, state) in self.play.chart.notes.iter().zip(&self.play.state).take_while(|(note, _)| note.time <= judged) {
                 held[note.player as usize][note.lane] |= *state == NoteState::Held;
             }
-            scene.levels = self.song.levels();
+            // (only the speaker of weekend 1 shows them; working them out takes thousands of sines a frame)
+            if scene.shows_levels() {
+                scene.levels = self.song.levels();
+            }
             scene.update(dt * rate as f32, judged, &self.play.chart, &events, held);
         }
         self.stage_sounds();
@@ -648,7 +663,8 @@ impl Playing {
         // the reset key gives up the run, unless a lane uses that key
         // a reset key that is also a note key only plays notes
         let reset = controls::keys(Ui::Reset).into_iter().flatten().any(|key| is_key_pressed(key) && self.settings.lane_of(key).is_none()) && !self.settings.no_reset && !self.play.botplay && self.started;
-        if (self.play.health <= 0.0 || reset) && !self.settings.practice {
+        // (once the song is over, as the stage plays its closing scene, there is nothing left to lose)
+        if (self.play.health <= 0.0 || reset) && !self.settings.practice && !self.bowing {
             self.dead = Some((0.0, None));
             self.song.pause();
             self.sound(self.scene.as_ref().map_or("fnf_loss_sfx", |scene| scene.death().1), 1.0, false);
@@ -692,7 +708,18 @@ impl Playing {
     /// Length of the song in ms.
     fn length(&self) -> f64 {
         let last_note = self.play.chart.notes.last().map_or(0.0, |n| n.time + n.sustain);
-        self.song.length_ms().unwrap_or(last_note + 1500.0)
+        // (a song opened part way in, with --at, has no sound to measure)
+        self.song.length_ms().filter(|ms| *ms > 0.0).unwrap_or(last_note + 1500.0)
+    }
+
+    /// Keys let go of while the song did not listen (paused, in the options) are let go of now.
+    fn forget_released(&mut self) {
+        self.held_keys.retain(|key| is_key_down(*key));
+        for lane in 0..4 {
+            if !self.lane_held(lane) {
+                self.play.release(lane);
+            }
+        }
     }
 
     fn lane_held(&self, lane: usize) -> bool {
@@ -984,7 +1011,6 @@ fn main() {
     // the volume as it was when its keys were last used, and when
     let mut volume_shown = f64::MIN;
     let mut muted = false;
-    settings.botplay |= flag("--bot");
     atlas::SMOOTH.store(settings.antialiasing, std::sync::atomic::Ordering::Relaxed);
     // `--opengl`: the way out when the chosen graphics API shows nothing and the options cannot be reached
     let api = if flag("--opengl") { "OpenGL" } else { settings::GRAPHICS_APIS[settings.graphics_api] };
@@ -1051,7 +1077,7 @@ fn main() {
         // compared as file names are, so that spaces, hyphens and capitals do not matter
         let wanted = funkin_core::content::song_path(&wanted);
         screen = match songs.iter().find(|s| funkin_core::content::song_path(&format!("{} {}", s.title, s.difficulty)).contains(&wanted)) {
-            Some(entry) => Playing::open(&base, entry, &songs, &settings, start_at, false).map_or_else(Screen::Failed, |p| Screen::Playing(Box::new(p))),
+            Some(entry) => Playing::open(&base, entry, &songs, &settings, start_at, false, false).map_or_else(Screen::Failed, |p| Screen::Playing(Box::new(p))),
             None => Screen::Failed(format!("No song matches \"{wanted}\".")),
         };
     }
@@ -1062,7 +1088,7 @@ fn main() {
             Some((week, mut list)) => {
                 let entry = &songs[list.remove(0)];
                 story = Some((week, list, 0, 0));
-                Playing::open(&base, entry, &songs, &settings, start_at, true).map_or_else(Screen::Failed, |p| Screen::Playing(Box::new(p)))
+                Playing::open(&base, entry, &songs, &settings, start_at, true, false).map_or_else(Screen::Failed, |p| Screen::Playing(Box::new(p)))
             }
             None => Screen::Failed(format!("No week \"{wanted}\" with a Normal difficulty.")),
         };
@@ -1217,7 +1243,7 @@ fn main() {
                                 save.save(&base);
                                 let next = &songs[rest.remove(0)];
                                 story = Some((week, rest, score + play.score, misses + play.misses));
-                                Playing::open(&base, next, &songs, &settings, start_at, true).map_or_else(Screen::Failed, |p| Screen::Playing(Box::new(p)))
+                                Playing::open(&base, next, &songs, &settings, 0.0, true, false).map_or_else(Screen::Failed, |p| Screen::Playing(Box::new(p)))
                             }
                             Some((week, _, score, _)) => {
                                 if playing.settings.keeps_scores() {
@@ -1234,14 +1260,9 @@ fn main() {
                         }
                     }
                     // a retry goes straight to the song: the talk was heard
-                    Flow::Restart => Playing::open(&base, &playing.entry, &songs, &settings, 0.0, false).map_or_else(Screen::Failed, |mut again| {
-                        if story.is_some() {
-                            (again.story, again.difficulties) = (true, Vec::new());
-                        }
-                        Screen::Playing(Box::new(again))
-                    }),
+                    Flow::Restart => Playing::open(&base, &playing.entry, &songs, &settings, 0.0, story.is_some(), true).map_or_else(Screen::Failed, |again| Screen::Playing(Box::new(again))),
                     Flow::Difficulty(name) => match songs.iter().find(|other| other.week == playing.entry.week && other.title == playing.entry.title && other.difficulty == name) {
-                        Some(entry) => Playing::open(&base, entry, &songs, &settings, 0.0, false).map_or_else(Screen::Failed, |p| Screen::Playing(Box::new(p))),
+                        Some(entry) => Playing::open(&base, entry, &songs, &settings, 0.0, false, false).map_or_else(Screen::Failed, |p| Screen::Playing(Box::new(p))),
                         None => Screen::Playing(playing),
                     },
                     Flow::Options => {
@@ -1269,7 +1290,7 @@ fn main() {
                 plain(&phrase_with("now_loading", "Now Loading{1}", &["..."]), 12.0, HEIGHT - 16.0, 30, WHITE);
                 // the reading itself holds this frame up: the picture was put on screen by the one before
                 match shown {
-                    true => Playing::open(&base, &songs[entry], &songs, &settings, 0.0, talk).map_or_else(Screen::Failed, |p| Screen::Playing(Box::new(p))),
+                    true => Playing::open(&base, &songs[entry], &songs, &settings, 0.0, talk, false).map_or_else(Screen::Failed, |p| Screen::Playing(Box::new(p))),
                     false => Screen::Loading(entry, talk, true),
                 }
             }

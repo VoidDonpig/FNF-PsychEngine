@@ -51,8 +51,8 @@ pub enum NoteState { Pending, Held, Done, Missed }
 pub enum Event {
     /// The player hit chart note `note`, `diff_ms` after (+) or before (-) its time.
     Hit { lane: usize, rating: Rating, diff_ms: f64, note: usize },
-    /// A note got away or was dropped, or (without `note`) a press hit nothing.
-    Miss { lane: usize, note: Option<usize> },
+    /// A note got away or was dropped, or (without `note`) a press hit nothing; `combo`: the combo it broke.
+    Miss { lane: usize, note: Option<usize>, combo: u32 },
     OpponentHit { lane: usize, note: usize },
 }
 
@@ -145,7 +145,6 @@ impl Play {
             if self.ghost_tapping || self.botplay {
                 return None;
             }
-            self.score -= 10;
             return Some(self.miss(lane, None));
         };
         let (time, sustain, hurt) = { let n = &self.chart.notes[index]; (n.time, n.sustain, n.kind == NoteKind::Hurt) };
@@ -237,8 +236,10 @@ impl Play {
     }
 
     fn miss(&mut self, lane: usize, note: Option<usize>) -> Event {
+        // every miss costs ten points, as in the Haxe engine
+        self.score -= 10;
         self.misses += 1;
-        self.combo = 0;
+        let combo = std::mem::take(&mut self.combo);
         self.rated += 1;
         // a stray press costs half of what a missed note does
         self.health -= MISS_HEALTH * self.health_loss * if note.is_some() { 1.0 } else { 0.5 };
@@ -249,7 +250,7 @@ impl Play {
         if self.health < 1e-9 || self.instakill {
             self.health = 0.0; // ten misses from full must empty the bar, whatever the rounding says
         }
-        Event::Miss { lane, note }
+        Event::Miss { lane, note, combo }
     }
 }
 
@@ -329,8 +330,9 @@ mod tests {
         const SAFE_MS: f64 = 10.0 / 60.0 * 1000.0;
         assert_eq!(p.press(2, 1000.0 - SAFE_MS - 1.0), None);
         assert_eq!(p.update(1000.0 + SAFE_MS), vec![]);
-        assert_eq!(p.update(1000.0 + SAFE_MS + 1.0), vec![Event::Miss { lane: 2, note: Some(0) }]);
-        assert_eq!((p.misses, p.combo, p.accuracy(), p.finished()), (1, 0, Some(0.0), true));
+        assert_eq!(p.update(1000.0 + SAFE_MS + 1.0), vec![Event::Miss { lane: 2, note: Some(0), combo: 0 }]);
+        // a note that got away costs ten points, as a stray press does
+        assert_eq!((p.misses, p.combo, p.accuracy(), p.finished(), p.score), (1, 0, Some(0.0), true, -10));
         assert!(p.health < 1.0);
     }
 
@@ -346,7 +348,7 @@ mod tests {
         let mut dropped = play(&[(0.0, 3, true, 1000.0)], false);
         dropped.press(3, 0.0);
         dropped.release(3);
-        assert_eq!(dropped.update(300.0), vec![Event::Miss { lane: 3, note: Some(0) }]);
+        assert_eq!(dropped.update(300.0), vec![Event::Miss { lane: 3, note: Some(0), combo: 1 }]);
         assert_eq!(dropped.update(600.0), vec![], "only once");
     }
 
@@ -365,7 +367,7 @@ mod tests {
         let mut p = play(&[(5000.0, 0, true, 0.0)], false);
         assert_eq!(p.press(0, 100.0), None);
         p.ghost_tapping = false;
-        assert_eq!(p.press(0, 100.0), Some(Event::Miss { lane: 0, note: None }));
+        assert_eq!(p.press(0, 100.0), Some(Event::Miss { lane: 0, note: None, combo: 0 }));
         assert_eq!((p.misses, p.score), (1, -10));
         assert!((p.health - 0.95).abs() < 1e-9);
     }
@@ -414,7 +416,7 @@ mod tests {
     fn hurt_notes_hurt_only_when_hit() {
         let hurt = |time| Note { time, lane: 0, player: true, sustain: 0.0, kind: NoteKind::Hurt };
         let mut p = Play::new(Chart { bpm: 120.0, speed: 1.0, notes: vec![hurt(0.0), hurt(1000.0)], ..Default::default() }, false);
-        assert_eq!(p.press(0, 10.0), Some(Event::Miss { lane: 0, note: Some(0) }));
+        assert_eq!(p.press(0, 10.0), Some(Event::Miss { lane: 0, note: Some(0), combo: 0 }));
         assert_eq!(p.update(2000.0), vec![]);
         assert!(p.finished() && p.misses == 1);
     }

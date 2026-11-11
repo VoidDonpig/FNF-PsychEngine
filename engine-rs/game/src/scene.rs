@@ -743,6 +743,8 @@ struct Animation {
 }
 
 pub struct Character {
+    /// Its file's name ("bf"), as a chart event names it.
+    name: String,
     sheets: Vec<Sheet>,
     /// Drawn the Animate way instead, from a folder of that name.
     rig: Option<crate::animate::Atlas>,
@@ -830,6 +832,7 @@ impl Character {
         let icon_name = json["healthicon"].as_str().unwrap_or("face");
         let icon = texture(paths, &format!("images/icons/icon-{icon_name}.png")).or_else(|| texture(paths, &format!("images/icons/{icon_name}.png"))).or_else(|| texture(paths, "images/icons/icon-face.png"));
         Ok(Character {
+            name: name.to_owned(),
             sheets,
             rig,
             animations,
@@ -951,6 +954,8 @@ pub struct Scene {
     /// The beat bumps start once the opponent has sung a note.
     bumping: bool,
     beat: i64,
+    /// The chart section the song is in (the camera bumps as each begins).
+    section: usize,
     /// Scale of the health icons, bumped on the beat.
     pub icon_scale: f32,
     /// The girlfriend moves every this many of her beats (a chart event slows her down).
@@ -964,7 +969,8 @@ pub struct Scene {
     /// Shaking of the stage and of the HUD: strength (share of the screen) and seconds left.
     shake: [(f32, f32); 2],
     /// Characters a chart event will swap in, loaded ahead so that the swap does not stall the song.
-    spares: HashMap<String, Character>,
+    /// by role (0 opponent, 1 player, 2 girlfriend) and name; one swapped out waits here to come back.
+    spares: HashMap<(usize, String), Character>,
     own: Own,
     /// On the weekend 1 stages: the speaker the girlfriend sits on, and the spray can of the songs that have one.
     abot: Option<crate::props::ABot>,
@@ -1073,6 +1079,7 @@ impl Scene {
             hud_zoom: 1.0,
             bumping: false,
             beat: i64::MIN,
+            section: usize::MAX,
             icon_scale: 1.0,
             gf_speed: 1,
             pinned: None,
@@ -1152,9 +1159,10 @@ impl Scene {
         }
         for event in chart.events.iter().filter(|e| e.name == "Change Character") {
             let (role, spot) = scene.role(&event.value1);
-            if !scene.spares.contains_key(&event.value2) {
+            let key = (role, event.value2.clone());
+            if !scene.spares.contains_key(&key) {
                 if let Ok(spare) = Character::load(&scene.paths, &event.value2, spot, role == 1) {
-                    scene.spares.insert(event.value2.clone(), spare);
+                    scene.spares.insert(key, spare);
                 }
             }
         }
@@ -1335,8 +1343,11 @@ impl Scene {
             }
             "Change Character" => {
                 let (role, _) = self.role(&event.value1);
-                if let Some(spare) = self.spares.remove(&event.value2) {
-                    *[&mut self.opponent, &mut self.player, &mut self.gf][role] = Some(spare);
+                if let Some(spare) = self.spares.remove(&(role, event.value2.clone())) {
+                    // the one it replaces waits to be swapped back in
+                    if let Some(gone) = [&mut self.opponent, &mut self.player, &mut self.gf][role].replace(spare) {
+                        self.spares.insert((role, gone.name.clone()), gone);
+                    }
                 }
             }
             _ => {}
@@ -1383,10 +1394,10 @@ impl Scene {
         }
         for event in events {
             // the note decides who moves and how; a stray press has no note and is the player's plain miss
-            let (lane, note, side, missed) = match *event {
-                Event::Hit { lane, note, .. } => (lane, Some(note), 1, false),
-                Event::Miss { lane, note } => (lane, note, 1, true),
-                Event::OpponentHit { lane, note } => (lane, Some(note), 0, false),
+            let (lane, note, side, missed, broken) = match *event {
+                Event::Hit { lane, note, .. } => (lane, Some(note), 1, false, 0),
+                Event::Miss { lane, note, combo } => (lane, note, 1, true, combo),
+                Event::OpponentHit { lane, note } => (lane, Some(note), 0, false, 0),
             };
             self.bumping |= side == 0;
             let note = note.map(|index| &chart.notes[index]);
@@ -1465,7 +1476,13 @@ impl Scene {
                         }
                     }
                 }
-                _ => self.singer(side).into_iter().for_each(|c| c.sing(lane, missed, alt)),
+                _ => {
+                    self.singer(side).into_iter().for_each(|c| c.sing(lane, missed, alt));
+                    // a combo of more than five lost makes the girlfriend sad
+                    if broken > 5 {
+                        self.gf.iter_mut().filter(|gf| gf.animations.contains_key("sad")).for_each(|gf| gf.pose("sad", None));
+                    }
+                }
             }
         }
         let rest_after = chart.step_ms(position) as f32 * 0.0011;
@@ -1536,6 +1553,12 @@ impl Scene {
             }
         }
 
+        // the camera bumps as each section begins, as in the Haxe engine (not past a zoom of 1.35)
+        let section = chart.sections.iter().rposition(|section| section.start <= position).unwrap_or(usize::MAX);
+        if std::mem::replace(&mut self.section, section) != section && section != usize::MAX && self.bumping && self.cam_zooms && self.zoom < 1.35 {
+            self.zoom += 0.015;
+            self.hud_zoom += 0.03;
+        }
         let beat = chart.beat_at(position).floor() as i64;
         let on_beat = beat != self.beat;
         self.run_own(dt, on_beat.then_some(beat), chart.step_ms(position) as f32 * 4.0 / 1000.0);
@@ -1543,10 +1566,7 @@ impl Scene {
             self.beat = beat;
             self.icon_scale = 1.2;
             self.backdrop.iter_mut().for_each(Layer::beat);
-            if self.bumping && self.cam_zooms && beat % 4 == 0 {
-                self.zoom += 0.015;
-                self.hud_zoom += 0.03;
-            }
+
             for (who, character) in [&mut self.opponent, &mut self.player, &mut self.gf].into_iter().enumerate() {
                 let Some(character) = character else { continue };
                 let every = if character.sways { 1 } else { 2 } * if who == 2 { self.gf_speed } else { 1 };
@@ -1948,6 +1968,11 @@ impl Scene {
     /// Whether the stage's own scene keeps the notes and the rest of the HUD out of sight.
     pub fn hides_hud(&self) -> bool {
         self.stunt.is_some_and(|(stunt, t, _)| !stunt_at(stunt, t).2)
+    }
+
+    /// Whether anything on the stage shows how loud the music is.
+    pub fn shows_levels(&self) -> bool {
+        self.abot.is_some()
     }
 
     pub fn player_idle(&self) -> bool {
