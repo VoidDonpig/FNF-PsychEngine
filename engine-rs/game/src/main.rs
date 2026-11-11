@@ -117,17 +117,21 @@ impl Skin {
 
     /// The picture of the splashes: the chart's own (`own`, found through `paths`) or the one chosen in the options.
     fn splash_file(base: &Path, own: Option<(&Paths, &str)>, skin: usize) -> PathBuf {
-        let chosen = if skin == 0 { "noteSplashes".to_owned() } else { format!("noteSplashes-{}", settings::SPLASH_SKINS[skin].to_lowercase()) };
-        own.and_then(|(paths, name)| paths.find(&format!("images/{name}.png"))).unwrap_or(base.join(format!("assets/shared/images/noteSplashes/{chosen}.png")))
+        // "noteSplashes-diamond": the skin's name after the usual file's, as the Haxe engine names them
+        let named = settings::splash_skins().get(skin).filter(|_| skin > 0).map(|name| format!("-{}", name.trim().to_lowercase().replace(' ', "-")));
+        let chosen = format!("images/noteSplashes/noteSplashes{}.png", named.unwrap_or_default());
+        own.and_then(|(paths, name)| paths.find(&format!("images/{name}.png"))).or_else(|| menu_paths(base).find(&chosen)).unwrap_or(base.join("assets/shared").join(chosen))
     }
 
     /// `skins`: the note skin and the splash skin chosen in the options (the first of each is the usual one).
     /// `own`: where to look for the pictures a chart names for its notes and its splashes instead.
     fn load(base: &Path, skins: (usize, usize), own: Option<(&Paths, &Chart)>) -> Result<Skin, String> {
         // "NOTE_assets-future": the skin's name after the usual file's
-        let chosen = if skins.0 == 0 { "NOTE_assets".to_owned() } else { format!("NOTE_assets-{}", settings::NOTE_SKINS[skins.0].to_lowercase()) };
+        let named = settings::note_skins().get(skins.0).filter(|_| skins.0 > 0).map(|name| format!("-{}", name.trim().to_lowercase().replace(' ', "_")));
+        let chosen = format!("images/noteSkins/NOTE_assets{}.png", named.unwrap_or_default());
         let own_notes = own.filter(|(_, chart)| !chart.arrow_skin.is_empty()).and_then(|(paths, chart)| paths.find(&format!("images/{}.png", chart.arrow_skin)));
-        let notes = own_notes.unwrap_or(base.join(format!("assets/shared/images/noteSkins/{chosen}.png")));
+        // a skin a mod brings is found in the mods
+        let notes = own_notes.or_else(|| menu_paths(base).find(&chosen)).unwrap_or(base.join("assets/shared").join(chosen));
         let sheet = atlas::picture(&notes).ok_or(format!("{}: not found", notes.display()))?;
         let frames = atlas::parse(&std::fs::read_to_string(notes.with_extension("xml")).map_err(|e| format!("{}: {e}", notes.with_extension("xml").display()))?);
         let font = std::fs::read(base.join("assets/fonts/vcr.ttf")).ok().and_then(|bytes| load_ttf_font_from_bytes(&bytes).ok());
@@ -1097,6 +1101,9 @@ fn main() {
 
     let base = base_dir();
     let new_player = !Settings::kept(&base);
+    // the skins to choose from, the mods' among them, before the settings that choose one are read
+    let listed = |file: &str| menu_paths(&base).find_all(file).iter().filter_map(|file| std::fs::read_to_string(file).ok()).flat_map(|text| text.lines().map(str::to_owned).collect::<Vec<_>>()).collect::<Vec<_>>();
+    settings::set_skins(&listed("images/noteSkins/list.txt"), &listed("images/noteSplashes/list.txt"));
     let mut settings = Settings::load(&base);
     controls::set(settings.ui_keys);
     audio::set_master(settings.volume as f32);

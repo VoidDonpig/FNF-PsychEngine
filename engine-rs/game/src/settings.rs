@@ -29,7 +29,8 @@ pub enum Kind {
     /// A number with its lowest and highest value, its step and its unit ("%" shows 0 to 1 as 0 to 100).
     Number(fn(&mut Settings) -> &mut f64, f64, f64, f64, &'static str),
     /// One of a list of names.
-    Choice(fn(&mut Settings) -> &mut usize, &'static [&'static str]),
+    /// The names to choose from (a list mods can add to).
+    Choice(fn(&mut Settings) -> &mut usize, fn() -> &'static [&'static str]),
 }
 
 /// An option of the options menu: the page it is on, its name in the settings file, and what the menu says about it.
@@ -51,9 +52,32 @@ pub const SCROLL_TYPES: [&str; 2] = ["multiplicative", "constant"];
 pub const TIME_BARS: [&str; 4] = ["Time Left", "Time Elapsed", "Song Name", "Disabled"];
 /// What the game draws with (see gfx.rs). DirectX is DirectX 12.
 pub const GRAPHICS_APIS: [&str; 3] = ["OpenGL", "DirectX", "Vulkan"];
-// shortcut: the skins the game ships (images/noteSkins/list.txt and images/noteSplashes/list.txt); read the lists when mods add skins
-pub const NOTE_SKINS: [&str; 3] = ["Default", "Future", "Chip"];
-pub const SPLASH_SKINS: [&str; 5] = ["Psych", "Diamond", "Electric", "Sparkles", "Vanilla"];
+/// The note skins and splash skins to choose from: the usual one first, then those the game's and the mods'
+/// `images/noteSkins/list.txt` and `images/noteSplashes/list.txt` name (set once at start with `set_skins`).
+static SKINS: std::sync::OnceLock<(Vec<&'static str>, Vec<&'static str>)> = std::sync::OnceLock::new();
+const BASE_SKINS: ([&str; 3], [&str; 5]) = (["Default", "Future", "Chip"], ["Psych", "Diamond", "Electric", "Sparkles", "Vanilla"]);
+
+pub fn note_skins() -> &'static [&'static str] {
+    SKINS.get().map_or(&BASE_SKINS.0, |skins| &skins.0)
+}
+
+pub fn splash_skins() -> &'static [&'static str] {
+    SKINS.get().map_or(&BASE_SKINS.1, |skins| &skins.1)
+}
+
+/// The skins listed (the lists' lines, in order, each once), after the usual ones. Kept for the whole run.
+pub fn set_skins(notes: &[String], splashes: &[String]) {
+    let list = |usual: &'static str, listed: &[String]| {
+        let mut names = vec![usual];
+        for name in listed.iter().map(|name| name.trim()).filter(|name| !name.is_empty()) {
+            if !names.contains(&name) {
+                names.push(Box::leak(name.to_owned().into_boxed_str()));
+            }
+        }
+        names
+    };
+    let _ = SKINS.set((list(BASE_SKINS.0[0], notes), list(BASE_SKINS.1[0], splashes)));
+}
 pub const PAUSE_MUSIC: [&str; 4] = ["None", "Tea Time", "Breakfast", "Breakfast (Pico)"];
 
 /// Names and texts are the Haxe engine's.
@@ -74,25 +98,25 @@ pub const OPTIONS: &[Opt] = &[
     Opt { page: 1, key: "safe_frames", name: "Safe Frames", about: "Changes how many frames you have for hitting a note earlier or late.", kind: Kind::Number(|s| &mut s.safe_frames, 2.0, 10.0, 0.1, "") },
     Opt { page: 1, key: "display_lag_correction", name: "Display Lag Correction", about: "If checked, your timing is judged against the picture on screen:\nthe time each frame takes to be drawn and shown is taken off it.", kind: Kind::Flag(|s| &mut s.display_lag_correction) },
     Opt { page: 1, key: "offset_ms", name: "Note Offset", about: "Notes are judged and drawn this much later, for sound that arrives late (Bluetooth).", kind: Kind::Number(|s| &mut s.offset_ms, -500.0, 500.0, 1.0, "ms") },
-    Opt { page: 2, key: "note_skin", name: "Note Skins", about: "Select your prefered Note skin.", kind: Kind::Choice(|s| &mut s.note_skin, &NOTE_SKINS) },
-    Opt { page: 2, key: "splash_skin", name: "Note Splashes", about: "Select your prefered Note Splash variation.", kind: Kind::Choice(|s| &mut s.splash_skin, &SPLASH_SKINS) },
+    Opt { page: 2, key: "note_skin", name: "Note Skins", about: "Select your prefered Note skin.", kind: Kind::Choice(|s| &mut s.note_skin, note_skins) },
+    Opt { page: 2, key: "splash_skin", name: "Note Splashes", about: "Select your prefered Note Splash variation.", kind: Kind::Choice(|s| &mut s.splash_skin, splash_skins) },
     Opt { page: 2, key: "splash_alpha", name: "Note Splash Opacity", about: "How much transparent should the Note Splashes be.", kind: Kind::Number(|s| &mut s.splash_alpha, 0.0, 1.0, 0.1, "%") },
     Opt { page: 2, key: "hide_hud", name: "Hide HUD", about: "If checked, hides most HUD elements.", kind: Kind::Flag(|s| &mut s.hide_hud) },
-    Opt { page: 2, key: "time_bar", name: "Time Bar", about: "What should the Time Bar display?", kind: Kind::Choice(|s| &mut s.time_bar, &TIME_BARS) },
+    Opt { page: 2, key: "time_bar", name: "Time Bar", about: "What should the Time Bar display?", kind: Kind::Choice(|s| &mut s.time_bar, || &TIME_BARS) },
     Opt { page: 2, key: "flashing", name: "Flashing Lights", about: "Uncheck this if you're sensitive to flashing lights!", kind: Kind::Flag(|s| &mut s.flashing) },
     Opt { page: 2, key: "cam_zooms", name: "Camera Zooms", about: "If unchecked, the camera won't zoom in on a beat hit.", kind: Kind::Flag(|s| &mut s.cam_zooms) },
     Opt { page: 2, key: "score_zoom", name: "Score Text Grow on Hit", about: "If unchecked, disables the Score text growing everytime you hit a note.", kind: Kind::Flag(|s| &mut s.score_zoom) },
     Opt { page: 2, key: "health_bar_alpha", name: "Health Bar Opacity", about: "How much transparent should the health bar and icons be.", kind: Kind::Number(|s| &mut s.health_bar_alpha, 0.0, 1.0, 0.1, "%") },
     Opt { page: 2, key: "show_fps", name: "FPS Counter", about: "If unchecked, hides the FPS Counter.", kind: Kind::Flag(|s| &mut s.show_fps) },
     Opt { page: 2, key: "discord_rpc", name: "Discord Rich Presence", about: "Uncheck this to prevent accidental leaks, it will hide the Application from your \"Playing\" box on Discord", kind: Kind::Flag(|s| &mut s.discord_rpc) },
-    Opt { page: 2, key: "pause_music", name: "Pause Music", about: "What song do you prefer for the Pause Screen?", kind: Kind::Choice(|s| &mut s.pause_music, &PAUSE_MUSIC) },
+    Opt { page: 2, key: "pause_music", name: "Pause Music", about: "What song do you prefer for the Pause Screen?", kind: Kind::Choice(|s| &mut s.pause_music, || &PAUSE_MUSIC) },
     Opt { page: 2, key: "combo_stacking", name: "Combo Stacking", about: "If unchecked, Ratings and Combo won't stack, saving on System Memory and making them easier to read.", kind: Kind::Flag(|s| &mut s.combo_stacking) },
     Opt { page: 2, key: "show_ms", name: "Hit Timing (ms)", about: "If checked, shows how many milliseconds early or late each hit was.", kind: Kind::Flag(|s| &mut s.show_ms) },
     Opt { page: 2, key: "rating_x", name: "Rating Position X", about: "Moves the rating that pops up on a hit to the right.", kind: Kind::Number(|s| &mut s.combo_offset[0], -640.0, 640.0, 5.0, "px") },
     Opt { page: 2, key: "rating_y", name: "Rating Position Y", about: "Moves the rating that pops up on a hit up.", kind: Kind::Number(|s| &mut s.combo_offset[1], -360.0, 360.0, 5.0, "px") },
     Opt { page: 2, key: "combo_x", name: "Combo Position X", about: "Moves the combo count and the hit timing to the right.", kind: Kind::Number(|s| &mut s.combo_offset[2], -640.0, 640.0, 5.0, "px") },
     Opt { page: 2, key: "combo_y", name: "Combo Position Y", about: "Moves the combo count and the hit timing up.", kind: Kind::Number(|s| &mut s.combo_offset[3], -360.0, 360.0, 5.0, "px") },
-    Opt { page: 3, key: "scroll_type", name: "Scroll Type", about: "Multiplicative: the chart's speed times Scroll Speed. Constant: Scroll Speed itself, for every song.", kind: Kind::Choice(|s| &mut s.scroll_type, &SCROLL_TYPES) },
+    Opt { page: 3, key: "scroll_type", name: "Scroll Type", about: "Multiplicative: the chart's speed times Scroll Speed. Constant: Scroll Speed itself, for every song.", kind: Kind::Choice(|s| &mut s.scroll_type, || &SCROLL_TYPES) },
     Opt { page: 3, key: "scroll_speed", name: "Scroll Speed", about: "How fast the notes travel (up to 3X when multiplicative, up to 6 when constant).", kind: Kind::Number(|s| &mut s.scroll_speed, 0.35, 6.0, 0.05, "X") },
     Opt { page: 3, key: "playback_rate", name: "Playback Rate", about: "How fast the song plays. Its pitch follows.", kind: Kind::Number(|s| &mut s.playback_rate, 0.5, 3.0, 0.05, "X") },
     Opt { page: 3, key: "health_gain", name: "Health Gain Multiplier", about: "How much more health a hit gives.", kind: Kind::Number(|s| &mut s.health_gain, 0.0, 5.0, 0.1, "X") },
@@ -104,7 +128,7 @@ pub const OPTIONS: &[Opt] = &[
     Opt { page: 4, key: "antialiasing", name: "Anti-Aliasing", about: "If unchecked, disables anti-aliasing, increases performance at the cost of sharper visuals.", kind: Kind::Flag(|s| &mut s.antialiasing) },
     Opt { page: 4, key: "shaders", name: "Shaders", about: "If unchecked, disables shaders.\nIt's used for some visual effects, and also CPU intensive for weaker PCs.", kind: Kind::Flag(|s| &mut s.shaders) },
     Opt { page: 4, key: "framerate", name: "Framerate", about: "Pretty self explanatory, isn't it? Enter sets it to what the display shows.", kind: Kind::Number(|s| &mut s.framerate, 60.0, 1000.0, 1.0, "FPS") },
-    Opt { page: 4, key: "graphics_api", name: "Graphics API", about: "What the game is drawn with: DirectX (12, Windows only), Vulkan or OpenGL. One this machine does not have is replaced by one it has. Restart the game to apply.", kind: Kind::Choice(|s| &mut s.graphics_api, &GRAPHICS_APIS) },
+    Opt { page: 4, key: "graphics_api", name: "Graphics API", about: "What the game is drawn with: DirectX (12, Windows only), Vulkan or OpenGL. One this machine does not have is replaced by one it has. Restart the game to apply.", kind: Kind::Choice(|s| &mut s.graphics_api, || &GRAPHICS_APIS) },
     Opt { page: 4, key: "fullscreen", name: "Fullscreen", about: "The game takes the whole screen. F11 switches it at any time.", kind: Kind::Flag(|s| &mut s.fullscreen) },
     Opt { page: 4, key: "exclusive_fullscreen", name: "Exclusive Fullscreen", about: "If checked, fullscreen takes the whole display for the game alone. If unchecked, fullscreen is a borderless window.", kind: Kind::Flag(|s| &mut s.exclusive_fullscreen) },
 ];
@@ -166,7 +190,7 @@ pub struct Settings {
     pub display_lag_correction: bool,
     /// Notes are judged and drawn this many ms later (for sound that arrives late, such as Bluetooth).
     pub offset_ms: f64,
-    /// Indexes into `NOTE_SKINS` and `SPLASH_SKINS`.
+    /// Indexes into `note_skins()` and `splash_skins()`.
     pub note_skin: usize,
     pub splash_skin: usize,
     pub splash_alpha: f64,
@@ -247,7 +271,7 @@ impl Settings {
             match option.kind {
                 Kind::Flag(get) => *get(&mut settings) = saved.as_bool().unwrap_or(*get(&mut settings)),
                 Kind::Number(get, low, high, ..) => *get(&mut settings) = saved.as_f64().unwrap_or(*get(&mut settings)).clamp(low, high),
-                Kind::Choice(get, names) => *get(&mut settings) = saved.as_str().and_then(|name| names.iter().position(|n| *n == name)).unwrap_or(*get(&mut settings)),
+                Kind::Choice(get, names) => *get(&mut settings) = saved.as_str().and_then(|name| names().iter().position(|n| *n == name)).unwrap_or(*get(&mut settings)),
             }
         }
         if let Some(language) = json["language"].as_str() {
@@ -285,7 +309,7 @@ impl Settings {
             let value = match option.kind {
                 Kind::Flag(get) => json!(*get(&mut copy)),
                 Kind::Number(get, ..) => json!(*get(&mut copy)),
-                Kind::Choice(get, names) => json!(names[*get(&mut copy)]),
+                Kind::Choice(get, names) => json!(names()[*get(&mut copy)]),
             };
             json.insert(option.key.to_owned(), value);
         }

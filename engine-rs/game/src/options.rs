@@ -257,7 +257,7 @@ fn shown(kind: &Kind, settings: &mut Settings) -> String {
             let unit = if unit == "X" { "X".to_owned() } else { format!(" {unit}") };
             if low < 0.0 { format!("{value:+.decimals$}{unit}") } else { format!("{value:.decimals$}{unit}") }.trim_end().to_owned()
         }
-        Kind::Choice(get, names) => names[*get(settings)].to_owned(),
+        Kind::Choice(get, names) => names()[*get(settings)].to_owned(),
     }
 }
 
@@ -272,6 +272,7 @@ fn change(kind: &Kind, settings: &mut Settings, steps: f64) {
             *get(settings) = value.clamp(low, high);
         }
         Kind::Choice(get, names) => {
+            let names = names();
             let step = if steps < 0.0 { names.len() - 1 } else { 1 };
             *get(settings) = (*get(settings) + step) % names.len();
         }
