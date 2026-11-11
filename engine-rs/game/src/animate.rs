@@ -113,6 +113,16 @@ impl Rig {
         pieces
     }
 
+    /// The symbol an animation names, as flxanimate finds it: one whose name starts with `name` (with a trailing "\\", that
+    /// name exactly), the exact name first.
+    pub fn symbol_named(&self, name: &str) -> Option<&str> {
+        if let Some(exact) = name.strip_suffix('\\') {
+            return self.symbols.get_key_value(exact).map(|(key, _)| key.as_str());
+        }
+        let key = self.symbols.get_key_value(name).map(|(key, _)| key);
+        key.or_else(|| self.symbols.keys().filter(|key| key.starts_with(name)).min()).map(String::as_str)
+    }
+
     /// Frames of the symbol of that name; 0 when there is none.
     pub fn symbol_length(&self, name: &str) -> usize {
         self.symbols.get(name).map_or(0, Timeline::length)
@@ -183,7 +193,11 @@ impl Atlas {
 
     /// Draws a frame of one symbol played on its own, with the symbol's origin at `at`.
     pub fn draw_symbol(&self, symbol: &str, frame: usize, at: Vec2) {
-        self.put(self.rig.pieces_of(symbol, frame), at, 1.0, false, WHITE);
+        self.draw_symbol_as(symbol, frame, at, 1.0, false, WHITE);
+    }
+
+    pub fn draw_symbol_as(&self, symbol: &str, frame: usize, at: Vec2, scale: f32, flip_x: bool, color: Color) {
+        self.put(self.rig.pieces_of(symbol, frame), at, scale, flip_x, color);
     }
 
     fn put(&self, pieces: Vec<(&str, Affine2)>, at: Vec2, scale: f32, flip_x: bool, color: Color) {
@@ -202,6 +216,12 @@ impl Atlas {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn an_animation_names_a_symbol_by_how_it_begins() {
+        let rig = Rig::parse(SHORT).unwrap();
+        assert_eq!((rig.symbol_named("arm"), rig.symbol_named("ar"), rig.symbol_named("ar\\"), rig.symbol_named("leg")), (Some("arm"), Some("arm"), None, None));
+    }
 
     // an arm that swings over two frames, placed once looping and once held on its second frame; the second key is labelled
     const SHORT: &str = r#"{"AN": {"SN": "all", "TL": {"L": [

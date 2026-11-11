@@ -851,8 +851,9 @@ struct Animation {
     sheet: usize,
     /// Its frames; for a character drawn the Animate way one empty frame for each of `steps`.
     frames: Vec<Frame>,
-    /// The frames of the Animate timeline it goes through.
+    /// The frames of the Animate timeline it goes through: the main one, or the symbol's it names.
     steps: Vec<usize>,
+    symbol: Option<String>,
     fps: f32,
     looped: bool,
     offset: Vec2,
@@ -923,18 +924,24 @@ impl Character {
             let named = animation["name"].as_str().unwrap_or("");
             let found = match &rig {
                 // on a timeline: the frames listed, or those under the label of that name, or all of it
+                // as flxanimate: a symbol (by how its name begins; by its exact name with indices) and its own frames; else (as
+                // the game's atlases name their main timeline) the frames under that label, or the whole main timeline
                 Some(atlas) => {
-                    let (start, length) = atlas.rig.label(named).unwrap_or((0, atlas.rig.length()));
+                    let symbol = if indices.is_empty() { atlas.rig.symbol_named(named) } else { atlas.rig.symbol_named(&format!("{named}\\")) };
+                    let (start, length) = match symbol {
+                        Some(symbol) => (0, atlas.rig.symbol_length(symbol)),
+                        None => atlas.rig.label(named).unwrap_or((0, atlas.rig.length())),
+                    };
                     let steps: Vec<usize> = if indices.is_empty() { (start..start + length).collect() } else { indices.iter().map(|index| *index as usize).collect() };
                     let empty = Frame { source: Rect::new(0.0, 0.0, 0.0, 0.0), offset: Vec2::ZERO, size: Vec2::ZERO, rotated: false };
-                    Some((0, vec![empty; steps.len()], steps)).filter(|(_, _, steps)| !steps.is_empty())
+                    Some((0, vec![empty; steps.len()], steps, symbol.map(str::to_owned))).filter(|(_, _, steps, _)| !steps.is_empty())
                 }
-                None => sheets.iter().map(|sheet| sheet.animation(named, &indices)).enumerate().find(|(_, frames)| !frames.is_empty()).map(|(sheet, frames)| (sheet, frames, Vec::new())),
+                None => sheets.iter().map(|sheet| sheet.animation(named, &indices)).enumerate().find(|(_, frames)| !frames.is_empty()).map(|(sheet, frames)| (sheet, frames, Vec::new(), None)),
             };
-            if let Some((sheet, frames, steps)) = found {
+            if let Some((sheet, frames, steps, symbol)) = found {
                 // a speed of 0 means the timeline's own
                 let fps = animation["fps"].as_f64().filter(|fps| *fps > 0.0).map_or(rig.as_ref().map_or(24.0, |atlas| atlas.rig.fps), |fps| fps as f32);
-                animations.insert(animation["anim"].as_str().unwrap_or("").to_owned(), Animation { sheet, frames, steps, fps, looped: animation["loop"].as_bool().unwrap_or(false), offset: pair(&animation["offsets"]) });
+                animations.insert(animation["anim"].as_str().unwrap_or("").to_owned(), Animation { sheet, frames, steps, symbol, fps, looped: animation["loop"].as_bool().unwrap_or(false), offset: pair(&animation["offsets"]) });
             }
         }
         let sways = animations.contains_key("danceLeft") && animations.contains_key("danceRight");
@@ -1051,7 +1058,10 @@ impl Character {
         let frame = if animation.looped { frame % animation.frames.len() } else { frame.min(animation.frames.len() - 1) };
         let at = position - animation.offset - self.grow;
         match &self.rig {
-            Some(atlas) => atlas.draw(animation.steps[frame], at, self.scale, self.flip_x, tint),
+            Some(atlas) => match &animation.symbol {
+                Some(symbol) => atlas.draw_symbol_as(symbol, animation.steps[frame], at, self.scale, self.flip_x, tint),
+                None => atlas.draw(animation.steps[frame], at, self.scale, self.flip_x, tint),
+            },
             None => self.sheets[animation.sheet].draw(animation.frames[frame], at.x, at.y, self.scale, self.flip_x, tint),
         }
     }
