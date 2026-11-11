@@ -237,6 +237,8 @@ struct Playing {
     base: PathBuf,
     /// The stage plays a scene of its own before the countdown (story mode).
     staged: bool,
+    /// Seconds left of the talk's music fading out.
+    music_fade: Option<f32>,
     /// The song is over and the stage plays a scene of its own before the next.
     bowing: bool,
     /// The stage's music is playing.
@@ -344,7 +346,7 @@ impl Playing {
         atlas::forget_unused();
         let mut scene = scene;
         let staged = story && start_at <= 0.0 && !seen && scene.as_mut().is_some_and(|scene| scene.open_with(&funkin_core::content::song_path(&entry.title), 60.0 / play.chart.bpm as f32));
-        Ok(Playing { entry: entry.clone(), play, song, player_voice, own_skin: None, base: base.to_path_buf(), staged, bowing: false, tune: false, paused_at: 0.0, pause_scroll: 0.0, deaths: 0, scene, waited: 0.0, clock: Default::default(), ticked: std::time::Instant::now(), started: false, paused: None, choosing: None, difficulties, story, taunt_until: None, start_at, position: -lead_in, settings: settings.clone(), held_keys: Vec::new(), flash_until: [[f64::MIN; 4]; 2], judgement: None, last_hit: f64::MIN, lanes_used: [false; 4], idled: false, idle_for: 0.0, sang_for: 0.0,
+        Ok(Playing { entry: entry.clone(), play, song, player_voice, own_skin: None, music_fade: None, base: base.to_path_buf(), staged, bowing: false, tune: false, paused_at: 0.0, pause_scroll: 0.0, deaths: 0, scene, waited: 0.0, clock: Default::default(), ticked: std::time::Instant::now(), started: false, paused: None, choosing: None, difficulties, story, taunt_until: None, start_at, position: -lead_in, settings: settings.clone(), held_keys: Vec::new(), flash_until: [[f64::MIN; 4]; 2], judgement: None, last_hit: f64::MIN, lanes_used: [false; 4], idled: false, idle_for: 0.0, sang_for: 0.0,
             paths, cutscene, lead_in, counted: i64::MIN, popups: Vec::new(), splashes: Vec::new(), dead: None, next_event: 0, speed, speed_change: None }.with(settings))
     }
 
@@ -464,6 +466,15 @@ impl Playing {
         if let Some((since, confirmed)) = self.dead {
             return self.update_dead(since, confirmed);
         }
+        // the talk's music fades away over a second and a half once it is done with, as in the Haxe engine
+        if let Some(left) = self.music_fade.as_mut() {
+            *left -= get_frame_time().min(0.1);
+            self.song.set_music_volume(0.8 * (*left / 1.5).max(0.0));
+            if *left <= 0.0 {
+                self.song.stop_music();
+                self.music_fade = None;
+            }
+        }
         if let Some(talk) = &mut self.cutscene {
             let (accept, back) = (controls::pressed(Ui::Accept), controls::pressed(Ui::Back));
             let (cues, over) = talk.update(get_frame_time().min(0.1), accept, back);
@@ -474,8 +485,7 @@ impl Playing {
                 match cue {
                     dialogue::Cue::Sound(name, volume) => self.sound(name, volume, false),
                     dialogue::Cue::Music(name) => self.sound(name, 0.8, true),
-                    // shortcut: the music stops at once; the Haxe engine fades it out over a second and a half.
-                    dialogue::Cue::Quiet => self.song.stop_sounds(),
+                    dialogue::Cue::Quiet => self.music_fade = Some(1.5),
                 }
             }
             return Flow::Continue;
