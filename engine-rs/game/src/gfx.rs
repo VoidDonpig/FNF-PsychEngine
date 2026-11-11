@@ -453,7 +453,8 @@ fn placed(whole: Vec2, x: f32, y: f32, params: &DrawTextureParams) -> ([Vec2; 4]
 /// Consecutive things drawn from one picture, up to vertex `end`.
 struct Call {
     group: wgpu::BindGroup,
-    picture: (u64, FilterMode),
+    /// The picture, how it is stretched, and whether it adds its light to what is under it.
+    picture: (u64, FilterMode, bool),
     end: u32,
 }
 
@@ -486,7 +487,9 @@ struct Context {
     config: wgpu::SurfaceConfiguration,
     /// The format frames are drawn in: the surface's, without any conversion of colours on the way.
     format: wgpu::TextureFormat,
+    /// Drawing over what is there, and adding light to it.
     pipeline: wgpu::RenderPipeline,
+    adding: wgpu::RenderPipeline,
     layout: wgpu::BindGroupLayout,
     samplers: [wgpu::Sampler; 2],
     pictures: u64,
@@ -501,6 +504,7 @@ struct Context {
     models: Vec<Mat4>,
     recolor: Option<[Vec3; 3]>,
     blocks: f32,
+    add: bool,
     down: HashSet<KeyCode>,
     pressed: HashSet<KeyCode>,
     released: HashSet<KeyCode>,
@@ -631,7 +635,7 @@ pub fn open(conf: Conf) -> Result<(String, Option<String>), String> {
     });
     let pipeline_layout = device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor { label: None, bind_group_layouts: &[Some(&layout)], ..Default::default() });
     let attributes = wgpu::vertex_attr_array![0 => Float32x2, 1 => Float32x2, 2 => Float32x4, 3 => Float32x3, 4 => Float32x3, 5 => Float32x3, 6 => Float32, 7 => Float32];
-    let pipeline = device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
+    let pipeline_with = |blend: wgpu::BlendState| device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
         label: None,
         layout: Some(&pipeline_layout),
         vertex: wgpu::VertexState {
@@ -647,19 +651,23 @@ pub fn open(conf: Conf) -> Result<(String, Option<String>), String> {
             module: &shader,
             entry_point: Some("pixel"),
             compilation_options: Default::default(),
-            targets: &[Some(wgpu::ColorTargetState { format, blend: Some(wgpu::BlendState::ALPHA_BLENDING), write_mask: wgpu::ColorWrites::ALL })],
+            targets: &[Some(wgpu::ColorTargetState { format, blend: Some(blend), write_mask: wgpu::ColorWrites::ALL })],
         }),
         multiview_mask: None,
         cache: None,
     });
+    let pipeline = pipeline_with(wgpu::BlendState::ALPHA_BLENDING);
+    // light: what is drawn is added to what is there (Flixel's ADD), as much as it is opaque
+    let light = wgpu::BlendComponent { src_factor: wgpu::BlendFactor::SrcAlpha, dst_factor: wgpu::BlendFactor::One, operation: wgpu::BlendOperation::Add };
+    let adding = pipeline_with(wgpu::BlendState { color: light, alpha: wgpu::BlendState::ALPHA_BLENDING.alpha });
     let sampler = |filter: wgpu::FilterMode| device.create_sampler(&wgpu::SamplerDescriptor { mag_filter: filter, min_filter: filter, ..Default::default() });
     let samplers = [sampler(wgpu::FilterMode::Linear), sampler(wgpu::FilterMode::Nearest)];
 
     let info = adapter.get_info();
     let now = Instant::now();
     let mut context = Context {
-        event_loop: Some(event_loop), app, window, instance, surface: Some(surface), device, queue, config, format, pipeline, layout, samplers, pictures: 0, white: None, letters: None,
-        vertices: Vec::new(), calls: Vec::new(), buffer: None, background: BLACK, camera: Mat4::IDENTITY, models: Vec::new(), recolor: None, blocks: 0.0,
+        event_loop: Some(event_loop), app, window, instance, surface: Some(surface), device, queue, config, format, pipeline, adding, layout, samplers, pictures: 0, white: None, letters: None,
+        vertices: Vec::new(), calls: Vec::new(), buffer: None, background: BLACK, camera: Mat4::IDENTITY, models: Vec::new(), recolor: None, blocks: 0.0, add: false,
         down: HashSet::new(), pressed: HashSet::new(), released: HashSet::new(), last_pressed: None, typed: VecDeque::new(), alt_enter: false, focused: true, mouse: Mouse::default(),
         started: now, frame_began: now, frame_time: 1.0 / 60.0, due: now, open: true,
     };
@@ -722,7 +730,7 @@ impl Context {
     /// A four-cornered piece of a picture: corners clockwise from the top left, with the part of the picture (0 to 1) at each.
     fn quad(&mut self, picture: &Texture2D, corners: [Vec2; 4], uvs: [Vec2; 4], color: Color) {
         let filter = picture.0.filter.get();
-        let id = (picture.0.id, filter);
+        let id = (picture.0.id, filter, self.add);
         if self.calls.last().is_none_or(|call| call.picture != id) {
             self.calls.push(Call { group: picture.0.groups[filter as usize].clone(), picture: id, end: self.vertices.len() as u32 });
         }
@@ -776,10 +784,13 @@ impl Context {
             let background = wgpu::Color { r: self.background.r as f64, g: self.background.g as f64, b: self.background.b as f64, a: 1.0 };
             let onto = wgpu::RenderPassColorAttachment { view: target, depth_slice: None, resolve_target: None, ops: wgpu::Operations { load: wgpu::LoadOp::Clear(background), store: wgpu::StoreOp::Store } };
             let mut pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor { color_attachments: &[Some(onto)], ..Default::default() });
-            pass.set_pipeline(&self.pipeline);
             pass.set_vertex_buffer(0, buffer.slice(..));
-            let mut from = 0;
+            let (mut from, mut adding) = (0, None);
             for call in &self.calls {
+                if adding != Some(call.picture.2) {
+                    adding = Some(call.picture.2);
+                    pass.set_pipeline(if call.picture.2 { &self.adding } else { &self.pipeline });
+                }
                 pass.set_bind_group(0, &call.group, &[]);
                 pass.draw(from..call.end, 0..1);
                 from = call.end;
@@ -937,7 +948,7 @@ pub fn next_frame(fps: f64) -> bool {
         context.vertices.clear();
         context.calls.clear();
         context.models.clear();
-        (context.recolor, context.blocks, context.last_pressed) = (None, 0.0, None);
+        (context.recolor, context.blocks, context.add, context.last_pressed) = (None, 0.0, false, None);
 
         // sleeping is coarse: it stops a little short, and the rest is waited out awake
         if let Some(left) = context.due.checked_duration_since(Instant::now()).and_then(|left| left.checked_sub(Duration::from_millis(1))) {
@@ -992,6 +1003,11 @@ pub fn pop_model_matrix() {
 /// Pictures drawn from now on are shown in squares of `blocks` of their own pixels (0: as they are).
 pub fn coarse(blocks: f32) {
     with(|context| context.blocks = blocks);
+}
+
+/// Whether what is drawn from now on adds its light to what is under it (Flixel's ADD blend) instead of covering it.
+pub fn blend_add(on: bool) {
+    with(|context| context.add = on);
 }
 
 pub fn recolor(colors: Option<[Vec3; 3]>) {

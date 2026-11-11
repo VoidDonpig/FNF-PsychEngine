@@ -50,6 +50,8 @@ struct LayerDef {
     after: usize,
     /// Pixel art keeps its hard edges.
     pixel: bool,
+    /// It adds its light to what is behind it (Flixel's ADD) instead of covering it.
+    add: bool,
     /// Grows around its middle instead of from its top left corner.
     centered: bool,
     /// Left out on low quality.
@@ -63,7 +65,7 @@ struct LayerDef {
 }
 
 fn layer(image: &'static str, x: f32, y: f32, scroll_x: f32, scroll_y: f32) -> LayerDef {
-    LayerDef { image, at: vec2(x, y), scroll: vec2(scroll_x, scroll_y), size: Size::Times(1.0), flip: false, flip_y: false, anim: None, fps: 24.0, front: false, after: 0, pixel: false, centered: false, detail: false, tint: WHITE, angle: 0.0, stretch: Vec2::ONE, indices: &[] }
+    LayerDef { image, at: vec2(x, y), scroll: vec2(scroll_x, scroll_y), size: Size::Times(1.0), flip: false, flip_y: false, anim: None, fps: 24.0, front: false, after: 0, pixel: false, add: false, centered: false, detail: false, tint: WHITE, angle: 0.0, stretch: Vec2::ONE, indices: &[] }
 }
 
 /// The backdrop of a stage, back to front. The numbers are those of source/states/stages.
@@ -77,6 +79,7 @@ fn backdrop(stage: &str, low: bool) -> Vec<LayerDef> {
     let front = |def: LayerDef| LayerDef { front: true, ..def };
     let pixel = |def: LayerDef| LayerDef { pixel: true, ..def };
     let detail = |def: LayerDef| LayerDef { detail: true, ..def };
+    let light = |def: LayerDef| LayerDef { add: true, tint: Color { a: 0.6, ..WHITE }, ..detail(def) };
     // pixel stages draw their 311 pixel wide pictures six times as large
     let wide = 311.0 * 6.0;
     let mut layers = match stage {
@@ -183,12 +186,15 @@ fn backdrop(stage: &str, low: bool) -> Vec<LayerDef> {
             detail(layer("phillyStreets/phillyForegroundCity", 625.0, 94.0, 0.3, 0.3)),
             layer("phillyStreets/phillyConstruction", 1800.0, 364.0, 0.7, 1.0),
             layer("phillyStreets/phillyHighwayLights", 284.0, 305.0, 1.0, 1.0),
+            // the glow of the lamps, added over them
+            light(layer("phillyStreets/phillyHighwayLights_lightmap", 284.0, 305.0, 1.0, 1.0)),
             layer("phillyStreets/phillyHighway", 139.0, 209.0, 1.0, 1.0),
             detail(layer("phillyStreets/phillySmog", -6.0, 245.0, 0.8, 1.0)),
-            // shortcut: the light maps over the lamps (added brightness) and the rain are left out.
+            // shortcut: the rain (a shader in the Haxe engine) is left out.
             detail(moving("car1", Still, layer("phillyStreets/phillyCars", 1200.0, 818.0, 0.9, 1.0))),
             LayerDef { flip: true, ..detail(moving("car1", Still, layer("phillyStreets/phillyCars", 1200.0, 818.0, 0.9, 1.0))) },
             detail(moving("redtogreen", Once, layer("phillyStreets/phillyTraffic", 1840.0, 608.0, 0.9, 1.0))),
+            light(layer("phillyStreets/phillyTraffic_lightmap", 1840.0, 608.0, 0.9, 1.0)),
             layer("phillyStreets/phillyForeground", 88.0, 317.0, 1.0, 1.0),
             front(layer("SpraycanPile", 920.0, 1045.0, 1.0, 1.0)),
         ],
@@ -756,10 +762,12 @@ impl Layer {
             let middle = (at + size * scale / 2.0).extend(0.0);
             push_model_matrix(Mat4::from_translation(middle) * Mat4::from_scale(vec3(1.0, -1.0, 1.0)) * Mat4::from_translation(-middle));
         }
+        blend_add(self.def.add);
         match frame {
             Some(f) => crate::atlas::draw_frame(&self.texture, self.frames[f], at.x, at.y, scale, self.def.flip, tint),
             None => draw_texture_ex(&self.texture, at.x, at.y, tint, DrawTextureParams { dest_size: Some(size * scale), flip_x: self.def.flip, ..Default::default() }),
         }
+        blend_add(false);
         if self.def.flip_y {
             pop_model_matrix();
         }
@@ -2212,19 +2220,23 @@ impl Scene {
             layer.draw(scroll);
         }
         if let Some(spot) = &self.spotlight {
-            // shortcut: the light and the smoke are laid over the stage; the Haxe engine adds their brightness to it.
             if spot.on {
                 cover(Color::new(0.0, 0.0, 0.0, 0.25));
                 // the light goes out for a moment whenever it turns to someone
                 if let Some(lit) = [&self.opponent, &self.player][spot.who].as_ref().filter(|_| spot.since >= 0.12) {
                     let at = vec2(lit.middle().x - spot.light.width() / 2.0, lit.position.y + lit.size.y - spot.light.height() + 50.0);
+                    // the light and the smoke add their brightness to the stage
+                    blend_add(true);
                     draw_texture(&spot.light, at.x, at.y, Color::new(1.0, 1.0, 1.0, 0.375));
+                    blend_add(false);
                 }
             }
             for (side, (at, scale, _)) in spot.drifts.iter().enumerate().filter(|_| spot.fog > 0.0) {
                 let at = *at + scroll * (Vec2::ONE - vec2(1.2, 1.05));
                 let params = DrawTextureParams { dest_size: Some(spot.smoke.size() * *scale), flip_x: side == 1, ..Default::default() };
+                blend_add(true);
                 draw_texture_ex(&spot.smoke, at.x, at.y, Color::new(1.0, 1.0, 1.0, spot.fog), params);
+                blend_add(false);
             }
         }
         self.abot.iter().for_each(|abot| abot.draw());
@@ -2295,9 +2307,21 @@ impl Scene {
         if age < length {
             cover(Color { a: color.a * (1.0 - age / length), ..color });
         }
+        // lightning adds white light; the dark covers
+        let light = |color: Color| {
+            blend_add(true);
+            cover(color);
+            blend_add(false);
+        };
         if let Some((stunt, t, _)) = self.stunt {
-            let shade = if stunt == Stunt::Lightning { WHITE } else { BLACK };
-            cover(Color { a: stunt_at(stunt, t).0, ..shade });
+            let cover_by = stunt_at(stunt, t).0;
+            if stunt == Stunt::Lightning { light(Color { a: cover_by, ..WHITE }) } else { cover(Color { a: cover_by, ..BLACK }) }
+        }
+        // the strike on the Blazin stage brightens everything a moment
+        if let (Own::Blazin { since, .. }, false) = (&self.own, self.low) {
+            if *since < 0.3 {
+                light(Color::new(1.0, 1.0, 1.0, 0.3 * (1.0 - since / 0.3)));
+            }
         }
         if let Own::Spooky { since, .. } = self.own {
             // the lightning whitens everything: up at once, held, then gone
@@ -2307,7 +2331,7 @@ impl Scene {
                 t => 0.5 * (1.0 - (t - 0.15) / 0.25),
             };
             if alpha > 0.0 && self.flashing {
-                cover(Color::new(1.0, 1.0, 1.0, alpha));
+                light(Color::new(1.0, 1.0, 1.0, alpha));
             }
         }
     }
