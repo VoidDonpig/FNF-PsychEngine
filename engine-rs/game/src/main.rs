@@ -223,6 +223,23 @@ fn lane_x(settings: &Settings, player: bool, lane: usize) -> f32 {
     left + LANE_WIDTH * lane as f32 + LANE_WIDTH / 2.0
 }
 
+/// A strum as scripts see it (the Haxe engine's StrumNote): its corner, opacity, turn, the direction its notes come
+/// along (90: straight down the screen's y), whether it shows.
+#[derive(Clone, Copy, Debug, PartialEq)]
+struct Strum {
+    x: f32,
+    y: f32,
+    alpha: f32,
+    angle: f32,
+    direction: f32,
+    visible: bool,
+}
+
+/// Where the game puts the strums of each side (the opponent's, then the player's).
+fn strums(settings: &Settings) -> [[Strum; 4]; 2] {
+    [false, true].map(|player| std::array::from_fn(|lane| Strum { x: lane_x(settings, player, lane) - LANE_WIDTH / 2.0, y: strum_y(settings) - LANE_WIDTH / 2.0, alpha: 1.0, angle: 0.0, direction: 90.0, visible: true }))
+}
+
 fn strum_y(settings: &Settings) -> f32 {
     if settings.downscroll { HEIGHT - 150.0 + LANE_WIDTH / 2.0 } else { 50.0 + LANE_WIDTH / 2.0 }
 }
@@ -243,6 +260,8 @@ struct Playing {
     /// The song's Lua scripts; the step and section they were last told of; whether onEndSong was asked, and whether a
     /// script stopped the end of the song.
     lua: lua::Scripts,
+    /// The strums, where the game or the scripts put them.
+    strums: [[Strum; 4]; 2],
     /// A flash a script asked for: the camera it covers, its colour, when it began and how long it fades.
     flash: Option<(lua::Cam, Color, f64, f64)>,
     lua_step: i64,
@@ -357,7 +376,7 @@ impl Playing {
         let mut scene = scene;
         let staged = story && start_at <= 0.0 && !seen && scene.as_mut().is_some_and(|scene| scene.open_with(&funkin_core::content::song_path(&entry.title), 60.0 / play.chart.bpm as f32));
         let lua = start_scripts(base, &paths, entry, &play.chart, settings, story, seen);
-        Ok(Playing { entry: entry.clone(), play, song, player_voice, own_skin: None, music_fade: None, lua, flash: None, lua_step: i64::MIN, lua_section: usize::MAX, end_asked: false, end_held: false, base: base.to_path_buf(), staged, bowing: false, tune: false, paused_at: 0.0, pause_scroll: 0.0, deaths: 0, scene, waited: 0.0, clock: Default::default(), ticked: std::time::Instant::now(), started: false, paused: None, choosing: None, difficulties, story, taunt_until: None, start_at, position: -lead_in, settings: settings.clone(), held_keys: Vec::new(), flash_until: [[f64::MIN; 4]; 2], judgement: None, last_hit: f64::MIN, lanes_used: [false; 4], idled: false, idle_for: 0.0, sang_for: 0.0,
+        Ok(Playing { entry: entry.clone(), play, song, player_voice, own_skin: None, music_fade: None, lua, strums: strums(settings), flash: None, lua_step: i64::MIN, lua_section: usize::MAX, end_asked: false, end_held: false, base: base.to_path_buf(), staged, bowing: false, tune: false, paused_at: 0.0, pause_scroll: 0.0, deaths: 0, scene, waited: 0.0, clock: Default::default(), ticked: std::time::Instant::now(), started: false, paused: None, choosing: None, difficulties, story, taunt_until: None, start_at, position: -lead_in, settings: settings.clone(), held_keys: Vec::new(), flash_until: [[f64::MIN; 4]; 2], judgement: None, last_hit: f64::MIN, lanes_used: [false; 4], idled: false, idle_for: 0.0, sang_for: 0.0,
             paths, cutscene, lead_in, counted: i64::MIN, popups: Vec::new(), splashes: Vec::new(), dead: None, next_event: 0, speed, speed_change: None }.with(settings))
     }
 
@@ -385,6 +404,10 @@ impl Playing {
             if let Some(skin) = &self.own_skin {
                 skin.recolor(if self.pixel() { &settings.pixel_note_colors } else { &settings.note_colors });
             }
+        }
+        // (a change of downscroll or middlescroll puts them back where the game has them)
+        if (settings.downscroll, settings.middlescroll) != (self.settings.downscroll, self.settings.middlescroll) {
+            self.strums = strums(settings);
         }
         self.settings = settings.clone();
         self
@@ -826,6 +849,12 @@ impl Playing {
         for (name, value) in props {
             shared.insert(name.to_owned(), serde_json::json!(value));
         }
+        // the strums, as "strum<0-7>.<field>" (the opponent's first, as strumLineNotes has them)
+        for (index, strum) in self.strums.iter().flatten().enumerate() {
+            for (field, value) in [("x", serde_json::json!(strum.x)), ("y", serde_json::json!(strum.y)), ("alpha", serde_json::json!(strum.alpha)), ("angle", serde_json::json!(strum.angle)), ("direction", serde_json::json!(strum.direction)), ("visible", serde_json::json!(strum.visible))] {
+                shared.insert(format!("strum{index}.{field}"), value);
+            }
+        }
     }
 
     /// Does what the scripts asked for. A flow when one of them ends, restarts or leaves the song.
@@ -842,6 +871,22 @@ impl Playing {
                     self.scene.iter_mut().for_each(|scene| scene.event(&event));
                 }
                 lua::Request::Dance { who } => self.scene.iter_mut().for_each(|scene| scene.dance(&who)),
+                lua::Request::SetProperty { name, value } if name.starts_with("strum") => {
+                    let strum = name.strip_prefix("strum").and_then(|rest| rest.split_once('.')).and_then(|(index, field)| Some((index.parse::<usize>().ok().filter(|index| *index < 8)?, field)));
+                    let number = value.as_f64().or_else(|| value.as_bool().map(|flag| flag as u8 as f64)).unwrap_or(0.0) as f32;
+                    if let Some((index, field)) = strum {
+                        let strum = &mut self.strums[index / 4][index % 4];
+                        match field {
+                            "x" => strum.x = number,
+                            "y" => strum.y = number,
+                            "alpha" => strum.alpha = number,
+                            "angle" => strum.angle = number,
+                            "direction" => strum.direction = number,
+                            "visible" => strum.visible = number != 0.0,
+                            _ => eprintln!("Lua: {field} of a strum is not known here"),
+                        }
+                    }
+                }
                 lua::Request::SetProperty { name, value } => match (name.as_str(), value.as_f64()) {
                     ("health", Some(health)) => self.play.health = health.clamp(0.0, 2.0),
                     ("songScore", Some(score)) => self.play.score = score as i64,
@@ -961,20 +1006,36 @@ impl Playing {
         // with middlescroll, or when the player wants them gone, the opponent still plays but is not shown
         let shown = |player: bool| player || (!settings.middlescroll && settings.opponent_strums);
 
+        // a strum's middle, and drawing turned about it
+        let middle = |strum: &Strum| vec2(strum.x, strum.y) + LANE_WIDTH / 2.0;
+        let turned = |at: Vec2, angle: f32, draw: &dyn Fn()| {
+            if angle == 0.0 {
+                return draw();
+            }
+            push_model_matrix(Mat4::from_translation(at.extend(0.0)) * Mat4::from_rotation_z(angle.to_radians()) * Mat4::from_translation(-at.extend(0.0)));
+            draw();
+            pop_model_matrix();
+        };
         for side in (0..2).filter(|&side| shown(side == 1)) {
             for lane in 0..4 {
-                let (x, hit) = (lane_x(settings, side == 1, lane), position < self.flash_until[side][lane]);
+                let strum = &self.strums[side][lane];
+                if !strum.visible {
+                    continue;
+                }
+                let hit = position < self.flash_until[side][lane];
                 let held = side == 1 && !self.play.botplay && self.lane_held(lane);
                 // outside story mode the arrows drop in one after the other, over a second each
                 let arrived = if self.story { 1.0 } else { ((self.waited as f32 / 1000.0 - 0.5 - 0.2 * lane as f32).clamp(0.0, 1.0) - 1.0).powi(2) };
-                let (shown, y) = ((1.0 - arrived).sqrt(), strum_y - 10.0 * (1.0 - (1.0 - arrived).sqrt()));
-                if hit {
-                    skin.frame(&format!("{} confirm0003", DIRECTIONS[lane]), x, y, None, Some(lane), shown);
-                } else if held {
-                    skin.frame(&format!("{} press0003", DIRECTIONS[lane]), x, y, None, Some(lane), shown);
-                } else {
-                    skin.frame(&format!("arrow{}0000", DIRECTIONS[lane].to_uppercase()), x, y, None, None, shown);
-                }
+                let (shown, at) = ((1.0 - arrived).sqrt() * strum.alpha, middle(strum) - vec2(0.0, 10.0 * (1.0 - (1.0 - arrived).sqrt())));
+                turned(at, strum.angle, &|| {
+                    if hit {
+                        skin.frame(&format!("{} confirm0003", DIRECTIONS[lane]), at.x, at.y, None, Some(lane), shown);
+                    } else if held {
+                        skin.frame(&format!("{} press0003", DIRECTIONS[lane]), at.x, at.y, None, Some(lane), shown);
+                    } else {
+                        skin.frame(&format!("arrow{}0000", DIRECTIONS[lane].to_uppercase()), at.x, at.y, None, None, shown);
+                    }
+                });
             }
         }
 
@@ -984,11 +1045,19 @@ impl Playing {
         // holds first so that heads lie on top of them
         for pass in 0..2 {
             for (note, &state) in notes.clone() {
-                let x = lane_x(settings, note.player, note.lane);
-                let alpha = if state == NoteState::Missed { 0.3 } else { 1.0 };
+                // a note comes along its strum's direction, as the Haxe engine moves it (straight down the y at 90)
+                let strum = &self.strums[note.player as usize][note.lane];
+                if !strum.visible {
+                    continue;
+                }
+                let (centre, turn) = (middle(strum), strum.direction.to_radians());
+                let x = centre.x + turn.cos() * (y_at(note.time) - strum_y);
+                let along = |time: f64| centre.y + turn.sin() * (y_at(time) - strum_y);
+                let alpha = if state == NoteState::Missed { 0.3 } else { 1.0 } * strum.alpha;
                 if pass == 0 && note.sustain > 0.0 && state != NoteState::Done {
-                    let head = if state == NoteState::Held { strum_y } else { y_at(note.time) };
-                    let tail = y_at(note.time + note.sustain);
+                    // shortcut: holds stay upright whatever the strum's direction; turn them with it if a mod's chart shows it
+                    let head = if state == NoteState::Held { centre.y } else { along(note.time) };
+                    let tail = along(note.time + note.sustain);
                     let (top, bottom) = (head.min(tail), head.max(tail));
                     // a held hold ends at the strum: nothing left once its tail has passed it
                     if (tail - head) * direction > 0.0 && bottom > 0.0 && top < HEIGHT {
@@ -1000,9 +1069,10 @@ impl Playing {
                         skin.frame(&format!("{} hold end0000", NOTE_NAMES[note.lane]), x, cap_y, Some(vec2(skin.hold.x, cap * direction)), Some(note.lane), 0.6 * alpha);
                     }
                 }
-                if pass == 1 && matches!(state, NoteState::Pending | NoteState::Missed) && on_screen(y_at(note.time)) {
+                if pass == 1 && matches!(state, NoteState::Pending | NoteState::Missed) && on_screen(along(note.time)) {
                     let tint = if note.kind == NoteKind::Hurt { None } else { Some(note.lane) }; // hurt notes show as raw masks
-                    skin.frame(&format!("{}0000", NOTE_NAMES[note.lane]), x, y_at(note.time), None, tint, alpha);
+                    let at = vec2(x, along(note.time));
+                    turned(at, strum.angle, &|| skin.frame(&format!("{}0000", NOTE_NAMES[note.lane]), at.x, at.y, None, tint, alpha));
                 }
             }
         }
@@ -1015,7 +1085,8 @@ impl Playing {
                     recolor(skin.colors(lane));
                     // pixel stages show them as coarse as everything else there
                     coarse(if self.pixel() { PIXEL_ZOOM } else { 0.0 });
-                    sheet.draw(frame, lane_x(settings, true, lane) - frame.size.x / 2.0, strum_y - frame.size.y / 2.0, 1.0, false, Color::new(1.0, 1.0, 1.0, settings.splash_alpha as f32));
+                    let at = middle(&self.strums[1][lane]);
+                    sheet.draw(frame, at.x - frame.size.x / 2.0, at.y - frame.size.y / 2.0, 1.0, false, Color::new(1.0, 1.0, 1.0, settings.splash_alpha as f32));
                     (recolor(None), coarse(0.0));
                 }
             }
@@ -1188,6 +1259,12 @@ fn start_scripts(base: &Path, paths: &Paths, entry: &SongEntry, chart: &Chart, s
         ("noteOffset", json!(settings.offset_ms)), ("healthBarAlpha", json!(settings.health_bar_alpha)), ("noResetButton", json!(settings.no_reset)),
         ("lowQuality", json!(settings.low_quality)), ("shadersEnabled", json!(settings.shaders)),
     ];
+    // where the game puts the strums, which scripts move them from
+    let places = strums(settings);
+    let defaults: Vec<(String, serde_json::Value)> = (0..4).flat_map(|lane| {
+        [("Opponent", 0), ("Player", 1)].into_iter().flat_map(move |(side, at)| [(format!("default{side}StrumX{lane}"), json!(places[at][lane].x)), (format!("default{side}StrumY{lane}"), json!(places[at][lane].y))])
+    }).collect();
+    let globals: Vec<(&str, serde_json::Value)> = globals.into_iter().chain(defaults.iter().map(|(name, value)| (name.as_str(), value.clone()))).collect();
     let mut shared = lua::Shared::new(settings.mod_settings.clone(), &entry.source, paths.clone());
     (shared.note_keys, shared.save_dir) = (settings.keys, base.join("funkin-rs-lua-saves"));
     let mut scripts = lua::Scripts::start(&files, &globals, shared);

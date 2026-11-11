@@ -698,6 +698,30 @@ impl Scripts {
             Ok(())
         });
 
+        // the strums, by their group and number (strumLineNotes: the opponent's 0-3, the player's 4-7)
+        let strum = |group: &str, index: usize| -> Option<usize> {
+            match group {
+                "strumLineNotes" if index < 8 => Some(index),
+                "opponentStrums" if index < 4 => Some(index),
+                "playerStrums" if index < 4 => Some(index + 4),
+                _ => None,
+            }
+        };
+        function!("getPropertyFromGroup", |lua, shared, args: (String, usize, String)| {
+            let value = strum(&args.0, args.1).and_then(|index| shared.borrow().props.get(&format!("strum{index}.{}", args.2)).cloned());
+            if value.is_none() {
+                eprintln!("Lua: getPropertyFromGroup {} {} {} is not known here", args.0, args.1, args.2);
+            }
+            from_json(lua, &value.unwrap_or_default())
+        });
+        function!("setPropertyFromGroup", |_lua, shared, args: (String, usize, String, Value)| {
+            match strum(&args.0, args.1) {
+                Some(index) => shared.borrow_mut().requests.push(Request::SetProperty { name: format!("strum{index}.{}", args.2), value: to_json(&args.3) }),
+                None => eprintln!("Lua: setPropertyFromGroup {} {} {} is not known here", args.0, args.1, args.2),
+            }
+            Ok(())
+        });
+
         // sprites: made, given pictures and animations, added in front of the characters or behind them, and moved about
         let make = |shared: &mut Shared, tag: String, image: Option<String>, x: Option<f64>, y: Option<f64>, animated: bool| {
             let art = image.filter(|image| !image.is_empty()).and_then(|image| shared.art(&image, animated));
@@ -841,6 +865,14 @@ impl Scripts {
             let shared = shared.clone();
             g.set(name, lua.create_function(move |_, args: (String, String, f64, f64, Option<String>)| {
                 tween(&mut shared.borrow_mut(), args.0, args.1, field, args.2, args.3, args.4, None);
+                Ok(())
+            })?)?;
+        }
+        // a strum (0-7, as strumLineNotes numbers them) moved by a tween
+        for (name, field) in [("noteTweenX", "x"), ("noteTweenY", "y"), ("noteTweenAlpha", "alpha"), ("noteTweenAngle", "angle"), ("noteTweenDirection", "direction")] {
+            let shared = shared.clone();
+            g.set(name, lua.create_function(move |_, args: (String, usize, f64, f64, Option<String>)| {
+                tween(&mut shared.borrow_mut(), args.0, format!("strum{}", args.1 % 8), field, args.2, args.3, args.4, None);
                 Ok(())
             })?)?;
         }
