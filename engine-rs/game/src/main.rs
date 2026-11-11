@@ -999,6 +999,19 @@ fn main() {
                     save.save(&base);
                     Screen::Menu(page)
                 }
+                Some(Go::Egg(word)) => {
+                    save.egg = if save.egg == word { String::new() } else { word.to_owned() };
+                    save.save(&base);
+                    Screen::Menu(page)
+                }
+                Some(Go::Unlock(id)) => {
+                    if save.unlock(id) {
+                        save.save(&base);
+                        toasts.push((id, get_time()));
+                        chime = true;
+                    }
+                    Screen::Menu(page)
+                }
                 Some(Go::Quit) | None => break,
             },
             Screen::Options(mut menu, back) => {

@@ -13,7 +13,6 @@ const fn shown(id: &'static str, name: &'static str, text: &'static str) -> Achi
     Achievement { id, name, text, hidden: false }
 }
 
-// shortcut: "Roadkill Enthusiast" (it counts the limo's henchmen) and "Engine Gal Pal" (the title screen's easter egg) join with those features.
 pub const LIST: &[Achievement] = &[
     Achievement { id: "friday_night_play", name: "Freaky on a Friday Night", text: "Play on a Friday... Night.", hidden: true },
     shown("week1_nomiss", "She Calls Me Daddy Too", "Beat Week 1 on Hard with no Misses."),
@@ -31,6 +30,7 @@ pub const LIST: &[Achievement] = &[
     shown("hype", "Hyperactive", "Finish a Song without going back to Idle."),
     shown("two_keys", "Just the Two of Us", "Finish a Song pressing only two keys."),
     shown("toastie", "Toaster Gamer", "Have you tried to run the game on a toaster?"),
+    Achievement { id: "pessy_easter_egg", name: "Engine Gal Pal", text: "Teehee, you found me~!", hidden: true },
     Achievement { id: "debugger", name: "Debugger", text: "Beat the \"Test\" Stage from the Chart Editor.", hidden: true },
 ];
 

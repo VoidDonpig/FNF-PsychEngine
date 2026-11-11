@@ -16,6 +16,8 @@ pub struct Save {
     achievements: BTreeSet<String>,
     /// How far the achievements that are counted up to have got.
     counts: BTreeMap<String, u32>,
+    /// The word last typed on the title screen, while its dancer stays.
+    pub egg: String,
 }
 
 fn key(name: &str, difficulty: &str) -> String {
@@ -93,7 +95,7 @@ impl Save {
 
     pub fn to_json(&self) -> String {
         let songs: BTreeMap<&String, Value> = self.songs.iter().map(|(name, (score, accuracy))| (name, json!({ "score": score, "accuracy": accuracy }))).collect();
-        serde_json::to_string_pretty(&json!({ "songs": songs, "weeks": self.weeks, "completed": self.completed, "achievements": self.achievements, "counts": self.counts })).unwrap_or_default()
+        serde_json::to_string_pretty(&json!({ "songs": songs, "weeks": self.weeks, "completed": self.completed, "achievements": self.achievements, "counts": self.counts, "egg": self.egg })).unwrap_or_default()
     }
 
     /// Anything missing or unreadable is left empty.
@@ -107,6 +109,7 @@ impl Save {
             completed: names("completed"),
             achievements: names("achievements"),
             counts: entries("counts").filter_map(|(name, count)| Some((name, count.as_u64()? as u32))).collect(),
+            egg: value["egg"].as_str().unwrap_or("").to_owned(),
         }
     }
 

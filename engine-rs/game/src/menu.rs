@@ -5,6 +5,7 @@ use crate::{Skin, HEIGHT, WIDTH};
 use funkin_core::content::{mods as find_mods, save_mods, song_path, Paths, SongEntry, Week};
 use funkin_core::achievements::{LIST as ACHIEVEMENTS, ROADKILL};
 use funkin_core::save::Save;
+use funkin_core::title::{typed, Title};
 use crate::controls::Ui;
 use crate::gfx::*;
 use std::collections::HashMap;
@@ -34,6 +35,10 @@ pub enum Go {
     Play(Vec<usize>, Option<usize>),
     /// The player wants a best score forgotten: of a week (true) or a song, by its name and difficulty.
     Reset(Reset, String, String),
+    /// A hidden dancer's word was typed on the title screen: she comes, or leaves if she was there.
+    Egg(&'static str),
+    /// Something in the menus earned an achievement.
+    Unlock(&'static str),
 }
 
 const UP: Ui = Ui::Up;
@@ -42,10 +47,6 @@ const LEFT: Ui = Ui::Left;
 const RIGHT: Ui = Ui::Right;
 const ACCEPT: Ui = Ui::Accept;
 const BACK: Ui = Ui::Back;
-/// Tempo of the menu music.
-// shortcut: the stock title screen (tempo, positions, dance frames); read images/gfDanceTitle.json once a mod's own title screen matters.
-const MENU_BPM: f64 = 102.0;
-
 fn pressed(action: &Ui) -> bool {
     crate::controls::pressed(*action)
 }
@@ -169,15 +170,22 @@ struct MenuCharacter {
 /// Pictures of the menus, read from disk the first time they are shown.
 struct Art {
     base: PathBuf,
+    /// The first mod switched on: the menus look in it before the game's own files, as a song looks in its mod.
+    top: String,
     images: HashMap<String, Option<Texture2D>>,
     sheets: HashMap<String, Option<Rc<Sheet>>>,
     characters: HashMap<String, Option<Rc<MenuCharacter>>>,
 }
 
 impl Art {
+    fn new(base: &Path) -> Art {
+        let top = find_mods(base).into_iter().find(|(_, on)| *on).map_or(String::new(), |(name, _)| name);
+        Art { base: base.to_path_buf(), top, images: HashMap::new(), sheets: HashMap::new(), characters: HashMap::new() }
+    }
+
     /// The picture "images/<name>.png" of a mod (`source`) or of the game.
     fn image(&mut self, source: &str, name: &str) -> Option<Texture2D> {
-        let base = &self.base;
+        let (base, source) = (&self.base, if source.is_empty() { &self.top } else { source });
         self.images.entry(format!("{source}/{name}")).or_insert_with(|| {
             let path = Paths::new(base, source, "").find(&format!("images/{name}.png"))?;
             crate::atlas::picture(&path)
@@ -191,7 +199,7 @@ impl Art {
     }
 
     fn sheet(&mut self, source: &str, name: &str) -> Option<Rc<Sheet>> {
-        let base = &self.base;
+        let (base, source) = (&self.base, if source.is_empty() { &self.top } else { source });
         self.sheets.entry(format!("{source}/{name}")).or_insert_with(|| {
             let path = Paths::new(base, source, "").find(&format!("images/{name}.png"))?;
             Sheet::load(&path).map_err(|e| eprintln!("{e}")).ok().map(Rc::new)
@@ -331,6 +339,15 @@ pub struct Menus {
     audio: Option<Song>,
     /// When the menu music started (program time, s). The title screen moves to it.
     music_at: f64,
+    /// How the title screen is laid out, once it was looked up.
+    look: Option<Rc<Title>>,
+    /// Letters typed on the title screen, and when they last spelled a hidden dancer's word (the screen goes black for the change).
+    letters: String,
+    secret: Option<f64>,
+    /// The sound greeting a dancer just typed in: when it began and how long the title waits for it.
+    jingle: Option<(f64, f64)>,
+    /// The menu music changing loudness: since when, from what, to what, over how many seconds.
+    fade: Option<(f64, f32, f32, f64)>,
     /// Whether the title screen still shows its opening lines, and the two random ones among them.
     intro: bool,
     wacky: [String; 2],
@@ -455,13 +472,14 @@ fn looped(frames: &[Frame]) -> Option<Frame> {
 
 impl Menus {
     pub fn new(base: &Path) -> Menus {
-        let paths = Paths::new(base, "", "");
+        let art = Art::new(base);
+        let paths = Paths::new(base, &art.top, "");
         rand::srand(std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map_or(1, |since| since.as_nanos() as u64));
         let lines = paths.find("data/introText.txt").and_then(|path| std::fs::read_to_string(path).ok()).unwrap_or_default();
         let lines: Vec<&str> = lines.lines().filter(|line| line.contains("--")).collect();
         let wacky = lines.get(rand::gen_range(0, lines.len().max(1))).and_then(|line| line.split_once("--")).unwrap_or(("", ""));
         Menus {
-            art: Art { base: base.to_path_buf(), images: HashMap::new(), sheets: HashMap::new(), characters: HashMap::new() },
+            art, look: None, letters: String::new(), secret: None, jingle: None, fade: None,
             alphabet: Alphabet::load(&paths), paths, audio: None, music_at: 0.0, intro: true, wacky: [wacky.0.to_owned(), wacky.1.to_owned()], flash: (f64::MIN, 1.0), chosen: None,
             main_row: 0, main_side: 0, main_slide: 0.0, week: 0, week_scroll: 0.0, difficulty: "Normal".to_owned(), rows: Vec::new(), song: 0, song_scroll: 0.0, tint: Vec3::ONE, shown: (0.0, 0.0),
             credits: Vec::new(), credit: 0, credit_scroll: 0.0, mods: Vec::new(), mod_row: 0, mods_changed: false, reload: false, flashing: true, achievement: 0, achievement_scroll: 0.0, chime: false, held: 0.0, preview: false, asking: None, player: Player::default(), restart: false,
@@ -476,7 +494,7 @@ impl Menus {
 
     /// Gives up the sound card for a song. The menu music starts again when a menu is next shown.
     pub fn quiet(&mut self) {
-        self.audio = None;
+        (self.audio, self.fade) = (None, None);
         self.preview = false;
         self.chosen = None;
         self.rows.clear(); // a finished week may have unlocked songs
@@ -587,12 +605,17 @@ impl Menus {
             self.audio = Some(audio);
             self.music_at = get_time();
         }
+        if let (Some((since, from, to, seconds)), Some(audio)) = (self.fade, &self.audio) {
+            let part = ((get_time() - since) / seconds).min(1.0) as f32;
+            audio.set_music_volume(from + (to - from) * part);
+            self.fade = self.fade.filter(|_| part < 1.0);
+        }
         if std::mem::take(&mut self.chime) {
             self.sound("confirmMenu", 0.5);
         }
         let go = match page {
             _ if self.asking.is_some() => self.ask(skin),
-            Page::Title => self.title(skin),
+            Page::Title => self.title(skin, &save.egg),
             Page::Main => self.main_menu(skin),
             Page::Story => self.story(skin, weeks, songs, save),
             Page::Freeplay => self.freeplay(skin, weeks, songs, save),
@@ -610,13 +633,45 @@ impl Menus {
         go
     }
 
-    fn title(&mut self, skin: &Skin) -> Go {
+    /// The menu music from its start, growing loud over four seconds.
+    fn music_again(&mut self) {
+        if let (Some(audio), Some(path)) = (&self.audio, self.paths.find("music/freakyMenu.ogg")) {
+            audio.stop_music();
+            audio.play_sound(&path, 0.0, true);
+        }
+        (self.music_at, self.fade) = (get_time(), Some((get_time(), 0.0, 0.7, 4.0)));
+    }
+
+    fn title(&mut self, skin: &Skin, egg: &str) -> Go {
         let now = get_time();
-        let beat = (now - self.music_at) * MENU_BPM / 60.0;
-        let in_beat = beat.fract() * 60.0 / MENU_BPM;
+        if self.secret.is_some_and(|since| now - since >= 1.0) {
+            // the screen is black: the title begins again with the dancer the word asked for
+            (self.secret, self.look, self.intro) = (None, None, false);
+            let jingle = Title::new("", egg).jingle;
+            if jingle.is_empty() {
+                self.flash = (now, 2.0);
+                self.music_again();
+            } else {
+                let path = self.paths.find(&format!("sounds/{jingle}.ogg"));
+                // Shadow steps out of the dark part way through his
+                let wait = if egg == "SHADOW" { 3.2 } else { path.as_deref().and_then(crate::audio::seconds).unwrap_or(0.0) as f64 };
+                self.sound(jingle, 1.0);
+                (self.jingle, self.flash) = (Some((now, wait)), (if egg == "SHADOW" { f64::MIN } else { now }, 3.0));
+            }
+        }
+        let paths = &self.paths;
+        let look = self.look.get_or_insert_with(|| {
+            let file = paths.find("images/gfDanceTitle.json").and_then(|path| std::fs::read_to_string(path).ok());
+            Rc::new(Title::new(&file.unwrap_or_default(), egg))
+        }).clone();
+        let beat = (now - self.music_at) * look.bpm / 60.0;
+        let in_beat = beat.fract() * 60.0 / look.bpm;
         if self.intro && (beat >= 17.0 || pressed(&ACCEPT)) {
             self.intro = false;
-            self.flash = (now, 2.0);
+            self.flash = (now, 4.0);
+            if egg == "SHADOW" {
+                self.fade = Some((now, 0.7, 0.0, 1.0)); // he likes it quiet
+            }
             return Go::Stay; // the same key press must not also leave the title
         }
         if self.intro {
@@ -633,16 +688,39 @@ impl Menus {
         }
 
         clear_background(BLACK);
-        if let Some(sheet) = self.art.sheet("", "gfDanceTitle") {
-            // she sways to one side on a beat and to the other on the next
-            let side: Vec<u32> = if beat as u32 % 2 == 0 { (15..30).collect() } else { [30].into_iter().chain(0..15).collect() };
-            if let Some(frame) = once(&sheet.animation("gfDance", &side), in_beat) {
-                sheet.draw(frame, 512.0, 40.0, 1.0, false, WHITE);
+        if let Some((since, wait)) = self.jingle {
+            if now - since >= wait {
+                self.jingle = None;
+                if egg == "SHADOW" {
+                    self.flash = (now, 0.6);
+                } else {
+                    self.music_again();
+                    if egg == "PESSY" {
+                        return Go::Unlock("pessy_easter_egg");
+                    }
+                }
+            } else if egg == "SHADOW" {
+                return Go::Stay;
+            }
+        }
+        if let Some(picture) = Some(&look.background).filter(|name| !name.is_empty()).and_then(|name| self.art.image("", name)) {
+            draw_texture(&picture, 0.0, 0.0, WHITE);
+        }
+        if let Some(sheet) = self.art.sheet("", look.image) {
+            let frame = if look.idle {
+                // one bump over every two beats
+                once(&sheet.animation(&look.animation, &[]), beat % 2.0 * 60.0 / look.bpm)
+            } else {
+                // a sway to one side on a beat and to the other on the next
+                once(&sheet.animation(&look.animation, if beat as u32 % 2 == 0 { &look.right } else { &look.left }), in_beat)
+            };
+            if let Some(frame) = frame {
+                sheet.draw(frame, look.dancer.0, look.dancer.1, 1.0, false, WHITE);
             }
         }
         if let Some(sheet) = self.art.sheet("", "logoBumpin") {
             if let Some(frame) = once(&sheet.animation("logo bumpin", &[]), in_beat) {
-                sheet.draw(frame, -150.0, -100.0, 1.0, false, WHITE);
+                sheet.draw(frame, look.logo.0, look.logo.1, 1.0, false, WHITE);
             }
         }
         if let Some(sheet) = self.art.sheet("", "titleEnter") {
@@ -654,8 +732,15 @@ impl Menus {
                 None => ("ENTER IDLE", Color::new(0.2, 0.2 + 0.8 * eased, 0.8 + 0.2 * eased, 0.64 + 0.36 * eased)),
             };
             if let Some(frame) = looped(&sheet.animation(name, &[])) {
-                sheet.draw(frame, 100.0, 576.0, 1.0, false, color);
+                sheet.draw(frame, look.enter.0, look.enter.1, 1.0, false, color);
             }
+        }
+        if let Some(since) = self.secret {
+            draw_rectangle(0.0, 0.0, WIDTH, HEIGHT, Color::new(0.0, 0.0, 0.0, (now - since) as f32));
+            return Go::Stay;
+        }
+        if self.jingle.is_some() {
+            return Go::Stay;
         }
         match self.chosen {
             Some(at) if now - at >= 1.0 => Go::Page(Page::Main),
@@ -666,7 +751,16 @@ impl Menus {
                 Go::Stay
             }
             None if pressed(&BACK) => Go::Quit,
-            None => Go::Stay,
+            None => {
+                let mut word = None;
+                while let Some(key) = get_char_pressed() {
+                    word = word.or(typed(&mut self.letters, key));
+                }
+                let Some(word) = word else { return Go::Stay };
+                self.sound("secret", 1.0);
+                (self.secret, self.fade) = (Some(now), Some((now, 0.7, 0.0, 1.0)));
+                Go::Egg(word)
+            }
         }
     }
 
@@ -1310,8 +1404,9 @@ impl Menus {
                 }
                 // everything found through the mods is found again
                 (self.reload, self.mods_changed) = (true, false);
-                self.paths = Paths::new(&base, "", "");
-                self.art = Art { base, images: HashMap::new(), sheets: HashMap::new(), characters: HashMap::new() };
+                self.art = Art::new(&base);
+                self.paths = Paths::new(&base, &self.art.top, "");
+                self.look = None;
                 self.rows.clear();
                 (self.week, self.song) = (0, 0);
             }

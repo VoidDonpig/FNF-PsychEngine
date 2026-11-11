@@ -35,7 +35,8 @@ impl Paths {
         }
         // mods that say they run globally lend their files to every song
         roots.extend(mods(base).into_iter().filter(|(name, on)| *on && name != source && runs_globally(base, name)).map(|(name, _)| base.join("mods").join(name)));
-        roots.extend([base.join("mods"), assets.join("shared"), assets.join("base_game/shared")]);
+        // "secrets" holds the title screen's hidden dancers
+        roots.extend([base.join("mods"), assets.join("shared"), assets.join("base_game/shared"), assets.join("secrets")]);
         if !directory.is_empty() {
             roots.extend([assets.join(directory), assets.join("base_game").join(directory)]);
         }

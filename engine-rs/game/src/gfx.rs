@@ -810,6 +810,7 @@ impl Context {
     fn listen(&mut self) {
         self.pressed.clear();
         self.released.clear();
+        self.typed.clear(); // letters nobody read this frame were not meant for the next screen
         self.alt_enter = false;
         if let Some(mut event_loop) = self.event_loop.take() {
             if let winit::platform::pump_events::PumpStatus::Exit(_) = event_loop.pump_app_events(Some(Duration::ZERO), &mut self.app) {

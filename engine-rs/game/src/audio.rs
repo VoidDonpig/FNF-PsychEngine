@@ -162,6 +162,14 @@ impl Song {
         let _ = volume;
     }
 
+    /// Ends the music playing on top of the song; short sounds play on.
+    pub fn stop_music(&self) {
+        #[cfg(feature = "audio")]
+        if let Some(output) = &self.output {
+            output.sounds.lock().unwrap().retain(|voice| !voice.looped);
+        }
+    }
+
     pub fn stop_sounds(&self) {
         #[cfg(feature = "audio")]
         if let Some(output) = &self.output {

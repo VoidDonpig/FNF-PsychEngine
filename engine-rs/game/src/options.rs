@@ -179,8 +179,6 @@ impl OptionsMenu {
             if steps != 0.0 {
                 colors[lane][part] = turned(colors[lane][part], (steps * fast * 3.0) as f32);
             } else if pressed(Ui::Accept) {
-                // what was typed before does not count
-                while get_char_pressed().is_some() {}
                 self.typing = Some(String::new());
             } else if pressed(Ui::Reset) {
                 colors[lane][part] = usual[lane][part];
