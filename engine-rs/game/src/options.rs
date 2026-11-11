@@ -1,4 +1,5 @@
 //! The options menu: key binds, and the pages of `settings::OPTIONS`.
+use crate::controls::{pressed, Ui, NAMES};
 use crate::settings::{hex, Kind, Settings, LANE_COLORS, OPTIONS, PAGES, PIXEL_LANE_COLORS};
 use crate::{DIRECTIONS, HEIGHT};
 use crate::gfx::*;
@@ -71,8 +72,8 @@ impl OptionsMenu {
         let line = |index: usize, selected: usize, content: &str, y: f32| {
             text(&format!("{}{content}", if index == selected { "> " } else { "  " }), 40.0, y, 24, if index == selected { YELLOW } else { WHITE });
         };
-        let step = |rows: usize| (is_key_pressed(KeyCode::Down) as usize + is_key_pressed(KeyCode::Up) as usize * (rows - 1)) % rows;
-        let back = is_key_pressed(KeyCode::Escape) || is_key_pressed(KeyCode::Backspace);
+        let step = |rows: usize| (pressed(Ui::Down) as usize + pressed(Ui::Up) as usize * (rows - 1)) % rows;
+        let back = pressed(Ui::Back);
 
         let Some(page) = self.page else {
             text("Up/Down: choose   Enter: open   Esc: save and back", 40.0, 96.0, 18, GRAY);
@@ -80,42 +81,56 @@ impl OptionsMenu {
             for (index, name) in PAGES.iter().enumerate() {
                 line(index, self.row, name, 150.0 + index as f32 * 30.0);
             }
-            if is_key_pressed(KeyCode::Enter) {
+            if pressed(Ui::Accept) {
                 (self.page, self.row) = (Some(self.row), 0);
             }
             return back;
         };
 
         if page == 0 {
-            // two keys for each of the four lanes
+            // two keys for each of the four lanes, then two for each thing the menus and the volume do
             text("Up/Down: choose   Enter: bind   Backspace: unbind   Esc: back", 40.0, 96.0, 18, GRAY);
-            let slot_of = |row: usize| (row / 2, row % 2);
-            for index in 0..8 {
-                let (lane, slot) = slot_of(index);
-                let key = if self.binding && index == self.row { "press a key...".to_owned() } else { settings.keys[lane][slot].map_or("-".to_owned(), |k| format!("{k:?}")) };
-                line(index, self.row, &format!("{} key {}: {key}", DIRECTIONS[lane], slot + 1), 150.0 + index as f32 * 30.0 + lane as f32 * 10.0);
+            let rows = 8 + NAMES.len() * 2;
+            for index in 0..rows {
+                let waiting = self.binding && index == self.row;
+                let named = |key: Option<KeyCode>| if waiting { "press a key...".to_owned() } else { key.map_or("-".to_owned(), |k| format!("{k:?}")) };
+                if index < 8 {
+                    let (lane, slot) = (index / 2, index % 2);
+                    line(index, self.row, &format!("{} key {}: {}", DIRECTIONS[lane], slot + 1, named(settings.keys[lane][slot])), 150.0 + index as f32 * 30.0 + lane as f32 * 10.0);
+                } else {
+                    let (action, slot, chosen) = ((index - 8) / 2, index % 2, index == self.row);
+                    let label = format!("{}{} key {}: {}", if chosen { "> " } else { "  " }, NAMES[action].1, slot + 1, named(settings.ui_keys[action][slot]));
+                    text(&label, 600.0, 150.0 + (index - 8) as f32 * 24.0 + action as f32 * 2.0, 20, if chosen { YELLOW } else { WHITE });
+                }
             }
             let timing = if raw_input { "raw input: each press is timed when it happens" } else { "per frame (raw input is not available on this system)" };
-            text(&format!("Keyboard timing: {timing}"), 40.0, HEIGHT - 40.0, 18, GRAY);
-            let (lane, slot) = slot_of(self.row);
+            text(&format!("Keyboard timing: {timing}"), 40.0, 118.0, 18, GRAY);
+            // the slot the selected row stands for: a lane's, or an action's
+            let slot = if self.row < 8 { &mut settings.keys[self.row / 2][self.row % 2] } else { &mut settings.ui_keys[(self.row - 8) / 2][self.row % 2] };
             if self.binding {
                 // every key belongs to the binding now, the arrows included
                 match get_last_key_pressed() {
                     Some(KeyCode::Escape) => self.binding = false,
-                    Some(key) if bindable.contains(&key) => {
-                        settings.bind(lane, slot, Some(key));
+                    Some(key) if self.row < 8 && bindable.contains(&key) => {
+                        settings.bind(self.row / 2, self.row % 2, Some(key));
+                        self.binding = false;
+                    }
+                    Some(key) if self.row >= 8 && crate::settings::ui_bindable().contains(&key) => {
+                        *slot = Some(key);
                         self.binding = false;
                     }
                     _ => {}
                 }
+                crate::controls::set(settings.ui_keys);
                 return false;
             }
-            self.row = (self.row + step(8)) % 8;
-            if is_key_pressed(KeyCode::Enter) {
+            self.row = (self.row + step(rows)) % rows;
+            if pressed(Ui::Accept) {
                 self.binding = true;
             } else if is_key_pressed(KeyCode::Backspace) {
-                settings.bind(lane, slot, None);
-            } else if is_key_pressed(KeyCode::Escape) {
+                *slot = None;
+                crate::controls::set(settings.ui_keys);
+            } else if back {
                 (self.page, self.row) = (None, page);
                 return self.direct;
             }
@@ -123,7 +138,7 @@ impl OptionsMenu {
         }
 
         let fast = if is_key_down(KeyCode::LeftShift) || is_key_down(KeyCode::RightShift) { 10.0 } else { 1.0 };
-        let steps = (is_key_pressed(KeyCode::Right) as i32 - is_key_pressed(KeyCode::Left) as i32) as f64;
+        let steps = (pressed(Ui::Right) as i32 - pressed(Ui::Left) as i32) as f64;
         if page == PAGES.len() - 1 {
             // three colours for each of the four lanes
             text("Up/Down: choose   Left/Right: turn the hue (Shift: x10)   Enter: type a colour code", 40.0, 96.0, 18, GRAY);
@@ -163,11 +178,11 @@ impl OptionsMenu {
             }
             if steps != 0.0 {
                 colors[lane][part] = turned(colors[lane][part], (steps * fast * 3.0) as f32);
-            } else if is_key_pressed(KeyCode::Enter) {
+            } else if pressed(Ui::Accept) {
                 // what was typed before does not count
                 while get_char_pressed().is_some() {}
                 self.typing = Some(String::new());
-            } else if is_key_pressed(KeyCode::R) {
+            } else if pressed(Ui::Reset) {
                 colors[lane][part] = usual[lane][part];
             } else if is_key_pressed(KeyCode::LeftControl) || is_key_pressed(KeyCode::RightControl) {
                 self.pixel ^= true;
@@ -192,7 +207,7 @@ impl OptionsMenu {
         }
         if steps != 0.0 {
             change(&selected.kind, settings, steps * fast);
-        } else if is_key_pressed(KeyCode::Enter) {
+        } else if pressed(Ui::Accept) {
             match (selected.key, &selected.kind) {
                 // the frame rate takes the display's own
                 ("framerate", &Kind::Number(get, low, high, ..)) => *get(settings) = refresh_rate().map_or(*get(settings), |rate| rate.round().clamp(low, high)),

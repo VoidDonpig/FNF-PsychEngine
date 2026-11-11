@@ -130,8 +130,8 @@ pub enum KeyCode {
     A, B, C, D, E, F, G, H, I, J, K, L, M, N, O, P, Q, R, S, T, U, V, W, X, Y, Z,
     Key0, Key1, Key2, Key3, Key4, Key5, Key6, Key7, Key8, Key9,
     Kp0, Kp1, Kp2, Kp3, Kp4, Kp5, Kp6, Kp7, Kp8, Kp9,
-    Left, Right, Up, Down, Space, Enter, Escape, Backspace, Home, End, F11,
-    LeftShift, RightShift, LeftControl, RightControl,
+    Left, Right, Up, Down, Space, Enter, Escape, Backspace, Home, End, F11, KpAdd, KpSubtract,
+    LeftShift, RightShift, LeftControl, RightControl, LeftAlt, RightAlt,
     Comma, Period, Slash, Semicolon, Apostrophe, LeftBracket, RightBracket, Minus, Equal, Backslash,
 }
 
@@ -150,6 +150,7 @@ fn key(code: winit::keyboard::KeyCode) -> Option<KeyCode> {
         Their::ArrowLeft => Left, Their::ArrowRight => Right, Their::ArrowUp => Up, Their::ArrowDown => Down,
         Their::Space => Space, Their::Enter | Their::NumpadEnter => Enter, Their::Escape => Escape, Their::Backspace => Backspace, Their::Home => Home, Their::End => End, Their::F11 => F11,
         Their::ShiftLeft => LeftShift, Their::ShiftRight => RightShift, Their::ControlLeft => LeftControl, Their::ControlRight => RightControl,
+        Their::AltLeft => LeftAlt, Their::AltRight => RightAlt, Their::NumpadAdd => KpAdd, Their::NumpadSubtract => KpSubtract,
         Their::Comma => Comma, Their::Period => Period, Their::Slash => Slash, Their::Semicolon => Semicolon, Their::Quote => Apostrophe,
         Their::BracketLeft => LeftBracket, Their::BracketRight => RightBracket, Their::Minus => Minus, Their::Equal => Equal, Their::Backslash => Backslash,
         _ => return None,
@@ -485,6 +486,9 @@ struct Context {
     released: HashSet<KeyCode>,
     last_pressed: Option<KeyCode>,
     typed: VecDeque<char>,
+    /// Alt+Enter went down since the last frame (it is not an Enter).
+    alt_enter: bool,
+    focused: bool,
     started: Instant,
     frame_began: Instant,
     frame_time: f32,
@@ -635,7 +639,7 @@ pub fn open(conf: Conf) -> Result<(String, Option<String>), String> {
     let mut context = Context {
         event_loop: Some(event_loop), app, window, instance, surface: Some(surface), device, queue, config, format, pipeline, layout, samplers, pictures: 0, white: None, letters: None,
         vertices: Vec::new(), calls: Vec::new(), buffer: None, background: BLACK, camera: Mat4::IDENTITY, models: Vec::new(), recolor: None,
-        down: HashSet::new(), pressed: HashSet::new(), released: HashSet::new(), last_pressed: None, typed: VecDeque::new(),
+        down: HashSet::new(), pressed: HashSet::new(), released: HashSet::new(), last_pressed: None, typed: VecDeque::new(), alt_enter: false, focused: true,
         started: now, frame_began: now, frame_time: 1.0 / 60.0, due: now, open: true,
     };
     context.white = Some(context.picture(1, 1, &[255; 4]));
@@ -806,6 +810,7 @@ impl Context {
     fn listen(&mut self) {
         self.pressed.clear();
         self.released.clear();
+        self.alt_enter = false;
         if let Some(mut event_loop) = self.event_loop.take() {
             if let winit::platform::pump_events::PumpStatus::Exit(_) = event_loop.pump_app_events(Some(Duration::ZERO), &mut self.app) {
                 self.open = false;
@@ -823,7 +828,10 @@ impl Context {
                     }
                 }
                 // keys let go of while another window was in front are not heard of
-                WindowEvent::Focused(false) => self.down.clear(),
+                WindowEvent::Focused(focused) => {
+                    self.focused = focused;
+                    self.down.clear();
+                }
                 WindowEvent::KeyboardInput { event, is_synthetic, .. } => {
                     let code = match event.physical_key {
                         winit::keyboard::PhysicalKey::Code(code) => key(code),
@@ -834,6 +842,8 @@ impl Context {
                         self.typed.extend(event.text.iter().flat_map(|text| text.chars()));
                     }
                     match (code, event.state) {
+                        // Alt+Enter switches fullscreen: the menus must not take it for an Enter
+                        (Some(KeyCode::Enter), ElementState::Pressed) if !event.repeat && [KeyCode::LeftAlt, KeyCode::RightAlt].iter().any(|alt| self.down.contains(alt)) => self.alt_enter = true,
                         (Some(code), ElementState::Pressed) if !event.repeat => {
                             self.down.insert(code);
                             if !is_synthetic {
@@ -983,6 +993,16 @@ pub fn is_key_pressed(key: KeyCode) -> bool {
 
 pub fn is_key_released(key: KeyCode) -> bool {
     with(|context| context.released.contains(&key))
+}
+
+/// Alt+Enter went down since the last frame.
+pub fn alt_enter_pressed() -> bool {
+    with(|context| context.alt_enter)
+}
+
+/// The game's window is the one in front.
+pub fn is_focused() -> bool {
+    with(|context| context.focused)
 }
 
 pub fn get_last_key_pressed() -> Option<KeyCode> {

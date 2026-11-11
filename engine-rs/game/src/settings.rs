@@ -17,6 +17,12 @@ pub fn bindable() -> Vec<(KeyCode, Option<i32>)> {
     keys
 }
 
+/// Keys a menu action can be given: those of the notes, and the ones only menus use.
+pub fn ui_bindable() -> Vec<KeyCode> {
+    use KeyCode::*;
+    bindable().into_iter().map(|(key, _)| key).chain([Enter, Backspace, Escape, KpAdd, KpSubtract]).collect()
+}
+
 /// How an option is shown and changed.
 pub enum Kind {
     Flag(fn(&mut Settings) -> &mut bool),
@@ -53,8 +59,10 @@ pub const OPTIONS: &[Opt] = &[
     Opt { page: 1, key: "middlescroll", name: "Middlescroll", about: "If checked, your notes get centered.", kind: Kind::Flag(|s| &mut s.middlescroll) },
     Opt { page: 1, key: "opponent_strums", name: "Opponent Notes", about: "If unchecked, opponent notes get hidden.", kind: Kind::Flag(|s| &mut s.opponent_strums) },
     Opt { page: 1, key: "ghost_tapping", name: "Ghost Tapping", about: "If checked, you won't get misses from pressing keys while there are no notes able to be hit.", kind: Kind::Flag(|s| &mut s.ghost_tapping) },
+    Opt { page: 1, key: "auto_pause", name: "Auto Pause", about: "If checked, the game automatically pauses if the screen isn't on focus.", kind: Kind::Flag(|s| &mut s.auto_pause) },
     Opt { page: 1, key: "no_reset", name: "Disable Reset Button", about: "If checked, pressing Reset (R) won't do anything.", kind: Kind::Flag(|s| &mut s.no_reset) },
     Opt { page: 1, key: "one_note_holds", name: "Sustains as One Note", about: "If checked, Hold Notes can't be pressed if you miss, and count as a single Hit/Miss. Uncheck this if you prefer the old Input System.", kind: Kind::Flag(|s| &mut s.one_note_holds) },
+    Opt { page: 1, key: "volume", name: "Volume", about: "How loud everything is. The volume keys change it at any time.", kind: Kind::Number(|s| &mut s.volume, 0.0, 1.0, 0.1, "%") },
     Opt { page: 1, key: "hitsound_volume", name: "Hitsound Volume", about: "Funny notes does \"Tick!\" when you hit them.", kind: Kind::Number(|s| &mut s.hitsound_volume, 0.0, 1.0, 0.1, "%") },
     Opt { page: 1, key: "rating_offset", name: "Rating Offset", about: "Changes how late/early you have to hit for a \"Sick!\" Higher values mean you have to hit later.", kind: Kind::Number(|s| &mut s.rating_offset, -30.0, 30.0, 1.0, "ms") },
     Opt { page: 1, key: "sick_window", name: "Sick! Hit Window", about: "Changes the amount of time you have for hitting a \"Sick!\" in milliseconds.", kind: Kind::Number(|s| &mut s.sick_window, 15.0, 45.0, 1.0, "ms") },
@@ -135,6 +143,9 @@ pub struct Settings {
     pub ghost_tapping: bool,
     pub no_reset: bool,
     pub one_note_holds: bool,
+    pub auto_pause: bool,
+    /// 0 to 1.
+    pub volume: f64,
     pub botplay: bool,
     /// 0 to 1.
     pub hitsound_volume: f64,
@@ -181,19 +192,22 @@ pub struct Settings {
     pub pixel_note_colors: [[u32; 3]; 4],
     /// Two keys per lane.
     pub keys: [[Option<KeyCode>; 2]; 4],
+    /// The keys of the menus and of the volume.
+    pub ui_keys: crate::controls::Binds,
 }
 
 impl Default for Settings {
     fn default() -> Settings {
         use KeyCode::*;
         Settings {
-            downscroll: false, middlescroll: false, opponent_strums: true, ghost_tapping: true, no_reset: false, one_note_holds: true, botplay: false,
+            downscroll: false, middlescroll: false, opponent_strums: true, ghost_tapping: true, no_reset: false, one_note_holds: true, auto_pause: true, volume: 1.0, botplay: false,
             hitsound_volume: 0.0, rating_offset: 0.0, sick_window: 45.0, good_window: 90.0, bad_window: 135.0, safe_frames: 10.0, offset_ms: 0.0,
             splash_alpha: 0.6, hide_hud: false, time_bar: 0, flashing: true, cam_zooms: true, score_zoom: true, health_bar_alpha: 1.0, show_fps: true,
             pause_music: 1, combo_stacking: true, show_ms: false,
             scroll_type: 0, scroll_speed: 1.0, playback_rate: 1.0, health_gain: 1.0, health_loss: 1.0, instakill: false, practice: false,
             combo_offset: [0.0; 4], low_quality: false, antialiasing: true, framerate: refresh_rate().clamp(60.0, 1000.0), graphics_api: if cfg!(windows) { 1 } else { 2 }, fullscreen: false, exclusive_fullscreen: false, note_colors: LANE_COLORS, pixel_note_colors: PIXEL_LANE_COLORS,
             keys: [[Some(A), Some(Left)], [Some(S), Some(Down)], [Some(W), Some(Up)], [Some(D), Some(Right)]],
+            ui_keys: crate::controls::defaults(),
         }
     }
 }
@@ -209,6 +223,11 @@ impl Settings {
                 Kind::Flag(get) => *get(&mut settings) = saved.as_bool().unwrap_or(*get(&mut settings)),
                 Kind::Number(get, low, high, ..) => *get(&mut settings) = saved.as_f64().unwrap_or(*get(&mut settings)).clamp(low, high),
                 Kind::Choice(get, names) => *get(&mut settings) = saved.as_str().and_then(|name| names.iter().position(|n| *n == name)).unwrap_or(*get(&mut settings)),
+            }
+        }
+        for ((name, _), slots) in crate::controls::NAMES.iter().zip(settings.ui_keys.iter_mut()) {
+            if json["ui_keys"][name].is_array() {
+                *slots = [0, 1].map(|slot| ui_bindable().into_iter().find(|key| Some(format!("{key:?}").as_str()) == json["ui_keys"][name][slot].as_str()));
             }
         }
         if json["keys"].is_array() {
@@ -243,10 +262,17 @@ impl Settings {
         }
         let keys: Vec<Vec<Value>> = self.keys.iter().map(|lane| lane.iter().map(|k| k.map_or(Value::Null, |k| json!(format!("{k:?}")))).collect()).collect();
         json.insert("keys".to_owned(), json!(keys));
+        let ui_keys: serde_json::Map<String, Value> = crate::controls::NAMES.iter().zip(self.ui_keys).map(|((name, _), slots)| ((*name).to_owned(), json!(slots.map(|key| key.map(|key| format!("{key:?}")))))).collect();
+        json.insert("ui_keys".to_owned(), Value::Object(ui_keys));
         for (key, colors) in [("note_colors", &self.note_colors), ("pixel_note_colors", &self.pixel_note_colors)] {
             json.insert(key.to_owned(), json!(colors.map(|parts| parts.map(|color| format!("{color:06X}")))));
         }
         serde_json::to_string_pretty(&json).unwrap_or_default()
+    }
+
+    /// Whether the game has been started in this folder before.
+    pub fn kept(base: &Path) -> bool {
+        base.join(FILE).exists()
     }
 
     pub fn load(base: &Path) -> Settings {

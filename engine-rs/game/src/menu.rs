@@ -5,6 +5,7 @@ use crate::{Skin, HEIGHT, WIDTH};
 use funkin_core::content::{mods as find_mods, save_mods, song_path, Paths, SongEntry, Week};
 use funkin_core::achievements::LIST as ACHIEVEMENTS;
 use funkin_core::save::Save;
+use crate::controls::Ui;
 use crate::gfx::*;
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
@@ -35,18 +36,18 @@ pub enum Go {
     Reset(Reset, String, String),
 }
 
-const UP: [KeyCode; 2] = [KeyCode::Up, KeyCode::W];
-const DOWN: [KeyCode; 2] = [KeyCode::Down, KeyCode::S];
-const LEFT: [KeyCode; 2] = [KeyCode::Left, KeyCode::A];
-const RIGHT: [KeyCode; 2] = [KeyCode::Right, KeyCode::D];
-const ACCEPT: [KeyCode; 2] = [KeyCode::Enter, KeyCode::Space];
-const BACK: [KeyCode; 2] = [KeyCode::Escape, KeyCode::Backspace];
+const UP: Ui = Ui::Up;
+const DOWN: Ui = Ui::Down;
+const LEFT: Ui = Ui::Left;
+const RIGHT: Ui = Ui::Right;
+const ACCEPT: Ui = Ui::Accept;
+const BACK: Ui = Ui::Back;
 /// Tempo of the menu music.
 // shortcut: the stock title screen (tempo, positions, dance frames); read images/gfDanceTitle.json once a mod's own title screen matters.
 const MENU_BPM: f64 = 102.0;
 
-fn pressed(keys: &[KeyCode]) -> bool {
-    keys.iter().any(|key| is_key_pressed(*key))
+fn pressed(action: &Ui) -> bool {
+    crate::controls::pressed(*action)
 }
 
 fn white(alpha: f32) -> Color {
@@ -521,11 +522,11 @@ impl Menus {
         if steps != 0 {
             self.held = 0.0;
         }
-        if down(&UP) || down(&DOWN) {
+        if crate::controls::down(UP) || crate::controls::down(DOWN) {
             let ticks = |held: f32| ((held - 0.5) * 10.0).floor().max(-1.0) as i32;
             let before = ticks(self.held);
             self.held += dt;
-            steps += (ticks(self.held) - before) * if down(&UP) { -1 } else { 1 };
+            steps += (ticks(self.held) - before) * if crate::controls::down(UP) { -1 } else { 1 };
         }
         steps * reach
     }
@@ -812,8 +813,7 @@ impl Menus {
                 }
             }
             if !locked {
-                let held = |keys: &[KeyCode]| keys.iter().any(|key| is_key_down(*key));
-                for (x, resting, pushed, down) in [(850.0, "arrow left", "arrow push left", held(&LEFT)), (850.0 + 376.0, "arrow right", "arrow push right", held(&RIGHT))] {
+                    for (x, resting, pushed, down) in [(850.0, "arrow left", "arrow push left", crate::controls::down(LEFT)), (850.0 + 376.0, "arrow right", "arrow push right", crate::controls::down(RIGHT))] {
                     if let Some(arrow) = frame(if down { pushed } else { resting }) {
                         ui.draw(arrow, x, 462.0, 1.0, false, WHITE);
                     }
@@ -860,7 +860,7 @@ impl Menus {
             Some(t) if t >= 1.0 => playlist().map_or(Go::Stay, |list| Go::Play(list, Some(shown[self.week]))),
             Some(_) => Go::Stay,
             None if is_key_pressed(KeyCode::LeftControl) || is_key_pressed(KeyCode::RightControl) => Go::Changers,
-            None if is_key_pressed(KeyCode::R) => {
+            None if pressed(&Ui::Reset) => {
                 let called = if week.name.is_empty() { &week.file } else { &week.name };
                 self.asking = Some((Reset::Week, week.file.clone(), difficulty.to_owned(), format!("{called} ({difficulty})?"), false, 0.0));
                 Go::Stay
@@ -977,10 +977,9 @@ impl Menus {
         label(skin, tip, (WIDTH - wide(tip, 16)) / 2.0, HEIGHT - 22.0, 16, WHITE, false);
 
         if self.preview {
-            let down = |keys: &[KeyCode]| keys.iter().any(|key| is_key_down(*key));
             if let Some(song) = &mut self.audio {
                 let (player, length) = (&mut self.player, song.length_ms());
-                let (tap, held) = (pressed(&RIGHT) as i32 - pressed(&LEFT) as i32, down(&RIGHT) as i32 - down(&LEFT) as i32);
+                let (tap, held) = (pressed(&RIGHT) as i32 - pressed(&LEFT) as i32, crate::controls::down(RIGHT) as i32 - crate::controls::down(LEFT) as i32);
                 match (held, player.wound) {
                     (0, None) => {}
                     (0, Some(_)) => {
@@ -999,7 +998,7 @@ impl Menus {
                         song.seek(wound(song.position_ms(), length.unwrap_or(f64::MAX), tap, held, held_for, dt));
                     }
                 }
-                let (tap, held) = (pressed(&UP) as i32 - pressed(&DOWN) as i32, down(&UP) as i32 - down(&DOWN) as i32);
+                let (tap, held) = (pressed(&UP) as i32 - pressed(&DOWN) as i32, crate::controls::down(UP) as i32 - crate::controls::down(DOWN) as i32);
                 player.pitched = if held == 0 || tap != 0 { 0.0 } else { player.pitched + dt };
                 let mut steps = tap;
                 if player.pitched > 0.6 {
@@ -1010,7 +1009,7 @@ impl Menus {
                     player.rate = rate_after(player.rate, steps);
                     song.set_speed(player.rate);
                 }
-                if is_key_pressed(KeyCode::R) {
+                if pressed(&Ui::Reset) {
                     player.rate = 1.0;
                     song.set_speed(1.0);
                     song.seek(0.0);
@@ -1039,12 +1038,12 @@ impl Menus {
             song.start();
             (self.audio, self.preview, self.player) = (Some(song), true, Player { rate: 1.0, ..Default::default() });
             Go::Stay
-        } else if is_key_pressed(KeyCode::R) {
+        } else if pressed(&Ui::Reset) {
             self.asking = Some((Reset::Song, entry.title.clone(), entry.difficulty.clone(), format!("{} ({})?", entry.title, entry.difficulty), false, 0.0));
             Go::Stay
         } else if is_key_pressed(KeyCode::LeftControl) || is_key_pressed(KeyCode::RightControl) {
             Go::Changers
-        } else if is_key_pressed(KeyCode::Enter) {
+        } else if pressed(&ACCEPT) {
             Go::Play(vec![chosen], None)
         } else if pressed(&BACK) {
             self.sound("cancelMenu", 1.0);
@@ -1119,7 +1118,7 @@ impl Menus {
         centred(selected.text, 618.0, 24);
         if save.unlocked(selected.id) {
             label(skin, "R: reset", WIDTH - 10.0, 690.0, 16, GRAY, true);
-            if is_key_pressed(KeyCode::R) {
+            if pressed(&Ui::Reset) {
                 self.asking = Some((Reset::Achievement, selected.id.to_owned(), String::new(), format!("{}?", selected.name), false, 0.0));
             }
         }

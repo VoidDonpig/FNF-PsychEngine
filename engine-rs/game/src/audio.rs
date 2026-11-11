@@ -33,6 +33,17 @@ pub fn seconds(path: &Path) -> Option<f32> {
     }
 }
 
+/// How loud everything is, 0 to 1 (an f32 as bits): the volume keys.
+#[cfg(feature = "audio")]
+static MASTER: std::sync::atomic::AtomicU32 = std::sync::atomic::AtomicU32::new(0x3F80_0000);
+
+pub fn set_master(volume: f32) {
+    #[cfg(feature = "audio")]
+    MASTER.store(volume.to_bits(), std::sync::atomic::Ordering::Relaxed);
+    #[cfg(not(feature = "audio"))]
+    let _ = volume;
+}
+
 pub struct Song {
     /// Silent clock: ms played before the current run, and when that run began.
     played: f64,
@@ -332,6 +343,10 @@ mod output {
                         }
                     }
                     sounds.retain(|voice| voice.looped || (voice.cursor as usize) < voice.samples.len() / 2);
+                    let master = f32::from_bits(super::MASTER.load(Ordering::Relaxed));
+                    if master != 1.0 {
+                        data.iter_mut().for_each(|sample| *sample *= master);
+                    }
                 },
                 |error| eprintln!("Sound output: {error}"),
                 None,

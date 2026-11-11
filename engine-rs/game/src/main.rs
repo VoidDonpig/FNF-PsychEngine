@@ -8,6 +8,7 @@
 mod animate;
 mod atlas;
 mod audio;
+mod controls;
 mod dialogue;
 mod fight;
 mod gfx;
@@ -25,6 +26,7 @@ use menu::{Go, Menus, Page};
 use funkin_core::chart::NoteKind;
 use funkin_core::play::{Event, NoteState, Play, Rating};
 use input::{KeyEvent, Keyboard};
+use controls::Ui;
 use gfx::*;
 use settings::Settings;
 use std::path::{Path, PathBuf};
@@ -330,7 +332,7 @@ impl Playing {
     /// The game over scene: the fall, then waiting for retry (Enter) or giving up (Esc).
     fn update_dead(&mut self, since: f32, confirmed: Option<f32>) -> Flow {
         let dt = get_frame_time().min(0.1);
-        let confirm = confirmed.is_none() && is_key_pressed(KeyCode::Enter);
+        let confirm = confirmed.is_none() && controls::pressed(Ui::Accept);
         let fell = self.scene.as_mut().is_some_and(|scene| scene.update_dead(dt, confirm));
         // without a scene to play the fall, the music starts after a moment
         if (fell || (self.scene.is_none() && since < 1.0 && since + dt >= 1.0)) && confirmed.is_none() {
@@ -352,7 +354,7 @@ impl Playing {
         }
         let confirmed = if confirm { Some(0.0) } else { confirmed.map(|t| t + dt) };
         self.dead = Some((since + dt, confirmed));
-        if is_key_pressed(KeyCode::Escape) {
+        if controls::pressed(Ui::Back) {
             self.song.stop_sounds();
             Flow::Quit
         } else if confirmed.is_some_and(|t| t > 2.5) {
@@ -368,8 +370,7 @@ impl Playing {
             return self.update_dead(since, confirmed);
         }
         if let Some(talk) = &mut self.cutscene {
-            let accept = is_key_pressed(KeyCode::Enter) || is_key_pressed(KeyCode::Space);
-            let back = is_key_pressed(KeyCode::Escape) || is_key_pressed(KeyCode::Backspace);
+            let (accept, back) = (controls::pressed(Ui::Accept), controls::pressed(Ui::Back));
             let (cues, over) = talk.update(get_frame_time().min(0.1), accept, back);
             if over {
                 self.cutscene = None;
@@ -385,15 +386,15 @@ impl Playing {
             return Flow::Continue;
         }
         if let Some(row) = self.paused {
-            let step = |row: usize, count: usize| (row + is_key_pressed(KeyCode::Down) as usize + (count - 1) * is_key_pressed(KeyCode::Up) as usize) % count;
+            let step = |row: usize, count: usize| (row + controls::pressed(Ui::Down) as usize + (count - 1) * controls::pressed(Ui::Up) as usize) % count;
             if let Some(pick) = self.choosing {
                 // the difficulties, then a way back
                 let count = self.difficulties.len() + 1;
                 let pick = step(pick, count);
                 self.choosing = Some(pick);
-                if is_key_pressed(KeyCode::Escape) || (is_key_pressed(KeyCode::Enter) && pick == count - 1) {
+                if controls::pressed(Ui::Back) || (controls::pressed(Ui::Accept) && pick == count - 1) {
                     self.choosing = None;
-                } else if is_key_pressed(KeyCode::Enter) {
+                } else if controls::pressed(Ui::Accept) {
                     return Flow::Difficulty(self.difficulties[pick].clone());
                 }
                 return Flow::Continue;
@@ -401,7 +402,7 @@ impl Playing {
             let items = self.pause_items();
             let row = step(row, items.len());
             self.paused = Some(row);
-            let chosen = if is_key_pressed(KeyCode::Escape) { Some("Resume") } else { is_key_pressed(KeyCode::Enter).then_some(items[row]) };
+            let chosen = if controls::pressed(Ui::Back) { Some("Resume") } else { controls::pressed(Ui::Accept).then_some(items[row]) };
             return match chosen {
                 Some("Resume") => {
                     self.paused = None;
@@ -421,7 +422,8 @@ impl Playing {
                 None => Flow::Continue,
             };
         }
-        if is_key_pressed(KeyCode::Enter) || is_key_pressed(KeyCode::Escape) {
+        // (as the Haxe engine does, the game pauses itself when another window comes to the front)
+        if controls::pressed(Ui::Pause) || (self.settings.auto_pause && !is_focused()) {
             self.song.pause();
             self.paused = Some(0);
             if self.settings.pause_music > 0 {
@@ -577,7 +579,8 @@ impl Playing {
         self.popups.retain(|popup| self.position.max(judged) - popup.born < popup.stays + 200.0);
 
         // the reset key gives up the run, unless a lane uses that key
-        let reset = is_key_pressed(KeyCode::R) && !self.settings.no_reset && self.settings.lane_of(KeyCode::R).is_none() && !self.play.botplay && self.started;
+        // a reset key that is also a note key only plays notes
+        let reset = controls::keys(Ui::Reset).into_iter().flatten().any(|key| is_key_pressed(key) && self.settings.lane_of(key).is_none()) && !self.settings.no_reset && !self.play.botplay && self.started;
         if (self.play.health <= 0.0 || reset) && !self.settings.practice {
             self.dead = Some((0.0, None));
             self.song.pause();
@@ -783,6 +786,36 @@ enum Screen {
     /// The finished run, and whether the player survived it.
     Results(Box<Playing>, bool),
     Failed(String),
+    /// What a new player is told before anything flashes.
+    Warning,
+}
+
+/// How much memory the game holds, in megabytes, where the system says.
+fn memory_mb() -> Option<u64> {
+    #[cfg(windows)]
+    {
+        /// PROCESS_MEMORY_COUNTERS: the size of the structure, then counts; the fourth number is the memory in use now.
+        #[repr(C)]
+        struct Counters {
+            size: u32,
+            faults: u32,
+            numbers: [usize; 8],
+        }
+        #[link(name = "kernel32")]
+        extern "system" {
+            fn GetCurrentProcess() -> *mut std::ffi::c_void;
+            fn K32GetProcessMemoryInfo(process: *mut std::ffi::c_void, counters: *mut Counters, size: u32) -> i32;
+        }
+        let mut counters = Counters { size: std::mem::size_of::<Counters>() as u32, faults: 0, numbers: [0; 8] };
+        let known = unsafe { K32GetProcessMemoryInfo(GetCurrentProcess(), &mut counters, counters.size) } != 0;
+        known.then_some(counters.numbers[1] as u64 >> 20)
+    }
+    #[cfg(not(windows))]
+    {
+        // the second number of /proc/self/statm: pages in memory
+        let pages: u64 = std::fs::read_to_string("/proc/self/statm").ok()?.split(' ').nth(1)?.parse().ok()?;
+        Some(pages * 4096 >> 20)
+    }
 }
 
 const TITLE: &str = "Friday Night Funkin': Psych Engine (Rust)";
@@ -813,7 +846,13 @@ fn main() {
     let start_at = value("--at").and_then(|s| s.parse::<f64>().ok()).unwrap_or(0.0) * 1000.0;
 
     let base = base_dir();
+    let new_player = !Settings::kept(&base);
     let mut settings = Settings::load(&base);
+    controls::set(settings.ui_keys);
+    audio::set_master(settings.volume as f32);
+    // the volume as it was when its keys were last used, and when
+    let mut volume_shown = f64::MIN;
+    let mut muted = false;
     settings.botplay |= flag("--bot");
     atlas::SMOOTH.store(settings.antialiasing, std::sync::atomic::Ordering::Relaxed);
     // `--opengl`: the way out when the chosen graphics API shows nothing and the options cannot be reached
@@ -866,6 +905,9 @@ fn main() {
     };
     skin.iter().for_each(|skin| skin.recolor(&settings.note_colors));
     pixel_skin.iter().for_each(|skin| skin.recolor(&settings.pixel_note_colors));
+    if new_player && matches!(screen, Screen::Menu(Page::Title)) {
+        screen = Screen::Warning;
+    }
     if flag("--options") && matches!(screen, Screen::Menu(_)) {
         screen = Screen::Options(options::OptionsMenu::at(&value("--options").unwrap_or_default()), Page::Main);
     }
@@ -1041,14 +1083,29 @@ fn main() {
                 let accuracy = play.accuracy().map_or("-".to_owned(), |a| format!("{:.2}%", a * 100.0));
                 plain(&format!("Score {}    Misses {}    Accuracy {}", play.score, play.misses, accuracy), 40.0, 220.0, 28, WHITE);
                 plain("Enter: back to freeplay", 40.0, 280.0, 20, GRAY);
-                if is_key_pressed(KeyCode::Enter) || is_key_pressed(KeyCode::Escape) { Screen::Menu(Page::Freeplay) } else { Screen::Results(playing, survived) }
+                if controls::pressed(Ui::Accept) || controls::pressed(Ui::Back) { Screen::Menu(Page::Freeplay) } else { Screen::Results(playing, survived) }
+            }
+            Screen::Warning => {
+                let lines = ["Hey, watch out!", "This Mod contains some flashing lights!", "Press ENTER to disable them now or go to Options Menu.", "Press ESCAPE to ignore this message.", "You've been warned!"];
+                for (row, line) in lines.iter().enumerate() {
+                    if let Some(skin) = &skin {
+                        skin.centered(line, 280.0 + row as f32 * 40.0, 32, WHITE);
+                    }
+                }
+                if controls::pressed(Ui::Accept) || controls::pressed(Ui::Back) {
+                    settings.flashing = !controls::pressed(Ui::Accept);
+                    settings.save(&base);
+                    Screen::Menu(Page::Title)
+                } else {
+                    Screen::Warning
+                }
             }
             Screen::Failed(message) => {
                 for (row, line) in message.lines().enumerate() {
                     plain(line, 40.0, 120.0 + row as f32 * 30.0, 22, ORANGE);
                 }
                 plain("Esc: quit", 40.0, 320.0, 20, GRAY);
-                if is_key_pressed(KeyCode::Escape) { break; }
+                if controls::pressed(Ui::Back) { break; }
                 Screen::Failed(message)
             }
         };
@@ -1088,9 +1145,33 @@ fn main() {
                 menus.popup(skin, id, (get_time() - since) as f32, slot);
             }
         }
+        set_camera(&Camera2D { target: vec2(WIDTH / 2.0, HEIGHT / 2.0), zoom: vec2(2.0 / WIDTH, 2.0 / HEIGHT), ..Default::default() });
         if settings.show_fps {
-            set_camera(&Camera2D { target: vec2(WIDTH / 2.0, HEIGHT / 2.0), zoom: vec2(2.0 / WIDTH, 2.0 / HEIGHT), ..Default::default() });
             plain(&format!("FPS: {}", get_fps()), 10.0, 17.0, 14, WHITE);
+            if let Some(megabytes) = memory_mb() {
+                plain(&format!("Memory: {megabytes} MB"), 10.0, 31.0, 14, WHITE);
+            }
+        }
+        // the volume keys, at any time but in the options (where keys are being chosen and typed); a key that plays a note only plays notes
+        let free = |action: Ui| !matches!(screen, Screen::Options(..)) && controls::keys(action).into_iter().flatten().any(|key| is_key_pressed(key) && settings.lane_of(key).is_none());
+        let louder = free(Ui::VolumeUp) as i32 - free(Ui::VolumeDown) as i32;
+        if louder != 0 || free(Ui::VolumeMute) {
+            muted = louder == 0 && !muted;
+            settings.volume = ((settings.volume * 10.0).round() + louder as f64).clamp(0.0, 10.0) / 10.0;
+            settings.save(&base);
+            volume_shown = get_time();
+        }
+        // (also when the options changed it)
+        audio::set_master(if muted { 0.0 } else { settings.volume as f32 });
+        if get_time() - volume_shown < 1.5 {
+            // ten bars at the top of the screen, as many lit as the volume has tenths
+            draw_rectangle(WIDTH / 2.0 - 80.0, 0.0, 160.0, 46.0, Color::new(0.0, 0.0, 0.0, 0.6));
+            plain("VOLUME", WIDTH / 2.0 - 33.0, 40.0, 14, WHITE);
+            let lit = if muted { 0 } else { (settings.volume * 10.0).round() as usize };
+            for bar in 0..10 {
+                let height = 4.0 + bar as f32 * 2.0;
+                draw_rectangle(WIDTH / 2.0 - 59.0 + bar as f32 * 12.0, 26.0 - height, 8.0, height, if bar < lit { WHITE } else { Color::new(1.0, 1.0, 1.0, 0.3) });
+            }
         }
         if atlas::SMOOTH.swap(settings.antialiasing, std::sync::atomic::Ordering::Relaxed) != settings.antialiasing {
             // the Anti-Aliasing option changed: what is already loaded is loaded again, to look as chosen
@@ -1114,7 +1195,7 @@ fn main() {
             get_screen_data().export_png(path);
             break;
         }
-        if is_key_pressed(KeyCode::F11) {
+        if is_key_pressed(KeyCode::F11) || alt_enter_pressed() {
             settings.fullscreen ^= true;
             settings.save(&base);
         }
