@@ -39,8 +39,11 @@ pub fn animation(frames: &[(String, Frame)], prefix: &str, indices: &[u32]) -> V
     if indices.is_empty() {
         return all.iter().map(|(_, f)| *f).collect();
     }
-    // a frame's number is the digits its name ends with
-    let number = |name: &str| name[prefix.len()..].trim_start_matches(|c: char| !c.is_ascii_digit()).parse::<u32>().ok();
+    // a frame's number is what follows the prefix at once ("GF Dancing Beat0003", not "GF Dancing Beat Hair blowing0003")
+    let number = |name: &str| {
+        let rest = name[prefix.len()..].trim_start();
+        rest[..rest.len() - rest.trim_start_matches(|c: char| c.is_ascii_digit()).len()].parse::<u32>().ok()
+    };
     indices.iter().filter_map(|i| all.iter().find(|(name, _)| number(name) == Some(*i)).map(|(_, f)| *f)).collect()
 }
 
@@ -208,5 +211,9 @@ mod tests {
         assert_eq!(xs(animation(&frames, "BF idle dance", &[])), [0.0, 10.0, 20.0]);
         assert_eq!(xs(animation(&frames, "BF idle dance", &[13, 0, 7])), [20.0, 0.0]);
         assert!(animation(&frames, "nothing", &[]).is_empty());
+        // by number, a longer name that starts the same is another animation: the girlfriend's dance is not her hair landing
+        let frames = parse(r#"<SubTexture name="GF Dancing Beat Hair Landing0001" x="50" y="0" width="5" height="5"/>
+            <SubTexture name="GF Dancing Beat0001" x="60" y="0" width="5" height="5"/>"#);
+        assert_eq!(xs(animation(&frames, "GF Dancing Beat", &[1])), [60.0]);
     }
 }
