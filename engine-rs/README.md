@@ -149,7 +149,10 @@ Done:
   first set of functions (debugPrint, timers, sounds, events, health, character poses, setVar/getVar,
   getModSetting, and getProperty/setProperty for the camera, health, score and characters); the scripts' sprites
   (pictures, animated sheets, plain rectangles; behind the characters, in front, on the HUD or over everything;
-  their place, size, scroll, angle, colour and animations) and tweens with Flixel's easings.
+  their place, size, scroll, angle, colour and animations) and tweens with Flixel's easings; the scripts of
+  custom note types and events (`custom_notetypes/`, `custom_events/`, the chart keeping its types' names); keys
+  (by the game's actions or Flixel's names) and the mouse; camera flashes; score, misses and hits; the scripts'
+  own saves (`funkin-rs-lua-saves/`); files, folders and colours.
 
 Not there yet:
 

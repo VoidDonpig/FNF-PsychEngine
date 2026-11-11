@@ -190,30 +190,9 @@ fn from_hsv(hue: f32, saturation: f32, brightness: f32) -> u32 {
     [r, g, b].iter().fold(0, |code, channel| code << 8 | ((channel + brightness - chroma) * 255.0).round() as u32)
 }
 
-/// A key's name in the Haxe engine (Flixel's), which mods' settings keep keys by; none for a key it has no name for.
-fn flx_name(key: KeyCode) -> Option<String> {
-    use KeyCode::*;
-    const DIGITS: [&str; 10] = ["ZERO", "ONE", "TWO", "THREE", "FOUR", "FIVE", "SIX", "SEVEN", "EIGHT", "NINE"];
-    let name = format!("{key:?}");
-    Some(match key {
-        Key0 | Key1 | Key2 | Key3 | Key4 | Key5 | Key6 | Key7 | Key8 | Key9 => DIGITS[name[3..].parse::<usize>().ok()?].to_owned(),
-        Kp0 | Kp1 | Kp2 | Kp3 | Kp4 | Kp5 | Kp6 | Kp7 | Kp8 | Kp9 => format!("NUMPAD{}", DIGITS[name[2..].parse::<usize>().ok()?]),
-        KpAdd => "NUMPADPLUS".to_owned(),
-        KpSubtract => "NUMPADMINUS".to_owned(),
-        LeftShift | RightShift => "SHIFT".to_owned(),
-        LeftControl | RightControl => "CONTROL".to_owned(),
-        LeftAlt | RightAlt => "ALT".to_owned(),
-        Apostrophe => "QUOTE".to_owned(),
-        LeftBracket => "LBRACKET".to_owned(),
-        RightBracket => "RBRACKET".to_owned(),
-        Equal => "PLUS".to_owned(),
-        _ => name.to_uppercase(),
-    })
-}
-
 /// A key kept by its Flixel name, as the key binds' page names keys.
 fn flx_shown(name: &str) -> String {
-    let known = crate::settings::ui_bindable().into_iter().chain([KeyCode::LeftShift, KeyCode::LeftControl, KeyCode::LeftAlt]).find(|&key| flx_name(key).as_deref() == Some(name));
+    let known = crate::controls::key_named(name);
     known.map_or_else(|| if name == "NONE" { key_name(None) } else { name.to_owned() }, |key| key_name(Some(key)))
 }
 
@@ -550,8 +529,8 @@ impl OptionsMenu {
 
         let value = option.value(saved);
         if self.binding {
-            if let Some(key) = self.rebind(menus, skin, &option.name, dt, |key| flx_name(*key).is_some()) {
-                option.store(saved, json!(key.and_then(flx_name).unwrap_or_else(|| "NONE".to_owned())));
+            if let Some(key) = self.rebind(menus, skin, &option.name, dt, |key| crate::controls::flx_name(*key).is_some()) {
+                option.store(saved, json!(key.and_then(crate::controls::flx_name).unwrap_or_else(|| "NONE".to_owned())));
             }
         } else if back {
             self.binding = false;
@@ -934,7 +913,7 @@ mod tests {
     #[test]
     fn mods_keep_keys_by_their_flixel_names() {
         use KeyCode::*;
-        assert_eq!([Key3, Kp0, Space, LeftShift, Equal, Left].map(|key| flx_name(key).unwrap()), ["THREE", "NUMPADZERO", "SPACE", "SHIFT", "PLUS", "LEFT"]);
+        assert_eq!([Key3, Kp0, Space, LeftShift, Equal, Left].map(|key| crate::controls::flx_name(key).unwrap()), ["THREE", "NUMPADZERO", "SPACE", "SHIFT", "PLUS", "LEFT"]);
         assert_eq!((flx_shown("SPACE"), flx_shown("NONE"), flx_shown("THREE")), ("Space".to_owned(), "---".to_owned(), "3".to_owned()));
     }
 

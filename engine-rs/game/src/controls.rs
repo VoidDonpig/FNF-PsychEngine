@@ -71,3 +71,31 @@ mod tests {
         set(defaults());
     }
 }
+
+/// A key's name in the Haxe engine (Flixel's), which mods' settings keep keys by; none for a key it has no name for.
+pub fn flx_name(key: KeyCode) -> Option<String> {
+    use KeyCode::*;
+    const DIGITS: [&str; 10] = ["ZERO", "ONE", "TWO", "THREE", "FOUR", "FIVE", "SIX", "SEVEN", "EIGHT", "NINE"];
+    let name = format!("{key:?}");
+    Some(match key {
+        Key0 | Key1 | Key2 | Key3 | Key4 | Key5 | Key6 | Key7 | Key8 | Key9 => DIGITS[name[3..].parse::<usize>().ok()?].to_owned(),
+        Kp0 | Kp1 | Kp2 | Kp3 | Kp4 | Kp5 | Kp6 | Kp7 | Kp8 | Kp9 => format!("NUMPAD{}", DIGITS[name[2..].parse::<usize>().ok()?]),
+        KpAdd => "NUMPADPLUS".to_owned(),
+        KpSubtract => "NUMPADMINUS".to_owned(),
+        LeftShift | RightShift => "SHIFT".to_owned(),
+        LeftControl | RightControl => "CONTROL".to_owned(),
+        LeftAlt | RightAlt => "ALT".to_owned(),
+        Apostrophe => "QUOTE".to_owned(),
+        LeftBracket => "LBRACKET".to_owned(),
+        RightBracket => "RBRACKET".to_owned(),
+        Equal => "PLUS".to_owned(),
+        _ => name.to_uppercase(),
+    })
+}
+
+/// The key of that Flixel name (scripts and mods' settings name keys so), when the game knows it.
+pub fn key_named(name: &str) -> Option<KeyCode> {
+    use KeyCode::*;
+    let name = name.trim().to_uppercase();
+    crate::settings::ui_bindable().into_iter().chain([LeftShift, LeftControl, LeftAlt, Home, End, F11]).find(|&key| flx_name(key).as_deref() == Some(name.as_str()))
+}

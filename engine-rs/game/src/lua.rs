@@ -30,6 +30,10 @@ pub enum Request {
     Animation { who: String, animation: String },
     Dance { who: String },
     SetProperty { name: String, value: serde_json::Value },
+    /// A camera flashes a colour and fades back over that many seconds.
+    Flash { camera: Cam, color: u32, seconds: f64 },
+    /// The run's score, misses or hits ("score", "misses", "hits") set, or added to.
+    Score { field: &'static str, value: f64, add: bool },
     EndSong,
     RestartSong,
     ExitSong,
@@ -53,6 +57,11 @@ pub struct Shared {
     /// Where the scripts' pictures are found, and those loaded so far.
     paths: Option<funkin_core::content::Paths>,
     art: HashMap<String, Option<Art>>,
+    /// The keys of the four lanes, which keyPressed("left") and the like ask about.
+    pub note_keys: [[Option<KeyCode>; 2]; 4],
+    /// Where the scripts' own saves are kept, and those open (by name).
+    pub save_dir: PathBuf,
+    saves: HashMap<String, serde_json::Map<String, serde_json::Value>>,
     /// Each mod's own settings, by folder.
     mod_settings: serde_json::Map<String, serde_json::Value>,
     /// The mod the song comes from.
@@ -71,9 +80,10 @@ pub struct Scripts {
     pub shared: Rc<RefCell<Shared>>,
 }
 
-/// The scripts to run for a song, in the Haxe engine's order: those of the `scripts/` folders, then the song's own
-/// (`data/<song>/`), then the stage's (`stages/<stage>.lua`). `roots` are the folders looked in, the first asked first.
-pub fn find(roots: &[PathBuf], song: &str, stage: &str) -> Vec<PathBuf> {
+/// The scripts to run for a song, in the Haxe engine's order: those of the `scripts/` folders, the song's own
+/// (`data/<song>/`), the stage's (`stages/<stage>.lua`), then one for each note type (`custom_notetypes/<type>.lua`) and
+/// each event (`custom_events/<name>.lua`) the chart has. `roots` are the folders looked in, the first asked first.
+pub fn find(roots: &[PathBuf], song: &str, stage: &str, note_types: &[String], events: &[&str]) -> Vec<PathBuf> {
     let in_folders = |folder: &str| -> Vec<PathBuf> {
         // (the game's own folder first, the mod asked first last: the Haxe engine's directoriesWithFile)
         roots.iter().rev().map(|root| root.join(folder)).filter(|dir| dir.is_dir()).flat_map(|dir| {
@@ -85,7 +95,12 @@ pub fn find(roots: &[PathBuf], song: &str, stage: &str) -> Vec<PathBuf> {
     };
     let mut found = in_folders("scripts");
     found.extend(in_folders(&format!("data/{song}")));
-    found.extend(roots.iter().map(|root| root.join(format!("stages/{stage}.lua"))).find(|path| path.is_file()));
+    let named = |relative: String| roots.iter().map(|root| root.join(&relative)).find(|path| path.is_file());
+    found.extend(named(format!("stages/{stage}.lua")));
+    // (each once, a note type and an event of one name each their own)
+    let (mut types_seen, mut events_seen) = (std::collections::HashSet::new(), std::collections::HashSet::new());
+    found.extend(note_types.iter().filter(|kind| types_seen.insert(kind.as_str())).filter_map(|kind| named(format!("custom_notetypes/{kind}.lua"))));
+    found.extend(events.iter().filter(|name| events_seen.insert(**name)).filter_map(|name| named(format!("custom_events/{name}.lua"))));
     found
 }
 
@@ -575,6 +590,114 @@ impl Scripts {
         function!("stringTrim", |_lua, _shared, args: String| Ok(args.trim().to_owned()));
         function!("stringSplit", |_lua, _shared, args: (String, String)| Ok(args.0.split(args.1.as_str()).map(str::to_owned).collect::<Vec<_>>()));
 
+        // the player's keys: the game's actions by Psych's names ("left" is a lane's key), or any key by Flixel's name
+        let asked = |shared: &Shared, name: &str, state: fn(KeyCode) -> bool| -> bool {
+            let lane = ["left", "down", "up", "right"].iter().position(|lane| *lane == name);
+            let action = match name {
+                "accept" => Some(crate::controls::Ui::Accept),
+                "back" => Some(crate::controls::Ui::Back),
+                "pause" => Some(crate::controls::Ui::Pause),
+                "reset" => Some(crate::controls::Ui::Reset),
+                "ui_left" => Some(crate::controls::Ui::Left),
+                "ui_down" => Some(crate::controls::Ui::Down),
+                "ui_up" => Some(crate::controls::Ui::Up),
+                "ui_right" => Some(crate::controls::Ui::Right),
+                _ => None,
+            };
+            let keys: Vec<KeyCode> = match (lane, action) {
+                (Some(lane), _) => shared.note_keys[lane].into_iter().flatten().collect(),
+                (_, Some(action)) => crate::controls::keys(action).into_iter().flatten().collect(),
+                _ if name == "space" => vec![KeyCode::Space],
+                _ => Vec::new(),
+            };
+            keys.into_iter().any(state)
+        };
+        for (name, state) in [("keyJustPressed", is_key_pressed as fn(KeyCode) -> bool), ("keyPressed", is_key_down), ("keyReleased", is_key_released)] {
+            let shared = shared.clone();
+            g.set(name, lua.create_function(move |_, args: String| Ok(asked(&shared.borrow(), &args.to_lowercase(), state)))?)?;
+        }
+        for (name, state) in [("keyboardJustPressed", is_key_pressed as fn(KeyCode) -> bool), ("keyboardPressed", is_key_down), ("keyboardReleased", is_key_released)] {
+            g.set(name, lua.create_function(move |_, args: String| Ok(crate::controls::key_named(&args).is_some_and(state)))?)?;
+        }
+        g.set("mouseClicked", lua.create_function(|_, _args: Option<String>| Ok(is_mouse_pressed()))?)?;
+        g.set("mousePressed", lua.create_function(|_, _args: Option<String>| Ok(is_mouse_down()))?)?;
+        g.set("getMouseX", lua.create_function(|_, _args: Option<String>| Ok(mouse_position(vec2(1280.0, 720.0)).x as f64))?)?;
+        g.set("getMouseY", lua.create_function(|_, _args: Option<String>| Ok(mouse_position(vec2(1280.0, 720.0)).y as f64))?)?;
+
+        // the camera's flash, and the run's numbers
+        request!("cameraFlash", |args: (String, Option<Value>, Option<f64>, Option<bool>)| {
+            let camera = match args.0.to_lowercase().as_str() {
+                "hud" | "camhud" => Cam::Hud,
+                "other" | "camother" => Cam::Other,
+                _ => Cam::Game,
+            };
+            Request::Flash { camera, color: args.1.as_ref().map_or(0xFFFFFF, color_of), seconds: args.2.unwrap_or(1.0) }
+        });
+        for (name, field, add) in [("setScore", "score", false), ("addScore", "score", true), ("setMisses", "misses", false), ("addMisses", "misses", true), ("setHits", "hits", false), ("addHits", "hits", true)] {
+            let shared = shared.clone();
+            g.set(name, lua.create_function(move |_, args: Option<f64>| {
+                shared.borrow_mut().requests.push(Request::Score { field, value: args.unwrap_or(if add { 1.0 } else { 0.0 }), add });
+                Ok(())
+            })?)?;
+        }
+
+        // files of the game and the mods, as the song's own are found
+        function!("getTextFromFile", |_lua, shared, args: (String, Option<bool>)| {
+            let file = shared.borrow().paths.as_ref().and_then(|paths| paths.find(&args.0));
+            Ok(file.and_then(|file| std::fs::read_to_string(file).ok()))
+        });
+        function!("checkFileExists", |_lua, shared, args: (String, Option<bool>)| Ok(Path::new(&args.0).is_file() || shared.borrow().paths.as_ref().and_then(|paths| paths.find(&args.0)).is_some()));
+        function!("directoryFileList", |_lua, shared, args: String| {
+            let roots: Vec<PathBuf> = shared.borrow().paths.as_ref().map_or(Vec::new(), |paths| paths.roots().to_vec());
+            let mut names: Vec<String> = roots.iter().map(|root| root.join(&args)).chain([PathBuf::from(&args)]).filter(|dir| dir.is_dir())
+                .flat_map(|dir| std::fs::read_dir(dir).into_iter().flatten().flatten().map(|entry| entry.file_name().to_string_lossy().into_owned())).collect();
+            names.sort();
+            names.dedup();
+            Ok(names)
+        });
+        // colours, as numbers with their opacity first (Flixel's)
+        for name in ["getColorFromHex", "getColorFromString", "getColorFromName", "FlxColor"] {
+            g.set(name, lua.create_function(|_, args: Value| Ok(0xFF00_0000u32 as i64 | color_of(&args) as i64))?)?;
+        }
+        // (pictures and sounds load when first wanted)
+        for name in ["precacheImage", "precacheSound", "precacheMusic"] {
+            g.set(name, lua.create_function(|_, _args: MultiValue| Ok(()))?)?;
+        }
+        // the scripts' own saves: JSON files by name, kept where the game keeps its own
+        function!("initSaveData", |_lua, shared, args: (String, Option<String>)| {
+            let mut shared = shared.borrow_mut();
+            let file = shared.save_dir.join(format!("{}.json", args.0));
+            let kept = std::fs::read_to_string(file).ok().and_then(|text| serde_json::from_str(&text).ok()).unwrap_or_default();
+            shared.saves.entry(args.0).or_insert(kept);
+            Ok(())
+        });
+        function!("setDataFromSave", |_lua, shared, args: (String, String, Value)| {
+            shared.borrow_mut().saves.entry(args.0).or_default().insert(args.1, to_json(&args.2));
+            Ok(())
+        });
+        function!("getDataFromSave", |lua, shared, args: (String, String, Option<Value>)| {
+            match shared.borrow().saves.get(&args.0).and_then(|save| save.get(&args.1)) {
+                Some(value) => from_json(lua, value),
+                None => Ok(args.2.unwrap_or(Value::Nil)),
+            }
+        });
+        function!("flushSaveData", |_lua, shared, args: String| {
+            let shared = shared.borrow();
+            if let Some(save) = shared.saves.get(&args) {
+                let _ = std::fs::create_dir_all(&shared.save_dir);
+                if let Err(error) = funkin_core::files::write(&shared.save_dir.join(format!("{args}.json")), &serde_json::Value::Object(save.clone()).to_string()) {
+                    eprintln!("Lua save {args}: {error}");
+                }
+            }
+            Ok(())
+        });
+        function!("eraseSaveData", |_lua, shared, args: String| {
+            let mut shared = shared.borrow_mut();
+            shared.saves.remove(&args);
+            let _ = std::fs::remove_file(shared.save_dir.join(format!("{args}.json")));
+            Ok(())
+        });
+
         // sprites: made, given pictures and animations, added in front of the characters or behind them, and moved about
         let make = |shared: &mut Shared, tag: String, image: Option<String>, x: Option<f64>, y: Option<f64>, animated: bool| {
             let art = image.filter(|image| !image.is_empty()).and_then(|image| shared.art(&image, animated));
@@ -922,6 +1045,22 @@ mod tests {
         let text = |code: &str| Value::String(lua.create_string(code).unwrap());
         assert_eq!([text("FF3366"), text("0xFF00FF00"), text("#0000ff"), Value::Integer(0x123456)].map(|value| color_of(&value)), [0xFF3366, 0x00FF00, 0x0000FF, 0x123456]);
         assert_eq!(indices(&text("0, 2,4")), [0, 2, 4]);
+    }
+
+    #[test]
+    fn scripts_are_found_where_the_haxe_engine_looks() {
+        let root = std::env::temp_dir().join(format!("funkin-lua-find-{}", std::process::id()));
+        let (game, top) = (root.join("assets"), root.join("mods/top"));
+        for (folder, file) in [(&game, "scripts/b.lua"), (&game, "scripts/a.lua"), (&top, "scripts/c.lua"), (&top, "data/fresh/song.lua"), (&game, "stages/stage.lua"),
+                               (&top, "stages/stage.lua"), (&top, "custom_notetypes/Bomb.lua"), (&game, "custom_events/Flash.lua"), (&top, "scripts/notes.txt")] {
+            std::fs::create_dir_all(folder.join(file).parent().unwrap()).unwrap();
+            std::fs::write(folder.join(file), "").unwrap();
+        }
+        let found = find(&[top.clone(), game.clone()], "fresh", "stage", &["Bomb".to_owned(), "Bomb".to_owned(), "Unknown".to_owned()], &["Flash", "Hey!"]);
+        let names: Vec<String> = found.iter().map(|path| path.strip_prefix(&root).unwrap().to_string_lossy().replace('\\', "/")).collect();
+        // the game's scripts folder first, then the mod's; the song's; the stage's from the mod first asked; a script for each type and event
+        assert_eq!(names, ["assets/scripts/a.lua", "assets/scripts/b.lua", "mods/top/scripts/c.lua", "mods/top/data/fresh/song.lua", "mods/top/stages/stage.lua", "mods/top/custom_notetypes/Bomb.lua", "assets/custom_events/Flash.lua"]);
+        let _ = std::fs::remove_dir_all(root);
     }
 
     #[test]

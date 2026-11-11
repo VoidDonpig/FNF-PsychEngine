@@ -243,6 +243,8 @@ struct Playing {
     /// The song's Lua scripts; the step and section they were last told of; whether onEndSong was asked, and whether a
     /// script stopped the end of the song.
     lua: lua::Scripts,
+    /// A flash a script asked for: the camera it covers, its colour, when it began and how long it fades.
+    flash: Option<(lua::Cam, Color, f64, f64)>,
     lua_step: i64,
     lua_section: usize,
     end_asked: bool,
@@ -354,8 +356,8 @@ impl Playing {
         atlas::forget_unused();
         let mut scene = scene;
         let staged = story && start_at <= 0.0 && !seen && scene.as_mut().is_some_and(|scene| scene.open_with(&funkin_core::content::song_path(&entry.title), 60.0 / play.chart.bpm as f32));
-        let lua = start_scripts(&paths, entry, &play.chart, settings, story, seen);
-        Ok(Playing { entry: entry.clone(), play, song, player_voice, own_skin: None, music_fade: None, lua, lua_step: i64::MIN, lua_section: usize::MAX, end_asked: false, end_held: false, base: base.to_path_buf(), staged, bowing: false, tune: false, paused_at: 0.0, pause_scroll: 0.0, deaths: 0, scene, waited: 0.0, clock: Default::default(), ticked: std::time::Instant::now(), started: false, paused: None, choosing: None, difficulties, story, taunt_until: None, start_at, position: -lead_in, settings: settings.clone(), held_keys: Vec::new(), flash_until: [[f64::MIN; 4]; 2], judgement: None, last_hit: f64::MIN, lanes_used: [false; 4], idled: false, idle_for: 0.0, sang_for: 0.0,
+        let lua = start_scripts(base, &paths, entry, &play.chart, settings, story, seen);
+        Ok(Playing { entry: entry.clone(), play, song, player_voice, own_skin: None, music_fade: None, lua, flash: None, lua_step: i64::MIN, lua_section: usize::MAX, end_asked: false, end_held: false, base: base.to_path_buf(), staged, bowing: false, tune: false, paused_at: 0.0, pause_scroll: 0.0, deaths: 0, scene, waited: 0.0, clock: Default::default(), ticked: std::time::Instant::now(), started: false, paused: None, choosing: None, difficulties, story, taunt_until: None, start_at, position: -lead_in, settings: settings.clone(), held_keys: Vec::new(), flash_until: [[f64::MIN; 4]; 2], judgement: None, last_hit: f64::MIN, lanes_used: [false; 4], idled: false, idle_for: 0.0, sang_for: 0.0,
             paths, cutscene, lead_in, counted: i64::MIN, popups: Vec::new(), splashes: Vec::new(), dead: None, next_event: 0, speed, speed_change: None }.with(settings))
     }
 
@@ -635,7 +637,7 @@ impl Playing {
         events.extend(self.play.update(judged));
         if !self.lua.is_empty() {
             for &event in &events {
-                let kind = |note: usize| self.play.chart.notes.get(note).map_or(String::new(), |note| note.kind.name());
+                let kind = |note: usize| self.play.chart.notes.get(note).map_or(String::new(), |note| self.play.chart.type_name(note.kind));
                 match event {
                     Event::Hit { lane, note, .. } => self.lua.call("goodNoteHit", (note, lane, kind(note), false)),
                     Event::OpponentHit { lane, note } => self.lua.call("opponentNoteHit", (note, lane, kind(note), false)),
@@ -850,6 +852,19 @@ impl Playing {
                     }
                     _ => eprintln!("Lua: setProperty {name} is not known here"),
                 },
+                lua::Request::Flash { camera, color, seconds } => self.flash = Some((camera, Color::from_hex(color), get_time(), seconds)),
+                lua::Request::Score { field, value, add } => {
+                    let play = &mut self.play;
+                    match field {
+                        "score" => play.score = if add { play.score + value as i64 } else { value as i64 },
+                        "misses" => play.misses = if add { play.misses + value as u32 } else { value as u32 },
+                        // hits are counted as sick ones: what the others count stays
+                        _ => {
+                            let others: u32 = play.ratings[1..].iter().sum();
+                            play.ratings[0] = if add { play.ratings[0] + value as u32 } else { (value as u32).saturating_sub(others) };
+                        }
+                    }
+                }
                 lua::Request::EndSong => return Some(Flow::Finished),
                 lua::Request::RestartSong => return Some(Flow::Restart),
                 lua::Request::ExitSong => return Some(Flow::Quit),
@@ -918,6 +933,15 @@ impl Playing {
             scene.draw(&|front, scroll| self.lua.draw(lua::Cam::Game, front, scroll));
             (scene.hud_zoom, scene.hud_shake())
         });
+        // a script's flash of a camera: over what it shows, fading out
+        let flash = |camera: lua::Cam| {
+            if let Some((_, color, began, seconds)) = self.flash.filter(|flash| flash.0 == camera) {
+                let left = 1.0 - ((get_time() - began) / seconds.max(0.001)).min(1.0) as f32;
+                set_camera(&Camera2D { target: vec2(WIDTH / 2.0, HEIGHT / 2.0), zoom: vec2(2.0 / WIDTH, 2.0 / HEIGHT), ..Default::default() });
+                draw_rectangle(0.0, 0.0, WIDTH, HEIGHT, Color { a: color.a * left, ..color });
+            }
+        };
+        flash(lua::Cam::Game);
         set_camera(&Camera2D { target: vec2(WIDTH / 2.0, HEIGHT / 2.0) + hud_shake, zoom: vec2(2.0 / WIDTH, 2.0 / HEIGHT) * hud_zoom, ..Default::default() });
         // the game over scene is the fallen player alone, as in the Haxe engine
         if self.dead.is_some() {
@@ -1087,8 +1111,10 @@ impl Playing {
         skin.text(&format!("{} [{}]", self.entry.title, difficulty_name(&self.entry.difficulty)), 12.0, if settings.downscroll { 24.0 } else { HEIGHT - 12.0 }, 16, WHITE);
         // the scripts' sprites on the HUD's camera, then on the one over everything
         self.lua.draw(lua::Cam::Hud, false, Vec2::ZERO);
+        flash(lua::Cam::Hud);
         set_camera(&Camera2D { target: vec2(WIDTH / 2.0, HEIGHT / 2.0), zoom: vec2(2.0 / WIDTH, 2.0 / HEIGHT), ..Default::default() });
         self.lua.draw(lua::Cam::Other, false, Vec2::ZERO);
+        flash(lua::Cam::Other);
         set_camera(&Camera2D { target: vec2(WIDTH / 2.0, HEIGHT / 2.0) + hud_shake, zoom: vec2(2.0 / WIDTH, 2.0 / HEIGHT) * hud_zoom, ..Default::default() });
 
         if let Some(talk) = &self.cutscene {
@@ -1132,9 +1158,10 @@ impl Playing {
 /// where the system keeps programs' data, under its company's name.
 /// The song's Lua scripts (those of the `scripts/` folders, the song's and the stage's), started, told about the song
 /// and called back once loaded (onCreate, then onCreatePost), as the Haxe engine's PlayState starts them.
-fn start_scripts(paths: &Paths, entry: &SongEntry, chart: &Chart, settings: &Settings, story: bool, seen: bool) -> lua::Scripts {
+fn start_scripts(base: &Path, paths: &Paths, entry: &SongEntry, chart: &Chart, settings: &Settings, story: bool, seen: bool) -> lua::Scripts {
     let song = funkin_core::content::song_path(&entry.title);
-    let files = lua::find(paths.roots(), &song, &chart.stage);
+    let events: Vec<&str> = chart.events.iter().map(|event| event.name.as_str()).collect();
+    let files = lua::find(paths.roots(), &song, &chart.stage, &chart.custom_types, &events);
     if files.is_empty() {
         return lua::Scripts::none();
     }
@@ -1161,7 +1188,8 @@ fn start_scripts(paths: &Paths, entry: &SongEntry, chart: &Chart, settings: &Set
         ("noteOffset", json!(settings.offset_ms)), ("healthBarAlpha", json!(settings.health_bar_alpha)), ("noResetButton", json!(settings.no_reset)),
         ("lowQuality", json!(settings.low_quality)), ("shadersEnabled", json!(settings.shaders)),
     ];
-    let shared = lua::Shared::new(settings.mod_settings.clone(), &entry.source, paths.clone());
+    let mut shared = lua::Shared::new(settings.mod_settings.clone(), &entry.source, paths.clone());
+    (shared.note_keys, shared.save_dir) = (settings.keys, base.join("funkin-rs-lua-saves"));
     let mut scripts = lua::Scripts::start(&files, &globals, shared);
     scripts.call("onCreate", ());
     scripts.call("onCreatePost", ());

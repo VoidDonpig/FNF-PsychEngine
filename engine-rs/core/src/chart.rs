@@ -38,13 +38,25 @@ pub enum NoteKind {
     FireGun,
     /// Weekend 1: a move of the fist fight, by its place in `FIGHT_MOVES`.
     Fight(u8),
+    /// A type the game does not know (a mod's, which its scripts give meaning): by its place in `Chart::custom_types`.
+    Custom(u16),
+}
+
+impl Chart {
+    /// A note's type by its name, as charts and scripts have it ("" for a plain note).
+    pub fn type_name(&self, kind: NoteKind) -> String {
+        match kind {
+            NoteKind::Custom(at) => self.custom_types.get(at as usize).cloned().unwrap_or_default(),
+            kind => kind.name(),
+        }
+    }
 }
 
 impl NoteKind {
     /// The note type's name as charts and the Haxe engine's scripts have it ("" for a plain note).
     pub fn name(self) -> String {
         match self {
-            NoteKind::Normal | NoteKind::GfSing => "",
+            NoteKind::Normal | NoteKind::GfSing | NoteKind::Custom(_) => "",
             NoteKind::Hurt => "Hurt Note",
             NoteKind::Alt => "Alt Animation",
             NoteKind::Hey => "Hey!",
@@ -96,6 +108,8 @@ pub struct Chart {
     pub speed: f64,
     /// Sorted by time.
     pub notes: Vec<Note>,
+    /// The names of the note types the game does not know, as `NoteKind::Custom` numbers them.
+    pub custom_types: Vec<String>,
     /// Sorted by time.
     pub events: Vec<ChartEvent>,
     pub sections: Vec<Section>,
@@ -150,7 +164,7 @@ pub fn parse(text: &str) -> Result<Chart, String> {
     let (mut time, mut beat) = (0.0, 0.0);
     let mut tempo = vec![(0.0, 0.0, bpm)];
     let mut sections = Vec::new();
-    let mut notes = Vec::new();
+    let (mut notes, mut custom_types) = (Vec::new(), Vec::<String>::new());
     // values are stored as text, but old charts have numbers in them
     let text = |value: &Value| value.as_str().map(str::to_owned).unwrap_or_else(|| if value.is_null() { String::new() } else { value.to_string() });
     let mut events = Vec::new();
@@ -211,6 +225,14 @@ pub fn parse(text: &str) -> Result<Chart, String> {
                     kind if kind.strip_prefix("weekend-1-").is_some_and(|fight| FIGHT_MOVES.contains(&fight)) => {
                         NoteKind::Fight(FIGHT_MOVES.iter().position(|fight| kind.strip_prefix("weekend-1-") == Some(*fight)).unwrap_or(0) as u8)
                     }
+                    // a type of a mod's, kept by name for its scripts
+                    kind if !kind.trim().is_empty() => {
+                        let at = custom_types.iter().position(|known| known == kind).unwrap_or_else(|| {
+                            custom_types.push(kind.to_owned());
+                            custom_types.len() - 1
+                        });
+                        NoteKind::Custom(at as u16)
+                    }
                     // in a girlfriend section, the notes of the side in focus are hers
                     _ if gf_section && player == must_hit => NoteKind::GfSing,
                     _ => NoteKind::Normal,
@@ -236,6 +258,7 @@ pub fn parse(text: &str) -> Result<Chart, String> {
         needs_voices: root["needsVoices"].as_bool().unwrap_or(true),
         game_over: ["gameOverChar", "gameOverSound", "gameOverLoop", "gameOverEnd"].map(|key| root[key].as_str().unwrap_or("").trim().to_owned()),
         notes,
+        custom_types,
         events,
         sections,
         tempo,
@@ -319,7 +342,9 @@ mod tests {
         let chart = parse(r#"{"song":"T","format":"psych_v1","notes":[{"mustHitSection":true,"sectionNotes":[
             [0,0,0,"weekend-1-firegun"],[10,1,0,"weekend-1-punchhigh"],[20,2,0,"weekend-1-reversefakeout"],[30,3,0,"weekend-1-unheard-of"]]}]}"#).unwrap();
         let kinds: Vec<NoteKind> = chart.notes.iter().map(|n| n.kind).collect();
-        assert_eq!(kinds, [NoteKind::FireGun, NoteKind::Fight(4), NoteKind::Fight(25), NoteKind::Normal]);
+        assert_eq!(kinds, [NoteKind::FireGun, NoteKind::Fight(4), NoteKind::Fight(25), NoteKind::Custom(0)]);
+        // a type of a mod's is kept by its name
+        assert_eq!(chart.type_name(kinds[3]), "weekend-1-unheard-of");
         assert_eq!(FIGHT_MOVES[4], "punchhigh");
     }
 
