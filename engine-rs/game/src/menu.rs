@@ -630,6 +630,10 @@ impl Menus {
 
     /// The menu background in a colour that follows `target`.
     /// A sheet of the menus' own pictures.
+    pub fn picture(&mut self, name: &str) -> Option<Texture2D> {
+        self.art.own(name)
+    }
+
     pub fn sheet(&mut self, name: &str) -> Option<Rc<Sheet>> {
         self.art.own_sheet(name)
     }

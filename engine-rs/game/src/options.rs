@@ -24,6 +24,9 @@ pub struct OptionsMenu {
     /// Where the list of a page has glided to, and when a switch was last flipped (its box plays its tick).
     scroll: f32,
     flipped: f64,
+    /// Key binds: the second key of the row is chosen; how long Escape or Backspace has been held while binding.
+    alt: bool,
+    holding: f32,
 }
 
 /// The options' first list, in the Haxe engine's order.
@@ -31,6 +34,74 @@ const MAIN: [&str; 7] = ["Note Colors", "Controls", "Adjust Delay and Combo", "G
 
 /// The pink of the options' background.
 const PINK: Vec3 = vec3(0xEA as f32 / 255.0, 0x71 as f32 / 255.0, 0xFD as f32 / 255.0);
+
+/// The blue of the key binds' background.
+const BLUE: Vec3 = vec3(0x71 as f32 / 255.0, 0x92 as f32 / 255.0, 0xFD as f32 / 255.0);
+
+/// A row of the key binds' page.
+#[derive(Clone, Copy, PartialEq)]
+enum Bind {
+    Header,
+    Gap,
+    Lane(usize),
+    /// Of `controls::NAMES`.
+    Action(usize),
+    Defaults,
+}
+
+/// The key binds' rows in the Haxe engine's order: each with its name, and its name while it waits for a key.
+const BINDS: [(Bind, &str, &str); 24] = {
+    use Bind::*;
+    [
+        (Header, "NOTES", ""), (Lane(0), "Left", "Note Left"), (Lane(1), "Down", "Note Down"), (Lane(2), "Up", "Note Up"), (Lane(3), "Right", "Note Right"), (Gap, "", ""),
+        (Header, "UI", ""), (Action(0), "Left", "UI Left"), (Action(1), "Down", "UI Down"), (Action(2), "Up", "UI Up"), (Action(3), "Right", "UI Right"), (Gap, "", ""),
+        (Action(7), "Reset", "Reset"), (Action(4), "Accept", "Accept"), (Action(5), "Back", "Back"), (Action(6), "Pause", "Pause"), (Gap, "", ""),
+        (Header, "VOLUME", ""), (Action(8), "Mute", "Volume Mute"), (Action(9), "Up", "Volume Up"), (Action(10), "Down", "Volume Down"), (Gap, "", ""), (Gap, "", ""),
+        (Defaults, "Reset to Default Keys", ""),
+    ]
+};
+
+/// A key's name as the Haxe engine shows it ("---" for none).
+fn key_name(key: Option<KeyCode>) -> String {
+    use KeyCode::*;
+    let Some(key) = key else { return "---".to_owned() };
+    let short = match key {
+        Backspace => "BckSpc",
+        LeftControl | RightControl => "Ctrl",
+        LeftAlt | RightAlt => "Alt",
+        KpAdd => "#+",
+        KpSubtract => "#-",
+        Semicolon => ";",
+        Comma => ",",
+        Period => ".",
+        LeftBracket => "[",
+        RightBracket => "]",
+        Apostrophe => "'",
+        _ => "",
+    };
+    if !short.is_empty() {
+        return short.to_owned();
+    }
+    let name = format!("{key:?}");
+    // a digit of the numbers' row, or (after a "#") of the keypad
+    if let Some(digit) = name.strip_prefix("Key").filter(|digit| digit.len() == 1) {
+        return digit.to_owned();
+    }
+    if let Some(digit) = name.strip_prefix("Kp").filter(|digit| digit.len() == 1) {
+        return format!("#{digit}");
+    }
+    // the others' words spaced out: "LeftShift" reads "Left Shift"
+    name.chars().enumerate().flat_map(|(at, letter)| (at > 0 && letter.is_uppercase()).then_some(' ').into_iter().chain([letter])).collect()
+}
+
+/// The name a row's keys are saved under, which its translation is found by.
+fn key_of(bind: Bind) -> &'static str {
+    match bind {
+        Bind::Lane(lane) => ["note_left", "note_down", "note_up", "note_right"][lane],
+        Bind::Action(action) => NAMES[action].0,
+        _ => "",
+    }
+}
 
 /// Where a list of the Haxe engine's large letters puts a row `from` rows away from the chosen one, starting at `start`.
 fn listed(from: f32, start: Vec2) -> Vec2 {
@@ -137,12 +208,13 @@ impl OptionsMenu {
         let step = |rows: usize| (pressed(Ui::Down) as usize + pressed(Ui::Up) as usize * (rows - 1)) % rows;
         let back = pressed(Ui::Back);
         // the Haxe engine's look: the pink background, lists in large letters (the key binds and the note colours stay plain lists)
-        let plain = self.language.is_none() && matches!(self.page, Some(page) if page == 0 || page == PAGES.len() - 1);
         match self.page {
-            Some(page) if plain => text(&phrase(&format!("options_{}", PAGES[page]), PAGES[page]), 40.0, 60.0, 36, WHITE),
+            Some(page) if page == PAGES.len() - 1 => text(&phrase(&format!("options_{}", PAGES[page]), PAGES[page]), 40.0, 60.0, 36, WHITE),
+            Some(0) => menus.backdrop(BLUE, dt),
             _ => menus.backdrop(PINK, dt),
         }
-        if back {
+        if self.binding {
+        } else if back {
             menus.sound("cancelMenu", 1.0);
         } else if pressed(Ui::Up) || pressed(Ui::Down) {
             menus.sound("scrollMenu", 1.0);
@@ -187,53 +259,7 @@ impl OptionsMenu {
         };
 
         if page == 0 {
-            // two keys for each of the four lanes, then two for each thing the menus and the volume do
-            text("Up/Down: choose   Enter: bind   Backspace: unbind   Esc: back", 40.0, 96.0, 18, GRAY);
-            let rows = 8 + NAMES.len() * 2;
-            for index in 0..rows {
-                let waiting = self.binding && index == self.row;
-                let named = |key: Option<KeyCode>| if waiting { "press a key...".to_owned() } else { key.map_or("-".to_owned(), |k| format!("{k:?}")) };
-                if index < 8 {
-                    let (lane, slot) = (index / 2, index % 2);
-                    line(index, self.row, &format!("{} key {}: {}", DIRECTIONS[lane], slot + 1, named(settings.keys[lane][slot])), 150.0 + index as f32 * 30.0 + lane as f32 * 10.0);
-                } else {
-                    let (action, slot, chosen) = ((index - 8) / 2, index % 2, index == self.row);
-                    let label = format!("{}{} key {}: {}", if chosen { "> " } else { "  " }, NAMES[action].1, slot + 1, named(settings.ui_keys[action][slot]));
-                    text(&label, 600.0, 150.0 + (index - 8) as f32 * 24.0 + action as f32 * 2.0, 20, if chosen { YELLOW } else { WHITE });
-                }
-            }
-            let timing = if raw_input { "raw input: each press is timed when it happens" } else { "per frame (raw input is not available on this system)" };
-            text(&format!("Keyboard timing: {timing}"), 40.0, 118.0, 18, GRAY);
-            // the slot the selected row stands for: a lane's, or an action's
-            let slot = if self.row < 8 { &mut settings.keys[self.row / 2][self.row % 2] } else { &mut settings.ui_keys[(self.row - 8) / 2][self.row % 2] };
-            if self.binding {
-                // every key belongs to the binding now, the arrows included
-                match get_last_key_pressed() {
-                    Some(KeyCode::Escape) => self.binding = false,
-                    Some(key) if self.row < 8 && bindable.contains(&key) => {
-                        settings.bind(self.row / 2, self.row % 2, Some(key));
-                        self.binding = false;
-                    }
-                    Some(key) if self.row >= 8 && crate::settings::ui_bindable().contains(&key) => {
-                        *slot = Some(key);
-                        self.binding = false;
-                    }
-                    _ => {}
-                }
-                crate::controls::set(settings.ui_keys);
-                return false;
-            }
-            self.row = (self.row + step(rows)) % rows;
-            if pressed(Ui::Accept) {
-                self.binding = true;
-            } else if is_key_pressed(KeyCode::Backspace) {
-                *slot = None;
-                crate::controls::set(settings.ui_keys);
-            } else if back {
-                (self.page, self.row) = (None, main_row(page));
-                return self.direct;
-            }
-            return false;
+            return self.controls(settings, menus, skin, text, dt, back, raw_input, bindable);
         }
 
         let fast = if is_key_down(KeyCode::LeftShift) || is_key_down(KeyCode::RightShift) { 10.0 } else { 1.0 };
@@ -350,6 +376,135 @@ impl OptionsMenu {
         }
         back && self.direct
     }
+
+    /// The key binds' page, as the Haxe engine's: a row for each thing with its two keys, Left/Right choosing which; Enter
+    /// waits for a key (Escape or Backspace held half a second: give up, or leave none).
+    #[allow(clippy::too_many_arguments)]
+    fn controls(&mut self, settings: &mut Settings, menus: &mut crate::menu::Menus, skin: &crate::Skin, text: &dyn Fn(&str, f32, f32, u16, Color), dt: f32, back: bool, raw_input: bool, bindable: &[KeyCode]) -> bool {
+        // light squares drifting down and to the right
+        let drift = (get_time() * 40.0 % 160.0) as f32;
+        for row in -1..5 {
+            for column in -1..8 {
+                for corner in [0.0, 80.0] {
+                    draw_rectangle(column as f32 * 160.0 + drift + corner, row as f32 * 160.0 + drift + corner, 80.0, 80.0, Color::new(1.0, 1.0, 1.0, 0.2));
+                }
+            }
+        }
+        if let Some(sign) = menus.picture("controllertype") {
+            draw_texture_ex(&sign, 50.0, 40.0, WHITE, DrawTextureParams { source: Some(Rect::new(0.0, 0.0, 82.0, 60.0)), ..Default::default() });
+        }
+        push_model_matrix(Mat4::from_translation(vec3(60.0 - menus.width(skin, "CTRL", false) * 0.2, 90.0, 0.0)) * Mat4::from_scale(vec3(0.4, 0.4, 1.0)));
+        menus.write(skin, "CTRL", false, 0.0, 0.0, 1.0, 1.0);
+        pop_model_matrix();
+
+        let rows: Vec<usize> = (0..BINDS.len()).filter(|&id| matches!(BINDS[id].0, Bind::Lane(_) | Bind::Action(_) | Bind::Defaults)).collect();
+        if !self.binding {
+            self.row = (self.row + (pressed(Ui::Down) as usize + pressed(Ui::Up) as usize * (rows.len() - 1))) % rows.len();
+        }
+        let chosen = rows[self.row];
+        // the list glides to keep three rows above the chosen one and four below, short of its ends
+        self.scroll += ((chosen as f32).clamp(3.0, (BINDS.len() - 5) as f32) - self.scroll) * (1.0 - (-dt * 9.6).exp());
+        let keys = |bind: Bind| match bind {
+            Bind::Lane(lane) => settings.keys[lane],
+            Bind::Action(action) => settings.ui_keys[action],
+            _ => [None; 2],
+        };
+        for (id, &(bind, name, _)) in BINDS.iter().enumerate() {
+            let y = (id as f32 - self.scroll) * 1.3 * 60.0 + 300.0;
+            let alpha = if id == chosen { 1.0 } else { 0.6 };
+            if bind == Bind::Gap || !(-100.0..HEIGHT + 20.0).contains(&y) {
+                continue;
+            }
+            let centred = |name: &str, bold: bool, alpha: f32| menus.write(skin, name, bold, (crate::WIDTH - menus.width(skin, name, bold)) / 2.0, y - 55.0, 1.0, alpha);
+            match bind {
+                Bind::Header => centred(&phrase(&format!("keygroup_{name}"), name), false, 1.0),
+                Bind::Defaults => centred(&phrase(name, name), true, alpha),
+                _ => {
+                    let label = phrase(&format!("key_{}", key_of(bind)), name);
+                    menus.write(skin, &label, true, 475.0 - menus.width(skin, &label, true), y, 1.0, alpha);
+                    for (slot, key) in keys(bind).into_iter().enumerate() {
+                        let x = 550.0 + slot as f32 * 300.0;
+                        draw_rectangle(x, y - 6.0, 250.0, 78.0, Color::new(0.0, 0.0, 0.0, 0.4 * alpha));
+                        if id == chosen && slot == self.alt as usize {
+                            draw_rectangle(x, y - 6.0, 250.0, 78.0, Color::new(1.0, 1.0, 1.0, 0.75));
+                        }
+                        let key = key_name(key);
+                        menus.write(skin, &key, false, x + 10.0, y - 52.0, (230.0 / menus.width(skin, &key, false)).min(1.0), alpha);
+                    }
+                }
+            }
+        }
+        let timing = if raw_input { "raw input: each press is timed when it happens" } else { "per frame (raw input is not available on this system)" };
+        text(&format!("Keyboard timing: {timing}"), 20.0, HEIGHT - 12.0, 16, WHITE);
+
+        let bind = BINDS[chosen].0;
+        if !self.binding {
+            if pressed(Ui::Left) || pressed(Ui::Right) {
+                self.alt ^= true;
+                menus.sound("scrollMenu", 1.0);
+            }
+            if pressed(Ui::Accept) && bind == Bind::Defaults {
+                (settings.keys, settings.ui_keys) = (Settings::default().keys, crate::controls::defaults());
+                crate::controls::set(settings.ui_keys);
+                menus.sound("cancelMenu", 1.0);
+            } else if pressed(Ui::Accept) {
+                (self.binding, self.holding, self.flipped) = (true, 0.0, get_time());
+                menus.sound("scrollMenu", 1.0);
+            } else if back {
+                (self.page, self.row) = (None, main_row(0));
+                return self.direct;
+            }
+            return false;
+        }
+
+        // waiting for a key, over a whitened screen
+        let since = (get_time() - self.flipped) as f32;
+        draw_rectangle(0.0, 0.0, crate::WIDTH, HEIGHT, Color::new(1.0, 1.0, 1.0, 0.6 * (since / 0.35).min(1.0)));
+        let rebinding = funkin_core::lang::phrase_with("controls_rebinding", "Rebinding {1}", &[BINDS[chosen].2]);
+        menus.write(skin, &rebinding, false, (crate::WIDTH - menus.width(skin, &rebinding, false)) / 2.0, 160.0, 1.0, 1.0);
+        for (line, words) in phrase("controls_rebinding2", "Hold ESC to Cancel\nHold Backspace to Delete").lines().enumerate() {
+            menus.write(skin, words, true, (crate::WIDTH - menus.width(skin, words, true)) / 2.0, 340.0 + line as f32 * 85.0, 1.0, 1.0);
+        }
+        let (escape, backspace) = (is_key_down(KeyCode::Escape), is_key_down(KeyCode::Backspace));
+        let mut chosen_key = None;
+        if escape || backspace {
+            self.holding += dt;
+            if self.holding > 0.5 {
+                menus.sound("cancelMenu", 1.0);
+                self.binding = false;
+                // held Backspace leaves the slot empty
+                chosen_key = backspace.then_some(None);
+            }
+        } else {
+            // a short press of Escape or Backspace binds it, once let go
+            self.holding = 0.0;
+            let tapped = [KeyCode::Escape, KeyCode::Backspace].into_iter().find(|&key| is_key_released(key));
+            let key = get_last_key_pressed().filter(|key| !matches!(key, KeyCode::Escape | KeyCode::Backspace)).or(tapped);
+            let allowed = |key: &KeyCode| if matches!(bind, Bind::Lane(_)) { bindable.contains(key) } else { crate::settings::ui_bindable().contains(key) };
+            if let Some(key) = key.filter(allowed) {
+                menus.sound("confirmMenu", 1.0);
+                chosen_key = Some(Some(key));
+            }
+        }
+        if let Some(key) = chosen_key {
+            let slot = self.alt as usize;
+            match bind {
+                Bind::Lane(lane) => settings.bind(lane, slot, key),
+                Bind::Action(action) => {
+                    // a key is not bound twice to the same thing
+                    let keys = &mut settings.ui_keys[action];
+                    if key.is_some() && keys[1 - slot] == key {
+                        keys[1 - slot] = None;
+                    }
+                    keys[slot] = key;
+                    crate::controls::set(settings.ui_keys);
+                }
+                _ => {}
+            }
+            self.binding = false;
+        }
+        false
+    }
 }
 
 #[cfg(test)]
@@ -387,6 +542,13 @@ mod tests {
         // its mod was switched off: English is shown, and nothing changes until a key is pressed
         assert_eq!((next_language(&languages, "fr", 0), next_language(&languages, "fr", 1)), (1, 2));
         assert_eq!(next_language(&[], "fr", 1), 0);
+    }
+
+    #[test]
+    fn keys_are_named_as_in_the_haxe_engine() {
+        use KeyCode::*;
+        let names: Vec<String> = [Some(A), Some(Key7), Some(Kp3), Some(KpAdd), Some(Backspace), Some(LeftShift), Some(Left), None].map(key_name).to_vec();
+        assert_eq!(names, ["A", "7", "#3", "#+", "BckSpc", "Left Shift", "Left", "---"]);
     }
 
     #[test]
