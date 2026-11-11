@@ -122,7 +122,9 @@ Done:
   Tankman's talks before Ugh, Guns and Stress in story mode (his lines and music, the view, the beep, the
   tears, the girlfriend at gunpoint and Pico's rescue; holding Accept for a second skips them); the rest of
   stage files' `objects`: drawn between the characters where listed (and the characters in the order listed),
-  `flipY`, colour names, and objects shown only in story mode or only in freeplay.
+  `flipY`, colour names, and objects shown only in story mode or only in freeplay; the mouse where the Haxe
+  menus take it (main menu items pointed at and clicked, the wheel in freeplay, story mode and the mods menu,
+  a click on a mod, the rating and the combo count dragged on the delay screen), its pointer shown while it moves.
 
 Not there yet:
 
@@ -131,10 +133,9 @@ Not there yet:
   knife and cheers, the shell flying off the gun, the stage going dark at the shot, rain, light maps, the two
   rare turns of the fight when the player is nearly out); the Haxe
   fork's Display Lag Correction; the charting mode entries of the pause menu.
-- **Menus**: the mods menu's
-  mouse buttons and per-mod settings; achievements of mods; the options menu's look (it is a plain list)
-  and its Shaders and GPU Caching switches (nothing to switch here); Discord presence; update check;
-  the mouse anywhere (so the rating is placed with keys, not by dragging).
+- **Menus**: the mods menu's buttons (enable, disable, move: here they are keys) and per-mod settings;
+  achievements of mods; the options menu's look (it is a plain list) and its Shaders and GPU Caching switches
+  (nothing to switch here); Discord presence; update check.
 - **Saved data**: scores of the Haxe engine are not read (it keeps them in its own binary save).
 - **Cutscenes**: weekend 1's;
   videos; dialogue from a song's `dialogue.json` (the kind scripts start).

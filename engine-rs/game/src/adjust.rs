@@ -27,6 +27,18 @@ pub struct Adjust {
     /// The last beat seen, and when "Beat Hit!" last rose.
     beat: i64,
     hit: f64,
+    /// The sample being dragged with the mouse: which pair of offsets (0 the rating, 2 the digits), from where, from what.
+    dragging: Option<(usize, Vec2, [f64; 2])>,
+}
+
+/// Where the rating sample (first) and each digit sample (after it) are drawn for these offsets: corner and size.
+fn samples(offsets: &[f64; 4], rating: Option<Vec2>, digits: &[Vec2]) -> Vec<(Vec2, Vec2)> {
+    let left = WIDTH * 0.35 - 40.0;
+    // moved by the player: right and up
+    let [rating_at, digits_at] = [0, 2].map(|index| vec2(offsets[index] as f32, -offsets[index + 1] as f32));
+    let place = |size: Vec2, at: Vec2| (vec2(at.x, (HEIGHT - size.y) / 2.0 + at.y), size);
+    let rating = rating.map(|size| place(size * 0.7, rating_at + vec2(left, -60.0)));
+    rating.into_iter().chain(digits.iter().enumerate().map(|(index, size)| place(*size * 0.5, digits_at + vec2(left - 50.0 + 43.0 * index as f32, 80.0)))).collect()
 }
 
 /// The delay a frame later: a press moves it by one ms, a key held for over half a second runs it at 300 ms a second.
@@ -52,7 +64,7 @@ impl Adjust {
         let music = paths.find("music/offsetSong.ogg");
         Adjust {
             scene, chart, song: play(&music), music, rating: picture("sick"), digits: ["num1", "num2", "num3"].iter().filter_map(|name| picture(name)).collect(),
-            placing: true, delay: settings.offset_ms, held: 0.0, beat: i64::MIN, hit: f64::MIN,
+            placing: true, delay: settings.offset_ms, held: 0.0, beat: i64::MIN, hit: f64::MIN, dragging: None,
         }
     }
 
@@ -69,6 +81,22 @@ impl Adjust {
             for (index, offset) in settings.combo_offset.iter_mut().enumerate() {
                 let reach = if index % 2 == 0 { 640.0 } else { 360.0 };
                 *offset = if pressed(Ui::Reset) { 0.0 } else { (*offset + by[index]).clamp(-reach, reach) };
+            }
+            // or dragged with the mouse: the digits if it is on them, else the rating
+            let point = mouse_position(vec2(WIDTH, HEIGHT));
+            if is_mouse_pressed() {
+                let spots = samples(&settings.combo_offset, self.rating.as_ref().map(Texture2D::size), &self.digits.iter().map(Texture2D::size).collect::<Vec<_>>());
+                let on = |(at, size): &(Vec2, Vec2)| (at.x..at.x + size.x).contains(&point.x) && (at.y..at.y + size.y).contains(&point.y);
+                let (rating, digits) = spots.split_at(self.rating.is_some() as usize);
+                let pair = if digits.iter().any(on) { Some(2) } else if rating.iter().any(on) { Some(0) } else { None };
+                self.dragging = pair.map(|pair| (pair, point, [settings.combo_offset[pair], settings.combo_offset[pair + 1]]));
+            }
+            if let Some((pair, from, [x, y])) = self.dragging {
+                let moved = point - from;
+                (settings.combo_offset[pair], settings.combo_offset[pair + 1]) = (x + moved.x.round() as f64, y - moved.y.round() as f64);
+            }
+            if !is_mouse_down() {
+                self.dragging = None;
             }
         } else {
             let turn = (down(Ui::Right) as i8 - down(Ui::Left) as i8) as f64;
@@ -102,15 +130,10 @@ impl Adjust {
         centred(&format!("< {} {} >", mode, phrase("switch_on_accept", "(Press Accept to Switch)")).to_uppercase(), 30.0, 28, WHITE);
         if self.placing {
             // where they pop up in a song
-            let [rating_at, digits_at] = [0, 2].map(|index| vec2(settings.combo_offset[index] as f32, -settings.combo_offset[index + 1] as f32));
-            let left = WIDTH * 0.35 - 40.0;
-            let sample = |picture: &Texture2D, scale: f32, at: Vec2| {
-                let size = picture.size() * scale;
-                draw_texture_ex(picture, at.x, (HEIGHT - size.y) / 2.0 + at.y, WHITE, DrawTextureParams { dest_size: Some(size), ..Default::default() });
-            };
-            self.rating.iter().for_each(|picture| sample(picture, 0.7, rating_at + vec2(left, -60.0)));
-            for (place, picture) in self.digits.iter().enumerate() {
-                sample(picture, 0.5, digits_at + vec2(left - 50.0 + 43.0 * place as f32, 80.0));
+            let pictures: Vec<&Texture2D> = self.rating.iter().chain(&self.digits).collect();
+            let spots = samples(&settings.combo_offset, self.rating.as_ref().map(Texture2D::size), &self.digits.iter().map(Texture2D::size).collect::<Vec<_>>());
+            for (picture, (at, size)) in pictures.into_iter().zip(spots) {
+                draw_texture_ex(picture, at.x, at.y, WHITE, DrawTextureParams { dest_size: Some(size), ..Default::default() });
             }
             let pair = |index: usize| format!("[{}, {}]", settings.combo_offset[index], settings.combo_offset[index + 1]);
             let lines = [phrase("combo_rating_offset", "Rating Offset:"), pair(0), phrase("combo_numbers_offset", "Numbers Offset:"), pair(2)];
@@ -138,6 +161,16 @@ impl Adjust {
 #[cfg(test)]
 mod tests {
     use super::delayed;
+
+    #[test]
+    fn samples_stand_where_they_pop_up_in_a_song() {
+        use crate::gfx::vec2;
+        // a 100 by 50 rating and two 40 by 60 digits, moved 10 right and 20 up
+        let spots = super::samples(&[10.0, 20.0, 0.0, 0.0], Some(vec2(100.0, 50.0)), &[vec2(40.0, 60.0); 2]);
+        let left = super::WIDTH * 0.35 - 40.0;
+        assert_eq!(spots[0], (vec2(left + 10.0, (super::HEIGHT - 35.0) / 2.0 - 60.0 - 20.0), vec2(70.0, 35.0)));
+        assert_eq!((spots[1].0.x, spots[2].0.x, spots[2].1), (left - 50.0, left - 7.0, vec2(20.0, 30.0)));
+    }
 
     #[test]
     fn the_delay_steps_on_a_press_and_runs_while_held() {

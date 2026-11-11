@@ -236,6 +236,20 @@ struct Picture {
     id: u64,
 }
 
+/// The mouse as of the last frame: where it is in the window (0 to 1 across and down), its left button, the wheel.
+#[derive(Default)]
+struct Mouse {
+    at: Vec2,
+    down: bool,
+    pressed: bool,
+    released: bool,
+    /// Notches turned this frame, away from the player positive.
+    wheel: f32,
+    moved: bool,
+    /// The pointer is shown over the window.
+    shown: bool,
+}
+
 /// A picture on the graphics card. Copies are the same picture.
 #[derive(Clone)]
 pub struct Texture2D(Rc<Picture>);
@@ -496,6 +510,7 @@ struct Context {
     /// Alt+Enter went down since the last frame (it is not an Enter).
     alt_enter: bool,
     focused: bool,
+    mouse: Mouse,
     started: Instant,
     frame_began: Instant,
     frame_time: f32,
@@ -646,11 +661,13 @@ pub fn open(conf: Conf) -> Result<(String, Option<String>), String> {
     let mut context = Context {
         event_loop: Some(event_loop), app, window, instance, surface: Some(surface), device, queue, config, format, pipeline, layout, samplers, pictures: 0, white: None, letters: None,
         vertices: Vec::new(), calls: Vec::new(), buffer: None, background: BLACK, camera: Mat4::IDENTITY, models: Vec::new(), recolor: None, blocks: 0.0,
-        down: HashSet::new(), pressed: HashSet::new(), released: HashSet::new(), last_pressed: None, typed: VecDeque::new(), alt_enter: false, focused: true,
+        down: HashSet::new(), pressed: HashSet::new(), released: HashSet::new(), last_pressed: None, typed: VecDeque::new(), alt_enter: false, focused: true, mouse: Mouse::default(),
         started: now, frame_began: now, frame_time: 1.0 / 60.0, due: now, open: true,
     };
     context.white = Some(context.picture(1, 1, &[255; 4]));
     context.fullscreen(conf.fullscreen, false);
+    // the pointer shows only when a menu wants it, as in the Haxe engine
+    context.window.set_cursor_visible(false);
     CONTEXT.with(|slot| *slot.borrow_mut() = Some(context));
     // the letters the game falls back on when its own font is not found
     let letters = load_ttf_font_from_bytes(include_bytes!("../../../assets/fonts/vcr.ttf"))?;
@@ -822,6 +839,7 @@ impl Context {
         self.released.clear();
         self.typed.clear(); // letters nobody read this frame were not meant for the next screen
         self.alt_enter = false;
+        (self.mouse.pressed, self.mouse.released, self.mouse.wheel, self.mouse.moved) = (false, false, 0.0, false);
         if let Some(mut event_loop) = self.event_loop.take() {
             if let winit::platform::pump_events::PumpStatus::Exit(_) = event_loop.pump_app_events(Some(Duration::ZERO), &mut self.app) {
                 self.open = false;
@@ -842,6 +860,23 @@ impl Context {
                 WindowEvent::Focused(focused) => {
                     self.focused = focused;
                     self.down.clear();
+                    self.mouse.down = false;
+                }
+                WindowEvent::CursorMoved { position, .. } => {
+                    self.mouse.at = vec2(position.x as f32 / self.config.width as f32, position.y as f32 / self.config.height as f32);
+                    self.mouse.moved = true;
+                }
+                WindowEvent::MouseInput { state, button: winit::event::MouseButton::Left, .. } => {
+                    let down = state == ElementState::Pressed;
+                    (self.mouse.pressed, self.mouse.released) = (self.mouse.pressed || down, self.mouse.released || !down);
+                    self.mouse.down = down;
+                }
+                WindowEvent::MouseWheel { delta, .. } => {
+                    self.mouse.wheel += match delta {
+                        winit::event::MouseScrollDelta::LineDelta(_, lines) => lines,
+                        // a touchpad gives pixels: about a notch for every 40 of them
+                        winit::event::MouseScrollDelta::PixelDelta(pixels) => pixels.y as f32 / 40.0,
+                    };
                 }
                 WindowEvent::KeyboardInput { event, is_synthetic, .. } => {
                     let code = match event.physical_key {
@@ -1023,6 +1058,43 @@ pub fn is_focused() -> bool {
 
 pub fn get_last_key_pressed() -> Option<KeyCode> {
     with(|context| context.last_pressed)
+}
+
+/// Where the mouse is, in a screen of `size` stretched over the window.
+pub fn mouse_position(size: Vec2) -> Vec2 {
+    with(|context| context.mouse.at * size)
+}
+
+/// The left mouse button: went down this frame, is down, came up this frame.
+pub fn is_mouse_pressed() -> bool {
+    with(|context| context.mouse.pressed)
+}
+
+pub fn is_mouse_down() -> bool {
+    with(|context| context.mouse.down)
+}
+
+pub fn is_mouse_released() -> bool {
+    with(|context| context.mouse.released)
+}
+
+/// Notches the wheel turned this frame, away from the player positive.
+pub fn mouse_wheel() -> f32 {
+    with(|context| context.mouse.wheel)
+}
+
+pub fn mouse_moved() -> bool {
+    with(|context| context.mouse.moved)
+}
+
+/// Shows or hides the pointer over the window.
+pub fn show_mouse(shown: bool) {
+    with(|context| {
+        if context.mouse.shown != shown {
+            context.window.set_cursor_visible(shown);
+            context.mouse.shown = shown;
+        }
+    })
 }
 
 /// The next letter typed, in the order typed.

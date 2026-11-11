@@ -48,6 +48,21 @@ const LEFT: Ui = Ui::Left;
 const RIGHT: Ui = Ui::Right;
 const ACCEPT: Ui = Ui::Accept;
 const BACK: Ui = Ui::Back;
+/// Where the mouse points on the screen.
+fn mouse() -> Vec2 {
+    mouse_position(vec2(WIDTH, HEIGHT))
+}
+
+/// Whether `point` is on the rectangle from `at` of `size`.
+fn on(point: Vec2, at: Vec2, size: Vec2) -> bool {
+    (at.x..at.x + size.x).contains(&point.x) && (at.y..at.y + size.y).contains(&point.y)
+}
+
+/// Rows the mouse wheel turned this frame, down positive.
+fn wheel_steps() -> i32 {
+    -(mouse_wheel().round() as i32)
+}
+
 fn pressed(action: &Ui) -> bool {
     crate::controls::pressed(*action)
 }
@@ -378,6 +393,9 @@ pub struct Menus {
     main_row: usize,
     main_side: i8,
     main_slide: f32,
+    /// Where the main menu's items were last drawn (side, row, corner, size), for the mouse; and whether it points at one.
+    main_spots: Vec<(i8, usize, Vec2, Vec2)>,
+    main_pointed: bool,
     week: usize,
     week_scroll: f32,
     /// Name of the difficulty last chosen; kept from one song or week to the next where they have it.
@@ -500,7 +518,7 @@ impl Menus {
         Menus {
             art, look: None, letters: String::new(), secret: None, jingle: None, fade: None, hue: 0.0,
             alphabet: Alphabet::load(&paths), paths, audio: None, music_at: 0.0, intro: true, wacky: [wacky.0.to_owned(), wacky.1.to_owned()], flash: (f64::MIN, 1.0), chosen: None,
-            main_row: 0, main_side: 0, main_slide: 0.0, week: 0, week_scroll: 0.0, difficulty: "Normal".to_owned(), rows: Vec::new(), song: 0, song_scroll: 0.0, tint: Vec3::ONE, shown: (0.0, 0.0),
+            main_row: 0, main_side: 0, main_slide: 0.0, main_spots: Vec::new(), main_pointed: false, week: 0, week_scroll: 0.0, difficulty: "Normal".to_owned(), rows: Vec::new(), song: 0, song_scroll: 0.0, tint: Vec3::ONE, shown: (0.0, 0.0),
             credits: Vec::new(), credit: 0, credit_scroll: 0.0, mods: Vec::new(), mod_row: 0, mods_changed: false, reload: false, flashing: true, achievement: 0, achievement_scroll: 0.0, chime: false, held: 0.0, preview: false, asking: None, player: Player::default(), restart: false,
         }
     }
@@ -555,7 +573,7 @@ impl Menus {
     fn travel(&mut self, dt: f32) -> i32 {
         let down = |keys: &[KeyCode]| keys.iter().any(|key| is_key_down(*key));
         let reach = if down(&[KeyCode::LeftShift, KeyCode::RightShift]) { 3 } else { 1 };
-        let mut steps = pressed(&DOWN) as i32 - pressed(&UP) as i32;
+        let mut steps = pressed(&DOWN) as i32 - pressed(&UP) as i32 + wheel_steps();
         if steps != 0 {
             self.held = 0.0;
         }
@@ -813,6 +831,21 @@ impl Menus {
                 self.main_side = side;
                 self.sound("scrollMenu", 1.0);
             }
+            // the mouse picks the item it is on (of two overlapping, the one whose middle is nearer)
+            if mouse_moved() || is_mouse_pressed() {
+                let point = mouse();
+                let pointed = self.main_spots.iter().filter(|(_, _, at, size)| on(point, *at, *size)).min_by(|a, b| {
+                    let off = |(_, _, at, size): &&(i8, usize, Vec2, Vec2)| (*at + *size / 2.0).distance(point);
+                    off(a).total_cmp(&off(b))
+                });
+                self.main_pointed = pointed.is_some();
+                if let Some(&(side, row, ..)) = pointed {
+                    if (side, row) != (self.main_side, if self.main_side == 0 { self.main_row } else { 0 }) {
+                        (self.main_side, self.main_row) = (side, if side == 0 { row } else { self.main_row });
+                        self.sound("scrollMenu", 1.0);
+                    }
+                }
+            }
         }
 
         // every item: name, top left corner, whether it is the selected one
@@ -820,12 +853,14 @@ impl Menus {
         // the two at the sides: achievements from the left edge, options up to the right edge
         items.push(("achievements", vec2(60.0, 490.0), self.main_side == -1));
         items.push(("options", vec2(WIDTH - 60.0, 490.0), self.main_side == 1));
-        let mut drawn = Vec::new();
+        let (mut drawn, mut spots) = (Vec::new(), Vec::new());
         for (index, (name, mut at, selected)) in items.into_iter().enumerate() {
             let Some(sheet) = self.art.own_sheet(&format!("mainmenu/menu_{name}")) else { continue };
             let idle = sheet.animation(&format!("{name} idle"), &[]);
             let Some(resting) = idle.first().map(|frame| frame.size) else { continue };
             at.x = if index < MIDDLE.len() { (WIDTH - resting.x) / 2.0 } else if name == "options" { at.x - resting.x } else { at.x };
+            let spot = if index < MIDDLE.len() { (0, index) } else if name == "options" { (1, 0) } else { (-1, 0) };
+            spots.push((spot.0, spot.1, at, resting));
             let frames = if selected { sheet.animation(&format!("{name} selected"), &[]) } else { idle };
             if let Some(frame) = looped(&frames) {
                 // the bigger selected picture stays centred on the resting one
@@ -853,6 +888,7 @@ impl Menus {
             };
             sheet.draw(frame, at.x, at.y, 1.0, false, white(alpha));
         }
+        self.main_spots = spots;
         label(skin, "Psych Engine (Rust)", 12.0, HEIGHT - 44.0, 16, WHITE, false);
         label(skin, "Friday Night Funkin' v0.2.8", 12.0, HEIGHT - 24.0, 16, WHITE, false);
 
@@ -866,7 +902,8 @@ impl Menus {
                 (_, _) => Go::Page(Page::Credits),
             },
             Some(_) => Go::Stay,
-            None if pressed(&ACCEPT) => {
+            // a click chooses the item the mouse is on
+            None if pressed(&ACCEPT) || (is_mouse_pressed() && self.main_pointed) => {
                 self.sound("confirmMenu", 1.0);
                 self.chosen = Some(now);
                 Go::Stay
@@ -889,7 +926,7 @@ impl Menus {
         }
         let since = self.chosen.map(|at| (now - at) as f32);
         if since.is_none() {
-            let step = pressed(&DOWN) as usize + pressed(&UP) as usize * (shown.len() - 1);
+            let step = (pressed(&DOWN) as i64 - pressed(&UP) as i64 + wheel_steps() as i64).rem_euclid(shown.len() as i64) as usize;
             if step != 0 {
                 self.week += step;
                 self.sound("scrollMenu", 1.0);
@@ -1356,11 +1393,17 @@ impl Menus {
         }
 
         let count = self.mods.len();
-        let step = (pressed(&DOWN) as usize + pressed(&UP) as usize * (count - 1)) % count;
+        // a click picks a row of the list, whose middle row is the selected mod; the wheel goes through it like Up and Down
+        let point = mouse();
+        let clicked = if is_mouse_pressed() && (45.0..375.0).contains(&point.x) && (45.0..475.0).contains(&point.y) { ((point.y - 45.0) / 86.0) as i64 - 2 } else { 0 };
+        let row = self.mod_row as i64 + clicked;
+        let clicked = if (0..count as i64).contains(&row) { clicked } else { 0 };
+        let off = pressed(&DOWN) as i64 - pressed(&UP) as i64 + wheel_steps() as i64;
+        let step = (off + clicked).rem_euclid(count as i64) as usize;
         if step != 0 {
             let next = (self.mod_row + step) % count;
             // with Shift the selected mod moves through the list: mods higher up are looked in first
-            if is_key_down(KeyCode::LeftShift) || is_key_down(KeyCode::RightShift) {
+            if clicked == 0 && (is_key_down(KeyCode::LeftShift) || is_key_down(KeyCode::RightShift)) {
                 let moved = self.mods.remove(self.mod_row);
                 self.restart |= moved.restart;
                 self.mods.insert(next, moved);

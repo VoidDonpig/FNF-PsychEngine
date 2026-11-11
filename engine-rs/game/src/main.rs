@@ -1072,6 +1072,8 @@ fn main() {
     let mut wiped = f64::MIN;
     // before that the old screen, as it last looked, is covered the same way: its picture and since when. The new screen waits.
     let mut closing: Option<(Texture2D, f64)> = None;
+    // when the mouse last moved: the pointer shows over the menus for two seconds after
+    let mut pointer_moved = f64::MIN;
     loop {
         // the change itself may have taken long (a song loading): the wipe starts when the new screen first shows
         if wiped == f64::MAX {
@@ -1393,6 +1395,10 @@ fn main() {
                 Err(error) => eprintln!("Note skin: {error}"),
             }
         }
+        if mouse_moved() || is_mouse_pressed() {
+            pointer_moved = get_time();
+        }
+        show_mouse(matches!(screen, Screen::Menu(_) | Screen::Options(..)) && get_time() - pointer_moved < 2.0);
         let reload = std::mem::take(&mut menus.reload);
         if reload {
             weeks = find_weeks(&base);
