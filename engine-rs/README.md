@@ -131,7 +131,7 @@ Done:
   the list of languages); Discord's "Playing" box (the Haxe engine's texts, the opponent's icon and the time
   left, over Discord's local pipe without a library; the Discord Rich Presence option turns it off); the Haxe
   engine's save taken in at first start (`funkin.sol` in the game's folder, or where the Haxe engine keeps it:
-  best scores and accuracy, week totals, finished weeks, achievements, the title's hidden dancer); on the
+  best scores and accuracy, week totals, finished weeks, achievements, the title's hidden dancer, mods' settings); on the
   streets of weekend 1, Nene's knife (raised while the player's health is at a quarter or less) and her combo
   cheers, the shell off Pico's gun, the faint copy of him as he cocks it, the streets going dark at his shot,
   and his flicker after the can hits him; the fight's two rare turns when the player is nearly out (a badly

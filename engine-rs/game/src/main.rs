@@ -1119,6 +1119,11 @@ fn main() {
     if let Some((file, saved)) = haxe_save(&base).filter(|_| first_save) {
         save.take_in_haxe(&saved);
         save.save(&base);
+        // and the mods' own settings, which this game keeps with the others
+        if let Some(kept) = saved["modSettings"].as_object().filter(|_| settings.mod_settings.is_empty()) {
+            settings.mod_settings = kept.clone();
+            settings.save(&base);
+        }
         eprintln!("Took in the Haxe engine's save: {}", file.display());
     }
     // the words of the language chosen, before anything is written or any picture found
