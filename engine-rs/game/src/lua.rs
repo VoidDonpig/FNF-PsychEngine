@@ -57,6 +57,7 @@ pub struct Shared {
     /// Where the scripts' pictures are found, and those loaded so far.
     paths: Option<funkin_core::content::Paths>,
     art: HashMap<String, Option<Art>>,
+    fonts: HashMap<String, Option<Font>>,
     /// The keys of the four lanes, which keyPressed("left") and the like ask about.
     pub note_keys: [[Option<KeyCode>; 2]; 4],
     /// Where the scripts' own saves are kept, and those open (by name).
@@ -166,9 +167,59 @@ struct Animation {
     offset: [f64; 2],
 }
 
+/// What a text of a script says, and how (Flixel's FlxText, as makeLuaText sets it up).
+#[derive(Clone)]
+struct Text {
+    words: String,
+    size: f64,
+    /// The width it wraps at and aligns within (0: as wide as its longest line).
+    width: f64,
+    font: Option<Font>,
+    font_name: String,
+    /// 0 left, 0.5 centred, 1 right.
+    align: f32,
+    border: (f64, u32),
+}
+
+impl Text {
+    /// Its lines, wrapped at its width, each with how wide it is.
+    fn lines(&self) -> Vec<(String, f32)> {
+        let measure = |line: &str| measure_text(line, self.font.as_ref(), self.size.max(1.0) as u16, 1.0).width;
+        let lines = if self.width > 0.0 { crate::menu::wrap(&self.words, self.width as f32, measure) } else { self.words.lines().map(str::to_owned).collect() };
+        lines.into_iter().map(|line| {
+            let width = measure(&line);
+            (line, width)
+        }).collect()
+    }
+
+    fn size(&self) -> [f64; 2] {
+        let lines = self.lines();
+        let widest = lines.iter().map(|(_, width)| *width as f64).fold(0.0, f64::max);
+        [if self.width > 0.0 { self.width } else { widest + 4.0 }, lines.len().max(1) as f64 * self.size * 1.15 + 4.0]
+    }
+
+    fn draw(&self, corner: Vec2, color: Color) {
+        let (size, width) = (self.size.max(1.0) as u16, self.size()[0] as f32);
+        let (border, border_color) = (self.border.0 as f32, Color { a: color.a, ..Color::from_hex(self.border.1 & 0xFFFFFF) });
+        for (row, (line, line_width)) in self.lines().iter().enumerate() {
+            let at = corner + vec2(2.0 + (width - 4.0 - line_width) * self.align, 2.0 + (row as f32 + 0.85) * self.size as f32 * 1.15);
+            let text = |shift: Vec2, color: Color| draw_text_ex(line, at.x + shift.x, at.y + shift.y, TextParams { font: self.font.as_ref(), font_size: size, color, ..Default::default() });
+            // the outline: the words drawn around themselves in the border's colour first
+            if border > 0.0 {
+                for shift in [vec2(-1.0, -1.0), vec2(0.0, -1.0), vec2(1.0, -1.0), vec2(-1.0, 0.0), vec2(1.0, 0.0), vec2(-1.0, 1.0), vec2(0.0, 1.0), vec2(1.0, 1.0)] {
+                    text(shift * border, border_color);
+                }
+            }
+            text(Vec2::ZERO, color);
+        }
+    }
+}
+
 /// A sprite a script made, with what Flixel gives every sprite.
 #[derive(Clone)]
 struct Sprite {
+    /// A text instead of a picture (makeLuaText).
+    text: Option<Text>,
     art: Option<Art>,
     /// makeGraphic: a plain rectangle of that size and colour.
     solid: Option<([f64; 2], u32)>,
@@ -194,7 +245,7 @@ struct Sprite {
 
 impl Sprite {
     fn new(art: Option<Art>, x: f64, y: f64) -> Sprite {
-        Sprite { art, solid: None, x, y, scale: [1.0; 2], scroll: [1.0; 2], offset: [0.0; 2], alpha: 1.0, visible: true, angle: 0.0, flip_x: false, color: 0xFFFFFF, camera: Cam::Game, added: false, front: false, animations: HashMap::new(), playing: None }
+        Sprite { text: None, art, solid: None, x, y, scale: [1.0; 2], scroll: [1.0; 2], offset: [0.0; 2], alpha: 1.0, visible: true, angle: 0.0, flip_x: false, color: 0xFFFFFF, camera: Cam::Game, added: false, front: false, animations: HashMap::new(), playing: None }
     }
 
     /// The frame shown now: of the animation playing, else the first of the sheet, else the whole picture.
@@ -214,6 +265,9 @@ impl Sprite {
 
     /// The size of its frame (or rectangle), unscaled.
     fn size(&self) -> [f64; 2] {
+        if let Some(text) = &self.text {
+            return text.size();
+        }
         match (self.solid, self.frame()) {
             (Some((size, _)), _) => size,
             (_, Some((frame, _))) => [frame.size.x as f64, frame.size.y as f64],
@@ -256,12 +310,18 @@ impl Sprite {
             "frameHeight" => json!(size[1]),
             "animation.curAnim.name" | "animation.name" => json!(self.playing.as_ref().map_or("", |(name, _)| name)),
             "animation.curAnim.finished" | "animation.finished" => json!(self.finished()),
+            "text" => json!(self.text.as_ref()?.words),
+            "size" => json!(self.text.as_ref()?.size),
             _ => return None,
         })
     }
 
     /// Sets a field `get` reads; false for one it does not know.
     fn set(&mut self, field: &str, value: &serde_json::Value) -> bool {
+        if let (Some(text), "text") = (&mut self.text, field) {
+            text.words = value.as_str().map_or_else(|| value.to_string(), str::to_owned);
+            return true;
+        }
         let number = value.as_f64().or_else(|| value.as_bool().map(|flag| flag as u8 as f64));
         let Some(number) = number else { return false };
         match field {
@@ -278,6 +338,7 @@ impl Sprite {
             "scrollFactor.y" => self.scroll[1] = number,
             "offset.x" => self.offset[0] = number,
             "offset.y" => self.offset[1] = number,
+            "size" if self.text.is_some() => self.text.iter_mut().for_each(|text| text.size = number),
             _ => return false,
         }
         true
@@ -297,6 +358,11 @@ impl Sprite {
         push_model_matrix(Mat4::from_translation(middle) * Mat4::from_rotation_z((self.angle as f32).to_radians()) * Mat4::from_scale(scale.extend(1.0)) * Mat4::from_translation(-middle));
         let tint = Color::from_hex(self.color);
         let color = Color { a: self.alpha as f32, ..tint };
+        if let Some(text) = &self.text {
+            text.draw(corner, color);
+            pop_model_matrix();
+            return;
+        }
         match (&self.solid, self.frame(), &self.art) {
             (Some((_, rgb)), _, _) => draw_rectangle(corner.x, corner.y, size.x, size.y, Color { a: self.alpha as f32, ..Color::from_hex(*rgb & 0xFFFFFF) }),
             (_, Some((frame, moved)), Some(art)) => {
@@ -425,6 +491,19 @@ impl Shared {
         }
         self.art.insert(key, art.clone());
         art
+    }
+
+    /// A font of `fonts/`, loaded once: the song's mod's, the shared ones, or the game's own.
+    fn font(&mut self, name: &str) -> Option<Font> {
+        if let Some(font) = self.fonts.get(name) {
+            return font.clone();
+        }
+        let roots = self.paths.as_ref().map_or(Vec::new(), |paths| paths.roots().to_vec());
+        // (the game's fonts sit in assets/fonts, beside the shared folder)
+        let file = roots.iter().flat_map(|root| [root.join("fonts").join(name), root.join("..").join("fonts").join(name)]).find(|file| file.is_file());
+        let font = file.and_then(|file| std::fs::read(file).ok()).and_then(|bytes| load_ttf_font_from_bytes(&bytes).ok());
+        self.fonts.insert(name.to_owned(), font.clone());
+        font
     }
 
     fn sprite(&mut self, tag: &str) -> Option<&mut Sprite> {
@@ -855,6 +934,81 @@ impl Scripts {
             }
             Ok(())
         });
+
+        // texts: sprites that say something, on the HUD, as makeLuaText sets them up
+        function!("makeLuaText", |_lua, shared, args: (String, Option<String>, Option<f64>, Option<f64>, Option<f64>)| {
+            let mut shared = shared.borrow_mut();
+            let font = shared.font("vcr.ttf");
+            let mut sprite = Sprite::new(None, args.3.unwrap_or(0.0), args.4.unwrap_or(0.0));
+            sprite.text = Some(Text { words: args.1.unwrap_or_default(), size: 16.0, width: args.2.unwrap_or(0.0), font, font_name: "vcr.ttf".to_owned(), align: 0.5, border: (2.0, 0) });
+            (sprite.camera, sprite.scroll) = (Cam::Hud, [0.0; 2]);
+            shared.sprites.retain(|(name, _)| *name != args.0);
+            shared.sprites.push((args.0, sprite));
+            Ok(())
+        });
+        let with_text = |shared: &Rc<RefCell<Shared>>, tag: &str, change: &mut dyn FnMut(&mut Text)| -> bool {
+            match shared.borrow_mut().sprite(tag).and_then(|sprite| sprite.text.as_mut()) {
+                Some(text) => {
+                    change(text);
+                    true
+                }
+                None => false,
+            }
+        };
+        function!("setTextString", |_lua, shared, args: (String, String)| Ok(with_text(&shared, &args.0, &mut |text| text.words = args.1.clone())));
+        function!("setTextSize", |_lua, shared, args: (String, f64)| Ok(with_text(&shared, &args.0, &mut |text| text.size = args.1)));
+        function!("setTextWidth", |_lua, shared, args: (String, f64)| Ok(with_text(&shared, &args.0, &mut |text| text.width = args.1)));
+        function!("setTextAlignment", |_lua, shared, args: (String, Option<String>)| {
+            let align = match args.1.unwrap_or_default().to_lowercase().as_str() {
+                "center" | "centre" => 0.5,
+                "right" => 1.0,
+                _ => 0.0,
+            };
+            Ok(with_text(&shared, &args.0, &mut |text| text.align = align))
+        });
+        function!("setTextBorder", |_lua, shared, args: (String, f64, Option<Value>, Option<String>)| {
+            let none = args.3.is_some_and(|style| style.eq_ignore_ascii_case("none"));
+            let color = args.2.as_ref().map_or(0, color_of);
+            Ok(with_text(&shared, &args.0, &mut |text| text.border = (if none { 0.0 } else { args.1 }, color)))
+        });
+        function!("setTextColor", |_lua, shared, args: (String, Value)| {
+            Ok(match shared.borrow_mut().sprite(&args.0).filter(|sprite| sprite.text.is_some()) {
+                Some(sprite) => {
+                    sprite.color = color_of(&args.1);
+                    true
+                }
+                None => false,
+            })
+        });
+        function!("setTextFont", |_lua, shared, args: (String, String)| {
+            let font = shared.borrow_mut().font(&args.1);
+            Ok(with_text(&shared, &args.0, &mut |text| (text.font, text.font_name) = (font.clone().or(text.font.clone()), args.1.clone())))
+        });
+        // (the plain font has no italics, and a text's height and auto size follow its words here)
+        for name in ["setTextItalic", "setTextHeight", "setTextAutoSize"] {
+            g.set(name, lua.create_function(|_, _args: MultiValue| Ok(true))?)?;
+        }
+        let read = |shared: &Rc<RefCell<Shared>>, tag: &str, field: fn(&Text) -> serde_json::Value| shared.borrow_mut().sprite(tag).and_then(|sprite| sprite.text.as_ref()).map(field);
+        function!("getTextString", |lua, shared, args: String| from_json(lua, &read(&shared, &args, |text| serde_json::json!(text.words)).unwrap_or_default()));
+        function!("getTextSize", |lua, shared, args: String| from_json(lua, &read(&shared, &args, |text| serde_json::json!(text.size)).unwrap_or_default()));
+        function!("getTextFont", |lua, shared, args: String| from_json(lua, &read(&shared, &args, |text| serde_json::json!(text.font_name)).unwrap_or_default()));
+        function!("getTextWidth", |lua, shared, args: String| from_json(lua, &read(&shared, &args, |text| serde_json::json!(text.size()[0])).unwrap_or_default()));
+        function!("addLuaText", |_lua, shared, args: String| {
+            if let Some(sprite) = shared.borrow_mut().sprite(&args) {
+                sprite.added = true;
+            }
+            Ok(())
+        });
+        function!("removeLuaText", |_lua, shared, args: (String, Option<bool>)| {
+            let mut shared = shared.borrow_mut();
+            if args.1.unwrap_or(true) {
+                shared.sprites.retain(|(name, _)| *name != args.0);
+            } else if let Some(sprite) = shared.sprite(&args.0) {
+                sprite.added = false;
+            }
+            Ok(())
+        });
+        function!("luaTextExists", |_lua, shared, args: String| Ok(shared.borrow_mut().sprite(&args).is_some_and(|sprite| sprite.text.is_some())));
 
         // tweens: of a sprite's field, or of the game's (the camera's zoom, a character's place...)
         let tween = |shared: &mut Shared, tag: String, object: String, field: &str, to: f64, seconds: f64, ease_name: Option<String>, colors: Option<(u32, u32)>| {

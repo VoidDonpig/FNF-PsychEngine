@@ -155,7 +155,8 @@ Done:
   own saves (`funkin-rs-lua-saves/`); files, folders and colours; the strums as scripts move them
   (getPropertyFromGroup/setPropertyFromGroup on strumLineNotes, playerStrums and opponentStrums: place, opacity,
   turn, direction, visibility; noteTweenX/Y/Alpha/Angle/Direction; the default strum places), the notes following
-  their strum along its direction.
+  their strum along its direction; texts (makeLuaText and the setText/getText functions: words, size, width,
+  alignment, colour, outline, font).
 
 Not there yet:
 
@@ -166,7 +167,7 @@ Not there yet:
   side (no gamepads yet) and debug keys (no editors yet); the GPU Caching switch (nothing to switch here); update check.
 - **Cutscenes**: videos (so weekend 1's video before Darnell and after 2hot; the scene with the can after the
   first is there); dialogue from a song's `dialogue.json` (the kind scripts start).
-- **Scripts**: the rest of Lua's functions (texts, the notes themselves, shaders, groups, and getProperty/setProperty
+- **Scripts**: the rest of Lua's functions (the notes themselves, shaders, groups, and getProperty/setProperty
   beyond the camera, health, score, the characters' place and the scripts' sprites); custom events and note types run by scripts. HScript is Haxe code run against the Haxe
   engine's own classes, so mods that use it cannot run here as they are. Custom shaders.
 - **Editors**: chart, character, stage, week, menu character, dialogue, dialogue character, note splash.
