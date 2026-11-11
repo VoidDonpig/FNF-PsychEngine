@@ -35,7 +35,8 @@ Done:
   get their usual one.
 - **Stage mechanics**: lightning over the haunted house (thunder, scared poses, flash), the window lights
   and the passing train of week 3 (with the girlfriend's hair blowing), the car speeding past the limo,
-  the tank rolling round the hill of week 7. Stage events: Kill Henchmen (the pole sweeping the limo's
+  the tank rolling round the hill of week 7, and in Stress Pico on the speakers shooting by his own
+  chart at the soldiers who run in. Stage events: Kill Henchmen (the pole sweeping the limo's
   dancers off, the limo fetching new ones), the mall crowd cheering on Hey!, BG Freaks Expression, Trigger
   BG Ghouls, Philly Glow (lights out, the glow, sparks and everyone in one colour), Dadbattle Spotlight
   (the light on whoever sings, the smoke), and Set Property for the camera's zoom and speed.
@@ -76,7 +77,7 @@ Not there yet:
 
 - **Play screen**: the events and note types that belong to scripts (Set Property beyond the
   camera, the weekend 1 fight notes, custom ones), the rest of what stages do by themselves (the
-  running soldiers of Stress, the speaker and lighting of weekend 1), the weekend 1
+  speaker and lighting of weekend 1), the weekend 1
   fight stage, coarse note splashes on pixel stages, characters made of several sheets or of
   Animate atlases, other note and splash skins.
 - **Menus**: the mods menu's mouse buttons, per-mod settings and restart flag, the achievements

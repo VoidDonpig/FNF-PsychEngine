@@ -57,7 +57,7 @@ fn layer(image: &'static str, x: f32, y: f32, scroll_x: f32, scroll_y: f32) -> L
 }
 
 /// The backdrop of a stage, back to front. The numbers are those of source/states/stages.
-// shortcut: the running soldiers and the weekend 1 lighting are not here yet. What `Own` moves is.
+// shortcut: the weekend 1 lighting is not here yet. What `Own` moves is.
 fn backdrop(stage: &str) -> Vec<LayerDef> {
     use Motion::*;
     use Size::*;
@@ -281,6 +281,47 @@ struct Glow {
     sparks: Vec<Particle>,
 }
 
+/// A soldier of the tank stage running in to be shot from the speakers.
+#[derive(Debug, PartialEq)]
+struct Soldier {
+    /// When he is shot (ms into the song).
+    shot_at: f64,
+    y: f32,
+    /// Runs in from the left.
+    right: bool,
+    /// How far short of the middle he gets, and how fast he runs (px per ms).
+    short: f32,
+    speed: f32,
+    /// Which of the two ways of falling, and which frame his running starts on.
+    fall: usize,
+    step: usize,
+}
+
+impl Soldier {
+    /// Where his top left corner is at song position `position`, and which frame of running (false) or falling (true) shows. None once he has fallen.
+    fn at(&self, position: f64, running: usize, falling: usize) -> Option<(Vec2, bool, usize)> {
+        let since = position - self.shot_at;
+        let run = |ms: f64| if self.right { 0.02 * SCREEN.x - self.short + ms as f32 * self.speed } else { 0.74 * SCREEN.x + self.short - ms as f32 * self.speed };
+        if since <= 0.0 {
+            let x = run(since);
+            let seen = x > -0.5 * SCREEN.x && x < 1.2 * SCREEN.x;
+            return seen.then(|| (vec2(x, self.y), false, (self.step + (position.max(0.0) * 0.024) as usize) % running.max(1)));
+        }
+        // he falls where the shot caught him; the fall of those from the left is drawn further up and left
+        let frame = (since * 0.024) as usize;
+        let shift = if self.right { vec2(249.5, 152.2) } else { Vec2::ZERO };
+        (frame < falling).then(|| (vec2(run(0.0), self.y) - shift, true, frame))
+    }
+}
+
+/// The soldiers of Stress and their pictures.
+struct Soldiers {
+    sheet: Sheet,
+    running: Vec<Frame>,
+    falling: [Vec<Frame>; 2],
+    list: Vec<Soldier>,
+}
+
 /// The spotlight of the "Dadbattle Spotlight" event, with the smoke that drifts in under it.
 struct Spotlight {
     light: Texture2D,
@@ -459,6 +500,8 @@ pub struct Character {
     pub icon: Option<Texture2D>,
     /// The colour of the light on the character (white: as drawn).
     tint: Color,
+    /// Has no idle move: whatever it does is done to it from outside.
+    skip_dance: bool,
     pub color: Color,
 }
 
@@ -510,6 +553,7 @@ impl Character {
             special: None,
             icon,
             tint: WHITE,
+            skip_dance: false,
             color: Color::from_rgba(channel(0), channel(1), channel(2), 255),
         })
     }
@@ -552,7 +596,7 @@ impl Character {
 
     /// The idle move, restarted on the beat.
     fn dance(&mut self) {
-        if self.special.is_some() {
+        if self.special.is_some() || self.skip_dance {
             return;
         }
         let pose = if self.sways {
@@ -615,6 +659,12 @@ pub struct Scene {
     own: Own,
     glow: Option<Glow>,
     spotlight: Option<Spotlight>,
+    soldiers: Option<Soldiers>,
+    /// When the shooter on the speakers fires, and to which side (lane 3: the right); and how many shots are behind.
+    shots: Vec<(f64, usize)>,
+    shots_done: usize,
+    /// Where the song is (ms).
+    position: f64,
     /// A flash over the whole stage: its colour (and strength), its age and how long it takes to fade.
     flash: (Color, f32, f32),
     /// The stage's own asset folder ("week6"), and whether it wants the pixel look for notes and HUD.
@@ -690,6 +740,10 @@ impl Scene {
             },
             glow: None,
             spotlight: None,
+            soldiers: None,
+            shots: Vec::new(),
+            shots_done: 0,
+            position: 0.0,
             flash: (WHITE, 1.0, 1.0),
             directory: stage["directory"].as_str().unwrap_or("").to_owned(),
             pixel: stage["stageUI"].as_str().is_some_and(|ui| ui == "pixel" || ui.ends_with("-pixel")) || stage["isPixelStage"].as_bool().unwrap_or(false),
@@ -697,6 +751,19 @@ impl Scene {
             flashing: true,
             sounds: Vec::new(),
         };
+        // Pico on the speakers shoots by a chart of his own, and on the tank stage soldiers run into some of his shots
+        if let Some(shooter) = scene.gf.as_mut().filter(|_| chart.gf == "pico-speaker") {
+            (shooter.skip_dance, shooter.current) = (true, "shoot1".to_owned());
+            let cues = scene.paths.find(&format!("data/{}/picospeaker.json", funkin_core::content::song_path(&chart.song))).and_then(|path| std::fs::read_to_string(path).ok());
+            scene.shots = cues.and_then(|text| funkin_core::chart::parse(&text).ok()).map_or(Vec::new(), |cues| cues.notes.iter().map(|note| (note.time, note.lane)).collect());
+            let sheet = scene.paths.find("images/tankmanKilled1.png").filter(|_| chart.stage == "tank").and_then(|path| Sheet::load(&path).ok());
+            if let Some(sheet) = sheet {
+                let list = scene.shots.iter().filter(|_| chance(0.16)).map(|&(shot_at, lane)| Soldier {
+                    shot_at, y: 200.0 + rand::gen_range(50.0, 100.0), right: lane < 2, short: rand::gen_range(50.0, 200.0), speed: rand::gen_range(0.6, 1.0), fall: rand::gen_range(0, 2), step: rand::gen_range(0, 14),
+                }).collect();
+                scene.soldiers = Some(Soldiers { running: sheet.animation("tankman running", &[]), falling: [sheet.animation("John Shot 1", &[]), sheet.animation("John Shot 2", &[])], sheet, list });
+            }
+        }
         // what only some songs' events use is only loaded for them
         let uses = |name: &str| chart.events.iter().any(|event| event.name == name);
         let picture = |name: &str| texture(&scene.paths, &format!("images/{name}.png"));
@@ -918,6 +985,18 @@ impl Scene {
 
     /// Advances by `dt` seconds to song position `position` (ms). `held` says which lanes have a hold running, per side.
     pub fn update(&mut self, dt: f32, position: f64, chart: &Chart, events: &[Event], held: [[bool; 4]; 2]) {
+        self.position = position;
+        if let Some(shooter) = self.gf.as_mut().filter(|shooter| shooter.skip_dance) {
+            // every cue is a shot to the left (1, 2) or to the right (3, 4)
+            while let Some(&(_, lane)) = self.shots.get(self.shots_done).filter(|(time, _)| *time < position) {
+                self.shots_done += 1;
+                shooter.play(&format!("shoot{}", if lane > 2 { 3 } else { 1 } + rand::gen_range(0, 2)));
+            }
+            // between shots the last three frames of the shot go round
+            if let Some(animation) = shooter.animations.get(&shooter.current).filter(|_| shooter.finished()) {
+                shooter.time = animation.frames.len().saturating_sub(3) as f32 / animation.fps;
+            }
+        }
         for event in events {
             // the note decides who moves and how; a stray press has no note and is the player's plain miss
             let (lane, note, side, missed) = match *event {
@@ -1239,6 +1318,16 @@ impl Scene {
                     self.backdrop.iter().filter(|layer| layer.def.image == "philly/window").for_each(|window| window.draw_in(scroll, color));
                 }
             }
+            // the soldiers run behind the hill's ground
+            if let (Some(soldiers), "tankGround") = (&self.soldiers, layer.def.image) {
+                for soldier in &soldiers.list {
+                    let falling = &soldiers.falling[soldier.fall];
+                    if let Some((at, fell, frame)) = soldier.at(self.position, soldiers.running.len(), falling.len()) {
+                        let frames = if fell { falling } else { &soldiers.running };
+                        soldiers.sheet.draw(frames[frame], at.x, at.y, 0.8, soldier.right, WHITE);
+                    }
+                }
+            }
             layer.draw(scroll);
         }
         if let Some(spot) = &self.spotlight {
@@ -1302,6 +1391,24 @@ mod tests {
         assert!((4.65..4.75).contains(&quiet), "{quiet}"); // the frame it first moves in counts as rushing
         assert!((30..45).contains(&rushing), "{rushing}");
         assert_eq!((train.x, train.passing, train.cars), (1480.0, None, 8));
+    }
+
+    #[test]
+    fn a_soldier_runs_in_is_shot_and_falls() {
+        use super::Soldier;
+        let soldier = Soldier { shot_at: 10_000.0, y: 250.0, right: true, short: 100.0, speed: 1.0, fall: 0, step: 3 };
+        // from the left: out of sight at first, then running, 14 frames going round
+        assert_eq!(soldier.at(5_000.0, 14, 20), None);
+        let (at, fell, frame) = soldier.at(9_900.0, 14, 20).unwrap();
+        assert_eq!((at.x, at.y, fell, frame), (0.02 * 1280.0 - 100.0 - 100.0, 250.0, false, (3 + 237) % 14));
+        // shot where he got to: he falls there (drawn up and left of where he ran), frame by frame, and is gone
+        let (at, fell, frame) = soldier.at(10_500.0, 14, 20).unwrap();
+        assert_eq!((at.x, at.y, fell, frame), (0.02 * 1280.0 - 100.0 - 249.5, 250.0 - 152.2, true, 12));
+        assert_eq!(soldier.at(10_900.0, 14, 20), None);
+        // from the right he comes the other way and falls where he stands
+        let other = Soldier { right: false, ..soldier };
+        assert_eq!(other.at(9_900.0, 14, 20).unwrap().0.x, 0.74 * 1280.0 + 100.0 + 100.0);
+        assert_eq!(other.at(10_001.0, 14, 20).unwrap().0, macroquad::prelude::vec2(0.74 * 1280.0 + 100.0, 250.0));
     }
 
     #[test]
