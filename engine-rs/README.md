@@ -40,6 +40,8 @@ Done:
   Animation, Screen Shake, Change Character, Change Scroll Speed, Play Sound, from the chart and from the
   song's `events.json`. Note types: Hurt Note, Alt Animation, Hey!, GF Sing, No Animation, and sections
   marked for alternative poses or for the girlfriend.
+- **Pixel stages**: notes, holds, ratings, combo digits and countdown in their pixel look and colours,
+  the pixel countdown and game over sounds, and the pixel game over character.
 - **HUD**: countdown with its sounds, rating and combo pictures, note splashes, hold end caps, time bar,
   miss sounds, the game over scene (fall, music, retry).
 - **Sound**: instrumental and vocals as separate tracks (the player's voice drops out on a miss), song
@@ -70,7 +72,7 @@ Not there yet:
 - **Play screen**: the events and note types that belong to one stage or to scripts (Set Property,
   Philly Glow, the weekend 1 fight notes, custom ones), the rest of what stages do by themselves (the limo's henchmen, the
   running soldiers of Stress, crowd reactions to events, the speaker and lighting of weekend 1), the weekend 1
-  fight stage, the pixel look of notes and HUD on pixel stages, characters made of several sheets or of
+  fight stage, coarse note splashes on pixel stages, characters made of several sheets or of
   Animate atlases, other note and splash skins.
 - **Menus**: the mods menu's mouse buttons, per-mod settings and restart flag, the achievements
   that need features not here yet (the henchmen count, the toaster one, the title easter egg), those of mods, and resetting one, the rest of the options (graphics, note

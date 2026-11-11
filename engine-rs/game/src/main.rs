@@ -35,6 +35,9 @@ const PIXELS_PER_MS: f32 = 0.45;
 
 const DIRECTIONS: [&str; 4] = ["left", "down", "up", "right"];
 const NOTE_NAMES: [&str; 4] = ["purple", "blue", "green", "red"];
+/// Pixel stages draw their small pictures this many times as large.
+const PIXEL_ZOOM: f32 = 6.0;
+const PIXEL_LANE_COLORS: [[u32; 3]; 4] = [[0xE276FF, 0xFFF9FF, 0x60008D], [0x3DCAFF, 0xF4FFFF, 0x003060], [0x71E300, 0xF6FFE6, 0x003100], [0xFF884E, 0xFFFAF5, 0x6C0000]];
 /// The sheet stores each note as three masks; these are the colours they become per lane (body, shine, outline).
 const LANE_COLORS: [[u32; 3]; 4] = [[0xC24B99, 0xFFFFFF, 0x3C1F56], [0x00FFFF, 0xFFFFFF, 0x1542B7], [0x12FA05, 0xFFFFFF, 0x0A4447], [0xF9393F, 0xFFFFFF, 0x651038]];
 
@@ -77,6 +80,11 @@ struct Skin {
     /// Pictures for ready, set, go.
     countdown: Vec<Texture2D>,
     splashes: Option<atlas::Sheet>,
+    /// How much the note pictures are enlarged, and how wide a hold's body and how long its end cap are drawn.
+    note_scale: f32,
+    hold: Vec2,
+    /// How much the rating, combo digit and countdown pictures are enlarged.
+    popup_scales: [f32; 3],
 }
 
 /// A picture that pops up, jumps and fades: a rating, a combo digit, a countdown step.
@@ -93,14 +101,11 @@ struct Popup {
 }
 
 impl Skin {
-    fn load(base: &Path) -> Result<Skin, String> {
-        let dir = base.join("assets/shared/images/noteSkins");
-        let read = |name: &str| std::fs::read(dir.join(name)).map_err(|e| format!("{}: {e}", dir.join(name).display()));
-        let sheet = Texture2D::from_file_with_format(&read("NOTE_assets.png")?, None);
-        let frames = atlas::parse(&String::from_utf8_lossy(&read("NOTE_assets.xml")?));
+    /// One recolouring material per lane, for the three colours each lane's notes are made of.
+    fn lanes(lane_colors: [[u32; 3]; 4]) -> Result<Vec<Material>, String> {
         let rgb = |c: u32| vec3((c >> 16 & 255) as f32, (c >> 8 & 255) as f32, (c & 255) as f32) / 255.0;
         let mut lanes = Vec::new();
-        for colors in LANE_COLORS {
+        for colors in lane_colors {
             let uniforms = ["r", "g", "b"].iter().map(|name| UniformDesc::new(name, UniformType::Float3)).collect();
             // custom materials do not blend unless told to
             let blend = BlendState::new(Equation::Add, BlendFactor::Value(BlendValue::SourceAlpha), BlendFactor::OneMinusValue(BlendValue::SourceAlpha));
@@ -111,22 +116,77 @@ impl Skin {
             }
             lanes.push(material);
         }
+        Ok(lanes)
+    }
+
+    /// The pictures named, from a folder; all of them or none (missing pictures only cost their effect).
+    fn pictures(dir: &Path, names: &[&str], pixel: bool) -> Vec<Texture2D> {
+        let found: Vec<Texture2D> = names.iter().filter_map(|name| std::fs::read(dir.join(format!("{name}.png"))).ok()).map(|bytes| Texture2D::from_file_with_format(&bytes, None)).collect();
+        if pixel {
+            found.iter().for_each(|picture| picture.set_filter(FilterMode::Nearest));
+        }
+        if found.len() == names.len() { found } else { Vec::new() }
+    }
+
+    fn load(base: &Path) -> Result<Skin, String> {
+        let dir = base.join("assets/shared/images/noteSkins");
+        let read = |name: &str| std::fs::read(dir.join(name)).map_err(|e| format!("{}: {e}", dir.join(name).display()));
+        let sheet = Texture2D::from_file_with_format(&read("NOTE_assets.png")?, None);
+        let frames = atlas::parse(&String::from_utf8_lossy(&read("NOTE_assets.xml")?));
         let font = std::fs::read(base.join("assets/fonts/vcr.ttf")).ok().and_then(|bytes| load_ttf_font_from_bytes(&bytes).ok());
         let images = base.join("assets/shared/images");
-        // missing pictures only cost their effect
-        let pictures = |names: &[&str]| -> Vec<Texture2D> {
-            let found: Vec<Texture2D> = names.iter().filter_map(|name| std::fs::read(images.join(format!("{name}.png"))).ok()).map(|bytes| Texture2D::from_file_with_format(&bytes, None)).collect();
-            if found.len() == names.len() { found } else { Vec::new() }
-        };
-        let digits = pictures(&["num0", "num1", "num2", "num3", "num4", "num5", "num6", "num7", "num8", "num9"]);
+        let digits = Skin::pictures(&images, &["num0", "num1", "num2", "num3", "num4", "num5", "num6", "num7", "num8", "num9"], false);
         let splashes = atlas::Sheet::load(&images.join("noteSplashes/noteSplashes.png")).ok();
-        Ok(Skin { sheet, frames, lanes, font, ratings: pictures(&["sick", "good", "bad", "shit"]), digits, countdown: pictures(&["ready", "set", "go"]), splashes })
+        Ok(Skin { sheet, frames, lanes: Skin::lanes(LANE_COLORS)?, font, ratings: Skin::pictures(&images, &["sick", "good", "bad", "shit"], false), digits, countdown: Skin::pictures(&images, &["ready", "set", "go"], false), splashes,
+            note_scale: NOTE_SCALE, hold: vec2(50.0, 64.0) * NOTE_SCALE, popup_scales: [0.7, 0.5, 1.0] })
+    }
+
+    /// The look of pixel stages: notes from a grid of small pictures drawn six times as large, with their own colours, ratings and countdown.
+    fn load_pixel(base: &Path) -> Result<Skin, String> {
+        let dir = base.join("assets/shared/images/pixelUI");
+        let image = |name: &str| -> Result<Image, String> {
+            let path = dir.join(name);
+            let bytes = std::fs::read(&path).map_err(|e| format!("{}: {e}", path.display()))?;
+            Image::from_file_with_format(&bytes, None).map_err(|e| format!("{}: {e}", path.display()))
+        };
+        let (notes, ends) = (image("noteSkins/NOTE_assets.png")?, image("noteSkins/NOTE_assetsENDS.png")?);
+        // one picture for both: the notes, and the hold pieces under them
+        let mut both = Image::gen_image_color(notes.width.max(ends.width), notes.height + ends.height, Color::new(0.0, 0.0, 0.0, 0.0));
+        for (source, top) in [(&notes, 0), (&ends, notes.height as u32)] {
+            for y in 0..source.height as u32 {
+                for x in 0..source.width as u32 {
+                    both.set_pixel(x, y + top, source.get_pixel(x, y));
+                }
+            }
+        }
+        let sheet = Texture2D::from_image(&both);
+        sheet.set_filter(FilterMode::Nearest);
+        // notes: four lanes across; the strum, the note, two frames of the pressed strum and two of the hit one down.
+        // hold pieces: the body above its end.
+        let (note, end) = (vec2(notes.width as f32 / 4.0, notes.height as f32 / 5.0), vec2(ends.width as f32 / 4.0, ends.height as f32 / 2.0));
+        let cell = |at: Vec2, size: Vec2| atlas::Frame { source: Rect::new(at.x, at.y, size.x, size.y), offset: Vec2::ZERO, size, rotated: false };
+        let mut frames = Vec::new();
+        for lane in 0..4 {
+            let (column, piece) = (lane as f32 * note.x, vec2(lane as f32 * end.x, notes.height as f32));
+            frames.push((format!("arrow{}0000", DIRECTIONS[lane].to_uppercase()), cell(vec2(column, 0.0), note)));
+            frames.push((format!("{}0000", NOTE_NAMES[lane]), cell(vec2(column, note.y), note)));
+            frames.push((format!("{} press0003", DIRECTIONS[lane]), cell(vec2(column, note.y * 2.0), note)));
+            frames.push((format!("{} confirm0003", DIRECTIONS[lane]), cell(vec2(column, note.y * 4.0), note)));
+            frames.push((format!("{} hold piece0000", NOTE_NAMES[lane]), cell(piece, end)));
+            frames.push((format!("{} hold end0000", NOTE_NAMES[lane]), cell(piece + vec2(0.0, end.y), end)));
+        }
+        let font = std::fs::read(base.join("assets/fonts/vcr.ttf")).ok().and_then(|bytes| load_ttf_font_from_bytes(&bytes).ok());
+        let digits = Skin::pictures(&dir, &["num0-pixel", "num1-pixel", "num2-pixel", "num3-pixel", "num4-pixel", "num5-pixel", "num6-pixel", "num7-pixel", "num8-pixel", "num9-pixel"], true);
+        // shortcut: the usual splashes; the Haxe engine coarsens them with a shader on pixel stages.
+        let splashes = atlas::Sheet::load(&base.join("assets/shared/images/noteSplashes/noteSplashes.png")).ok();
+        Ok(Skin { sheet, frames, lanes: Skin::lanes(PIXEL_LANE_COLORS)?, font, ratings: Skin::pictures(&dir, &["sick-pixel", "good-pixel", "bad-pixel", "shit-pixel"], true), digits,
+            countdown: Skin::pictures(&dir, &["ready-pixel", "set-pixel", "date-pixel"], true), splashes, note_scale: PIXEL_ZOOM, hold: end * PIXEL_ZOOM, popup_scales: [PIXEL_ZOOM * 0.85, PIXEL_ZOOM, PIXEL_ZOOM] })
     }
 
     /// Draws a sheet frame centred on (x, y), stretched to `size` if given. `lane` recolours it.
     fn frame(&self, name: &str, x: f32, y: f32, size: Option<Vec2>, lane: Option<usize>, alpha: f32) {
         let Some(source) = self.frames.iter().find(|(n, _)| n == name).map(|(_, f)| f.source) else { return };
-        let size = size.unwrap_or(vec2(source.w, source.h) * NOTE_SCALE);
+        let size = size.unwrap_or(vec2(source.w, source.h) * self.note_scale);
         match lane {
             Some(lane) => gl_use_material(&self.lanes[lane]),
             None => gl_use_default_material(),
@@ -230,13 +290,25 @@ impl Playing {
         // five beats of countdown, as the Haxe engine does
         let lead_in = if start_at > 0.0 { 0.0 } else { 5.0 * 60000.0 / chart.bpm };
         let speed = settings.note_speed(chart.speed) as f32;
+        // sounds may sit in the stage's own folder
+        let directory = scene.as_ref().map_or(String::new(), |scene| scene.directory.clone());
         let mut play = Play::new(chart, settings.botplay);
         play.ghost_tapping = settings.ghost_tapping;
         play.timing = settings.timing();
         (play.health_gain, play.health_loss, play.instakill) = (settings.health_gain, settings.health_loss, settings.instakill);
         play.skip_to(start_at);
         Ok(Playing { entry: entry.clone(), play, song, player_voice, scene, waited: 0.0, started: false, paused: None, start_at, position: -lead_in, settings: settings.clone(), held_keys: Vec::new(), flash_until: [[f64::MIN; 4]; 2], judgement: None, last_hit: f64::MIN, lanes_used: [false; 4], idled: false, idle_for: 0.0, sang_for: 0.0,
-            paths: Paths::new(base, &entry.source, ""), lead_in, counted: i64::MIN, popups: Vec::new(), splashes: Vec::new(), dead: None, next_event: 0, speed, speed_change: None })
+            paths: Paths::new(base, &entry.source, &directory), lead_in, counted: i64::MIN, popups: Vec::new(), splashes: Vec::new(), dead: None, next_event: 0, speed, speed_change: None })
+    }
+
+    /// Whether the stage wants the pixel look for notes and HUD.
+    fn pixel(&self) -> bool {
+        self.scene.as_ref().is_some_and(|scene| scene.pixel)
+    }
+
+    /// What pixel stages add to the names of their countdown and game over sounds.
+    fn ui_suffix(&self) -> &'static str {
+        if self.pixel() { "-pixel" } else { "" }
     }
 
     /// Song position the notes are judged and drawn at.
@@ -258,11 +330,11 @@ impl Playing {
         let fell = self.scene.as_mut().is_some_and(|scene| scene.update_dead(dt, confirm));
         // without a scene to play the fall, the music starts after a moment
         if (fell || (self.scene.is_none() && since < 1.0 && since + dt >= 1.0)) && confirmed.is_none() {
-            self.sound("gameOver", 1.0, true);
+            self.sound(&format!("gameOver{}", self.ui_suffix()), 1.0, true);
         }
         if confirm {
             self.song.stop_sounds();
-            self.sound("gameOverEnd", 1.0, false);
+            self.sound(&format!("gameOverEnd{}", self.ui_suffix()), 1.0, false);
         }
         let confirmed = if confirm { Some(0.0) } else { confirmed.map(|t| t + dt) };
         self.dead = Some((since + dt, confirmed));
@@ -327,10 +399,11 @@ impl Playing {
         let beat = self.play.chart.beat_at(self.position).floor() as i64;
         if beat != self.counted && (-4..0).contains(&beat) {
             self.counted = beat;
-            self.sound(["intro3", "intro2", "intro1", "introGo"][(beat + 4) as usize], 0.6, false);
+            self.sound(&format!("{}{}", ["intro3", "intro2", "intro1", "introGo"][(beat + 4) as usize], self.ui_suffix()), 0.6, false);
             if let Some(picture) = skin.countdown.get((beat + 3) as usize) {
-                let at = (vec2(WIDTH, HEIGHT) - picture.size()) / 2.0;
-                self.popups.push(Popup { texture: picture.clone(), at, scale: 1.0, motion: (0.0, 0.0), born: self.position, stays: crochet * 0.6 });
+                let scale = skin.popup_scales[2];
+                let at = (vec2(WIDTH, HEIGHT) - picture.size() * scale) / 2.0;
+                self.popups.push(Popup { texture: picture.clone(), at, scale, motion: (0.0, 0.0), born: self.position, stays: crochet * 0.6 });
             }
         }
 
@@ -399,14 +472,16 @@ impl Playing {
                     // the rating jumps up left of the player's lanes, the combo count under it
                     let left = if self.settings.middlescroll { 60.0 } else { WIDTH * 0.35 - 40.0 };
                     if let Some(picture) = skin.ratings.get(rating as usize) {
-                        let at = vec2(left, (HEIGHT - picture.height() * 0.7) / 2.0 - 60.0);
-                        self.popups.push(Popup { texture: picture.clone(), at, scale: 0.7, motion: (160.0, 550.0), born: judged, stays: crochet });
+                        let scale = skin.popup_scales[0];
+                        let at = vec2(left, (HEIGHT - picture.height() * scale) / 2.0 - 60.0);
+                        self.popups.push(Popup { texture: picture.clone(), at, scale, motion: (160.0, 550.0), born: judged, stays: crochet });
                     }
                     if self.play.combo >= 10 && !skin.digits.is_empty() {
                         for (place, digit) in format!("{:03}", self.play.combo).bytes().enumerate() {
                             let picture = &skin.digits[(digit - b'0') as usize];
-                            let at = vec2(left - 50.0 + 43.0 * place as f32, (HEIGHT - picture.height() * 0.5) / 2.0 + 80.0);
-                            self.popups.push(Popup { texture: picture.clone(), at, scale: 0.5, motion: (150.0, 250.0), born: judged, stays: crochet * 2.0 });
+                            let scale = skin.popup_scales[1];
+                            let at = vec2(left - 50.0 + 43.0 * place as f32, (HEIGHT - picture.height() * scale) / 2.0 + 80.0);
+                            self.popups.push(Popup { texture: picture.clone(), at, scale, motion: (150.0, 250.0), born: judged, stays: crochet * 2.0 });
                         }
                     }
                 }
@@ -451,7 +526,7 @@ impl Playing {
         if (self.play.health <= 0.0 || reset) && !self.settings.practice {
             self.dead = Some((0.0, None));
             self.song.pause();
-            self.sound("fnf_loss_sfx", 1.0, false);
+            self.sound(&format!("fnf_loss_sfx{}", self.ui_suffix()), 1.0, false);
             self.scene.iter_mut().for_each(|scene| scene.die());
             return Flow::Continue;
         }
@@ -518,11 +593,11 @@ impl Playing {
                     // a held hold ends at the strum: nothing left once its tail has passed it
                     if (tail - head) * direction > 0.0 && bottom > 0.0 && top < HEIGHT {
                         // the last stretch is the rounded end cap (turned over when notes come from above)
-                        let cap = (64.0 * NOTE_SCALE).min(bottom - top);
+                        let cap = skin.hold.y.min(bottom - top);
                         let cap_y = tail - direction * cap / 2.0;
-                        let size = vec2(50.0 * NOTE_SCALE, bottom - top - cap);
+                        let size = vec2(skin.hold.x, bottom - top - cap);
                         skin.frame(&format!("{} hold piece0000", NOTE_NAMES[note.lane]), x, (head + tail - direction * cap) / 2.0, Some(size), Some(note.lane), 0.6 * alpha);
-                        skin.frame(&format!("{} hold end0000", NOTE_NAMES[note.lane]), x, cap_y, Some(vec2(50.0 * NOTE_SCALE, cap * direction)), Some(note.lane), 0.6 * alpha);
+                        skin.frame(&format!("{} hold end0000", NOTE_NAMES[note.lane]), x, cap_y, Some(vec2(skin.hold.x, cap * direction)), Some(note.lane), 0.6 * alpha);
                     }
                 }
                 if pass == 1 && matches!(state, NoteState::Pending | NoteState::Missed) && on_screen(y_at(note.time)) {
@@ -680,6 +755,7 @@ async fn main() {
         Some("achievements") => Page::Achievements,
         _ => Page::Title,
     };
+    let pixel_skin = Skin::load_pixel(&base).map_err(|error| eprintln!("No pixel note skin: {error}")).ok();
     let (skin, mut screen) = match Skin::load(&base) {
         Ok(skin) => (Some(skin), Screen::Menu(first)),
         Err(error) => (None, Screen::Failed(format!("Could not load the note skin.\n{error}\nRun the game from the folder that holds \"assets\", or pass --base <folder>."))),
@@ -745,6 +821,7 @@ async fn main() {
                 // a song is only ever opened with the skin loaded
                 let flow = match &skin {
                     Some(skin) => {
+                        let skin = pixel_skin.as_ref().filter(|_| playing.pixel()).unwrap_or(skin);
                         let flow = playing.update(&key_events, skin);
                         playing.draw(skin);
                         flow

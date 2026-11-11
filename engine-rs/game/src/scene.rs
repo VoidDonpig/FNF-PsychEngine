@@ -507,6 +507,9 @@ pub struct Scene {
     /// Characters a chart event will swap in, loaded ahead so that the swap does not stall the song.
     spares: HashMap<String, Character>,
     own: Own,
+    /// The stage's own asset folder ("week6"), and whether it wants the pixel look for notes and HUD.
+    pub directory: String,
+    pub pixel: bool,
     /// The player's choices: whether the camera bumps on the beat, and whether anything may flash.
     pub cam_zooms: bool,
     pub flashing: bool,
@@ -565,6 +568,8 @@ impl Scene {
                 "tank" => Own::Tank { angle: rand::gen_range(-90.0, 45.0), speed: rand::gen_range(5.0, 7.0) },
                 _ => Own::Nothing,
             },
+            directory: stage["directory"].as_str().unwrap_or("").to_owned(),
+            pixel: stage["stageUI"].as_str().is_some_and(|ui| ui == "pixel" || ui.ends_with("-pixel")) || stage["isPixelStage"].as_bool().unwrap_or(false),
             cam_zooms: true,
             flashing: true,
             sounds: Vec::new(),
@@ -838,10 +843,11 @@ impl Scene {
     /// The player lost: swaps in the fallen character and turns the camera to it.
     pub fn die(&mut self) {
         self.dead = true;
-        // shortcut: always "bf-dead"; charts and scripts can name another game over character (gameOverChar). Read it from the chart when one needs it.
-        if let Ok(mut fallen) = Character::load(&self.paths, "bf-dead", self.spots[1], true) {
+        // shortcut: "bf-dead", or its pixel self on pixel stages; charts and scripts can name another game over character (gameOverChar). Read it from the chart when one needs it.
+        let name = if self.pixel { "bf-pixel-dead" } else { "bf-dead" };
+        if let Ok(mut fallen) = Character::load(&self.paths, name, self.spots[1], true) {
             fallen.play("firstDeath");
-            self.target = fallen.middle();
+            self.target = fallen.middle() + fallen.camera_offset;
             self.player = Some(fallen);
         }
     }
