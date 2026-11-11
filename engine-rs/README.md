@@ -137,7 +137,10 @@ Done:
   and his flicker after the can hits him; the fight's two rare turns when the player is nearly out (a badly
   timed hit ducked under for an uppercut, or met with a high punch while one is wound up; the punch that ends it);
   light added as the Haxe engine adds it (its ADD blend): the streets' light maps, Dad Battle's spotlight and
-  smoke, the lightning of week 2 and of the Blazin stage.
+  smoke, the lightning of week 2 and of the Blazin stage; the key binds', note colours' and mods menu's pages
+  as in the Haxe engine (rows in large letters with the two keys in boxes; the colour wheel, brightness,
+  palette and typed code; the mods menu's buttons, mouse and dragging); weekend 1's scene with the can before
+  Darnell in story mode, and its game over (the RETRY sign over Pico, Nene's knife toss).
 
 Not there yet:
 
