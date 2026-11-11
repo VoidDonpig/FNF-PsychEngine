@@ -552,7 +552,7 @@ impl Menus {
     }
 
     /// Menu letters with their top left at (x, y), squeezed sideways by `squeeze`.
-    fn write(&self, skin: &Skin, text: &str, bold: bool, x: f32, y: f32, squeeze: f32, alpha: f32) {
+    pub fn write(&self, skin: &Skin, text: &str, bold: bool, x: f32, y: f32, squeeze: f32, alpha: f32) {
         self.write_in(skin, text, bold, x, y, squeeze, white(alpha));
     }
 

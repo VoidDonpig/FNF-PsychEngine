@@ -1491,7 +1491,9 @@ impl Scene {
                 if held[side].contains(&true) {
                     character.since_note = 0.0; // still singing the hold
                 }
-                if character.singing() && character.since_note >= rest_after * character.sing_steps {
+                // a miss pose plays through and gives way at once; a sung one is held a while after the last note
+                let missed = character.current.ends_with("miss");
+                if (missed && character.finished()) || (!missed && character.singing() && character.since_note >= rest_after * character.sing_steps) {
                     character.dance();
                 }
             }

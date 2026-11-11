@@ -242,6 +242,11 @@ struct Playing {
     started: bool,
     /// The pause menu's selected row, while paused; and the row in its list of difficulties, while that is open.
     paused: Option<usize>,
+    /// When the song was paused (program time), and where the pause menu's list has scrolled to.
+    paused_at: f64,
+    pause_scroll: f32,
+    /// Game overs on this song since it was chosen in the menus (the pause menu counts them).
+    deaths: u32,
     choosing: Option<usize>,
     /// The difficulties the song can be switched to from the pause menu (none in story mode).
     difficulties: Vec<String>,
@@ -329,7 +334,7 @@ impl Playing {
         atlas::forget_unused();
         let mut scene = scene;
         let staged = story && start_at <= 0.0 && !seen && scene.as_mut().is_some_and(|scene| scene.open_with(&funkin_core::content::song_path(&entry.title), 60.0 / play.chart.bpm as f32));
-        Ok(Playing { entry: entry.clone(), play, song, player_voice, own_skin: None, base: base.to_path_buf(), staged, bowing: false, tune: false, scene, waited: 0.0, clock: Default::default(), ticked: std::time::Instant::now(), started: false, paused: None, choosing: None, difficulties, story, taunt_until: None, start_at, position: -lead_in, settings: settings.clone(), held_keys: Vec::new(), flash_until: [[f64::MIN; 4]; 2], judgement: None, last_hit: f64::MIN, lanes_used: [false; 4], idled: false, idle_for: 0.0, sang_for: 0.0,
+        Ok(Playing { entry: entry.clone(), play, song, player_voice, own_skin: None, base: base.to_path_buf(), staged, bowing: false, tune: false, paused_at: 0.0, pause_scroll: 0.0, deaths: 0, scene, waited: 0.0, clock: Default::default(), ticked: std::time::Instant::now(), started: false, paused: None, choosing: None, difficulties, story, taunt_until: None, start_at, position: -lead_in, settings: settings.clone(), held_keys: Vec::new(), flash_until: [[f64::MIN; 4]; 2], judgement: None, last_hit: f64::MIN, lanes_used: [false; 4], idled: false, idle_for: 0.0, sang_for: 0.0,
             paths, cutscene, lead_in, counted: i64::MIN, popups: Vec::new(), splashes: Vec::new(), dead: None, next_event: 0, speed, speed_change: None }.with(settings))
     }
 
@@ -465,6 +470,11 @@ impl Playing {
             return Flow::Continue;
         }
         if let Some(row) = self.paused {
+            // the pause music creeps up to half loudness, a hundredth a second, as in the Haxe engine
+            self.song.set_music_volume((0.01 * (get_time() - self.paused_at)).min(0.5) as f32);
+            // the list glides to the chosen row
+            let chosen = self.choosing.unwrap_or(row) as f32;
+            self.pause_scroll += (chosen - self.pause_scroll) * (1.0 - (-get_frame_time().min(0.1) * 9.6).exp());
             let step = |row: usize, count: usize| (row + controls::pressed(Ui::Down) as usize + (count - 1) * controls::pressed(Ui::Up) as usize) % count;
             if let Some(pick) = self.choosing {
                 // the difficulties, then a way back
@@ -505,9 +515,10 @@ impl Playing {
         // (as the Haxe engine does, the game pauses itself when another window comes to the front)
         if !self.bowing && (controls::pressed(Ui::Pause) || (self.settings.auto_pause && !is_focused())) {
             self.song.pause();
-            self.paused = Some(0);
+            (self.paused, self.paused_at, self.pause_scroll) = (Some(0), get_time(), 0.0);
             if self.settings.pause_music > 0 {
-                self.sound(&funkin_core::content::song_path(settings::PAUSE_MUSIC[self.settings.pause_music]), 0.5, true);
+                // it starts silent and creeps up, as in the Haxe engine
+                self.sound(&funkin_core::content::song_path(settings::PAUSE_MUSIC[self.settings.pause_music]), 0.0, true);
             }
             return Flow::Continue;
         }
@@ -666,6 +677,7 @@ impl Playing {
         // (once the song is over, as the stage plays its closing scene, there is nothing left to lose)
         if (self.play.health <= 0.0 || reset) && !self.settings.practice && !self.bowing {
             self.dead = Some((0.0, None));
+            self.deaths += 1;
             self.song.pause();
             self.sound(self.scene.as_ref().map_or("fnf_loss_sfx", |scene| scene.death().1), 1.0, false);
             self.scene.iter_mut().for_each(|scene| scene.die());
@@ -726,7 +738,8 @@ impl Playing {
         self.held_keys.iter().any(|&key| self.settings.lane_of(key) == Some(lane))
     }
 
-    fn draw(&self, skin: &Skin) {
+    /// `letters` writes in the menus' bold letters: words, left and top, opacity.
+    fn draw(&self, skin: &Skin, letters: &dyn Fn(&str, f32, f32, f32)) {
         let (settings, position) = (&self.settings, self.judged());
         // the stage through its own moving camera, then notes and the rest of the HUD on top
         let (hud_zoom, hud_shake) = self.scene.as_ref().map_or((1.0, Vec2::ZERO), |scene| {
@@ -892,15 +905,34 @@ impl Playing {
             talk.draw();
         }
         if let Some(row) = self.paused {
+            // the Haxe engine's pause menu: the screen darkens, the song's name, difficulty and game overs slide in at the
+            // top right one after another, and the choices stand in a slanted list in large letters
             set_camera(&Camera2D { target: vec2(WIDTH / 2.0, HEIGHT / 2.0), zoom: vec2(2.0 / WIDTH, 2.0 / HEIGHT), ..Default::default() });
-            draw_rectangle(0.0, 0.0, WIDTH, HEIGHT, Color::new(0.0, 0.0, 0.0, 0.6));
-            skin.centered("PAUSED", 220.0, 48, WHITE);
+            let since = (get_time() - self.paused_at) as f32;
+            let quart = |t: f32| {
+                let t = t.clamp(0.0, 1.0);
+                if t < 0.5 { 8.0 * t.powi(4) } else { 1.0 - (2.0 - 2.0 * t).powi(4) / 2.0 }
+            };
+            draw_rectangle(0.0, 0.0, WIDTH, HEIGHT, Color::new(0.0, 0.0, 0.0, 0.6 * quart(since / 0.4)));
+            let deaths = phrase_with("blueballed", "Blueballed: {1}", &[&self.deaths.to_string()]);
+            let right = |text: &str, top: f32, alpha: f32| {
+                let x = WIDTH - 20.0 - measure_text(text, skin.font.as_ref(), 32, 1.0).width;
+                draw_text_ex(text, x, top + 26.0, TextParams { font: skin.font.as_ref(), font_size: 32, color: Color::new(1.0, 1.0, 1.0, alpha), ..Default::default() });
+            };
+            for (index, text) in [self.entry.title.clone(), difficulty_name(&self.entry.difficulty).to_uppercase(), deaths].iter().enumerate() {
+                let shown = quart((since - 0.3 - 0.2 * index as f32) / 0.4);
+                right(text, 15.0 + 32.0 * index as f32 + 5.0 * shown, shown);
+            }
+            if settings.practice {
+                right(&phrase("Practice Mode", "Practice Mode").to_uppercase(), 116.0, 1.0);
+            }
             let (items, row): (Vec<String>, usize) = match self.choosing {
                 Some(pick) => (self.difficulties.iter().map(|name| difficulty_name(name)).chain([phrase("pause_back", "BACK")]).collect(), pick),
                 None => (self.pause_items().iter().map(|item| phrase(&format!("pause_{item}"), item)).collect(), row),
             };
             for (index, label) in items.iter().enumerate() {
-                skin.centered(label, 320.0 + index as f32 * 50.0, 32, if index == row { YELLOW } else { WHITE });
+                let from = index as f32 - self.pause_scroll;
+                letters(label, 90.0 + from * 20.0, 320.0 + from * 1.3 * 120.0, if index == row { 1.0 } else { 0.6 });
             }
         }
     }
@@ -1195,7 +1227,7 @@ fn main() {
                         let own = playing.own_skin.clone();
                         let skin = own.as_deref().or(pixel_skin.as_ref().filter(|_| playing.pixel())).unwrap_or(skin);
                         let flow = playing.update(&key_events, skin);
-                        playing.draw(skin);
+                        playing.draw(skin, &|text, x, y, alpha| menus.write(skin, text, true, x, y, 1.0, alpha));
                         flow
                     }
                     None => Flow::Quit,
@@ -1260,7 +1292,10 @@ fn main() {
                         }
                     }
                     // a retry goes straight to the song: the talk was heard
-                    Flow::Restart => Playing::open(&base, &playing.entry, &songs, &settings, 0.0, story.is_some(), true).map_or_else(Screen::Failed, |again| Screen::Playing(Box::new(again))),
+                    Flow::Restart => Playing::open(&base, &playing.entry, &songs, &settings, 0.0, story.is_some(), true).map_or_else(Screen::Failed, |mut again| {
+                        again.deaths = playing.deaths;
+                        Screen::Playing(Box::new(again))
+                    }),
                     Flow::Difficulty(name) => match songs.iter().find(|other| other.week == playing.entry.week && other.title == playing.entry.title && other.difficulty == name) {
                         Some(entry) => Playing::open(&base, entry, &songs, &settings, 0.0, false, false).map_or_else(Screen::Failed, |p| Screen::Playing(Box::new(p))),
                         None => Screen::Playing(playing),
