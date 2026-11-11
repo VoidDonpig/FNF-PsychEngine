@@ -113,6 +113,15 @@ impl Rig {
         pieces
     }
 
+    /// The pieces of a frame of one symbol played on its own (its last frame once it is through), as `pieces` gives them.
+    pub fn pieces_of(&self, symbol: &str, frame: usize) -> Vec<(&str, Affine2)> {
+        let mut pieces = Vec::new();
+        if let Some(timeline) = self.symbols.get(symbol) {
+            self.collect(timeline, frame.min(timeline.length().saturating_sub(1)), Affine2::IDENTITY, 0, &mut pieces);
+        }
+        pieces
+    }
+
     fn collect<'a>(&'a self, timeline: &'a Timeline, frame: usize, at: Affine2, depth: usize, pieces: &mut Vec<(&'a str, Affine2)>) {
         // a symbol that holds itself would never end
         if depth > 16 {
@@ -164,9 +173,18 @@ impl Atlas {
 
     /// Draws a frame with the timeline's origin at `at`.
     pub fn draw(&self, frame: usize, at: Vec2, scale: f32, flip_x: bool, color: Color) {
+        self.put(self.rig.pieces(frame.min(self.rig.length().saturating_sub(1))), at, scale, flip_x, color);
+    }
+
+    /// Draws a frame of one symbol played on its own, with the symbol's origin at `at`.
+    pub fn draw_symbol(&self, symbol: &str, frame: usize, at: Vec2) {
+        self.put(self.rig.pieces_of(symbol, frame), at, 1.0, false, WHITE);
+    }
+
+    fn put(&self, pieces: Vec<(&str, Affine2)>, at: Vec2, scale: f32, flip_x: bool, color: Color) {
         // mirrored, it is turned over around the origin
         let whole = Affine2::from_translation(at) * Affine2::from_scale(vec2(if flip_x { -scale } else { scale }, scale));
-        for (name, placed) in self.rig.pieces(frame.min(self.rig.length().saturating_sub(1))) {
+        for (name, placed) in pieces {
             let Some(source) = self.sprites.get(name) else { continue };
             let Affine2 { matrix2: turn, translation: shift } = whole * placed;
             push_model_matrix(Mat4::from_cols(turn.x_axis.extend(0.0).extend(0.0), turn.y_axis.extend(0.0).extend(0.0), Vec4::Z, shift.extend(0.0).extend(1.0)));
@@ -198,6 +216,9 @@ mod tests {
         // the back layer first: the held arm twice as large, then the looping arm moved by its placement
         assert_eq!(at(rig.pieces(0)), [("0001".to_owned(), vec2(6.0, 8.0), 2.0), ("0000".to_owned(), vec2(11.0, 22.0), 1.0)]);
         assert_eq!(at(rig.pieces(1)), [("0001".to_owned(), vec2(6.0, 8.0), 2.0), ("0001".to_owned(), vec2(13.0, 24.0), 1.0)]);
+        // a symbol played on its own: its frames where it puts them, the last one once it is through, nothing for a name unknown
+        assert_eq!(at(rig.pieces_of("arm", 0)), [("0000".to_owned(), vec2(1.0, 2.0), 1.0)]);
+        assert_eq!((at(rig.pieces_of("arm", 9)), rig.pieces_of("leg", 0).len()), (vec![("0001".to_owned(), vec2(3.0, 4.0), 1.0)], 0));
         assert_eq!(at(rig.pieces(2))[1].0, "0000", "the loop comes round");
     }
 

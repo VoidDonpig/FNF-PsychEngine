@@ -519,6 +519,24 @@ enum Stunt {
     LightsOn,
     /// The song before Winter Horrorland: the lights go out when it is over.
     LightsOut,
+    /// Week 7: Tankman has something to say before Ugh, and before Guns.
+    Ugh,
+    Guns,
+}
+
+/// 0 to 1, slow at both ends.
+fn in_out(part: f32) -> f32 {
+    let part = part.clamp(0.0, 1.0);
+    if part < 0.5 { 2.0 * part * part } else { 1.0 - 2.0 * (1.0 - part) * (1.0 - part) }
+}
+
+/// How close the view is `t` seconds into Tankman's talk, against the stage's own zoom.
+fn talk_zoom(stunt: Stunt, t: f32) -> f32 {
+    match stunt {
+        // closer over four seconds, a lurch at his best line, and back
+        Stunt::Guns => 1.0 + 0.2 * in_out(t / 4.0) + 0.24 * in_out((t - 4.0) / 0.5) - 0.24 * in_out(t - 4.5),
+        _ => 1.2,
+    }
 }
 
 /// Where a stunt stands `t` seconds in: how much of the stage is covered (white by lightning, else black), how far the view has
@@ -529,11 +547,11 @@ fn stunt_at(stunt: Stunt, t: f32) -> (f32, f32, bool, bool) {
         Stunt::Lightning => ((1.1 - t).clamp(0.0, 1.0), 1.0, false, t >= 1.1),
         Stunt::LightsOn => {
             // the dark lifts in 0.7 s; from 0.8 s the view eases back over two and a half
-            let back = ((t - 0.8) / 2.5).clamp(0.0, 1.0);
-            let eased = if back < 0.5 { 2.0 * back * back } else { 1.0 - 2.0 * (1.0 - back) * (1.0 - back) };
-            ((1.0 - t / 0.7).max(0.0), eased, t >= 0.8, t >= 3.3)
+            ((1.0 - t / 0.7).max(0.0), in_out((t - 0.8) / 2.5), t >= 0.8, t >= 3.3)
         }
         Stunt::LightsOut => (1.0, 1.0, false, t >= 1.5),
+        Stunt::Ugh => (0.0, 1.0, false, t >= 12.0),
+        Stunt::Guns => (0.0, 1.0, false, t >= 11.5),
     }
 }
 
@@ -926,6 +944,15 @@ pub struct Scene {
     pub sounds: Vec<(std::path::PathBuf, f32)>,
     /// The stage's own scene before or after the song: which, for how long it has run, and where the view is held.
     stunt: Option<(Stunt, f32, Vec2)>,
+    /// The Tankman of week 7's scenes, who stands in for the opponent: his pictures, the part of his talk that plays, and since when.
+    actor: Option<(crate::animate::Atlas, &'static str, f32)>,
+    /// For how long Accept has been held to skip his talk (a second does it).
+    pub skipping: f32,
+    /// Music the stage wants played and how loud just now, which the play screen follows; and its fading out: seconds left, of how many.
+    pub tune: Option<(std::path::PathBuf, f32)>,
+    tune_out: (f32, f32),
+    /// The stage's scene was skipped: the play screen silences what it started.
+    pub hush: bool,
     /// How many times the henchmen were swept off the limo since the play screen last asked.
     pub kills: u32,
     /// The ghosts the spirit of week 6 leaves behind: what it was doing and where, every 0.4 s, newest first.
@@ -1018,6 +1045,11 @@ impl Scene {
             flashing: true,
             sounds: Vec::new(),
             stunt: None,
+            actor: None,
+            skipping: 0.0,
+            tune: None,
+            tune_out: (0.0, 0.0),
+            hush: false,
             kills: 0,
             trail: Vec::new(),
             trail_in: 0.0,
@@ -1397,6 +1429,12 @@ impl Scene {
             shake.1 = (shake.1 - dt).max(0.0);
         }
         self.backdrop.iter_mut().for_each(|layer| layer.time += dt);
+        if self.tune_out.0 > 0.0 {
+            // the scene's music fades away under the countdown
+            self.tune_out.0 -= dt;
+            let left = self.tune_out.0 / self.tune_out.1;
+            self.tune = self.tune.take().filter(|_| left > 0.0).map(|(path, _)| (path, left));
+        }
         self.flash.1 += dt;
         self.can.iter_mut().for_each(|can| can.update(dt));
         if let Some(abot) = &mut self.abot {
@@ -1692,8 +1730,18 @@ impl Scene {
     }
 
     /// Starts the scene this stage has before the countdown of `song` (as its folder is called) in story mode. False: it has none.
-    pub fn open_with(&mut self, song: &str) -> bool {
+    /// `beat`: seconds a beat of the song takes.
+    pub fn open_with(&mut self, song: &str, beat: f32) -> bool {
         match (self.stage.as_str(), song) {
+            ("tank", "ugh" | "guns") => {
+                let talk = self.paths.find("images/cutscenes/tankman/Animation.json").and_then(|file| crate::animate::Atlas::load(file.parent()?).map_err(|e| eprintln!("{e}")).ok());
+                let (Some(talk), Some(tankman)) = (talk, &self.opponent) else { return false };
+                let (stunt, part, sound) = if song == "ugh" { (Stunt::Ugh, "TANK TALK 1 P1", "") } else { (Stunt::Guns, "TANK TALK 2", "tankSong2") };
+                (self.actor, self.pinned) = (Some((talk, part, 0.0)), Some(tankman.position + vec2(280.0, 170.0)));
+                // his music comes up over a second, and goes over four and a half beats of the countdown
+                (self.tune, self.tune_out) = (self.paths.find("music/DISTORTO.ogg").map(|path| (path, 0.0)), (0.0, 4.5 * beat));
+                self.begin(stunt, sound, Vec2::ZERO)
+            }
             ("spooky", "monster") => {
                 for character in [&mut self.gf, &mut self.player].into_iter().flatten() {
                     character.play("scared");
@@ -1711,18 +1759,70 @@ impl Scene {
         self.stage == "mall" && next == "winter-horrorland" && self.begin(Stunt::LightsOut, "Lights_Shut_off", self.camera)
     }
 
-    /// Runs the stage's own scene on by `dt` seconds. True when it is over (or there is none).
-    pub fn stunt(&mut self, dt: f32) -> bool {
-        let Some((stunt, t, view)) = &mut self.stunt else { return true };
-        *t += dt;
-        let (_, back, _, over) = stunt_at(*stunt, *t);
-        // the view stays where the scene put it, as close as the scene wants it
-        self.camera = *view;
-        if *stunt == Stunt::LightsOn {
-            self.zoom = 1.5 + (self.default_zoom - 1.5) * back;
+    /// Tankman's talk, from `before` to `now` seconds in. `skip`: Accept is held. True when it is over.
+    fn talk(&mut self, stunt: Stunt, before: f32, now: f32, skip: bool) -> bool {
+        // holding Accept for a second skips it
+        self.skipping = if skip { self.skipping + now - before } else { (self.skipping - 3.0 * (now - before)).max(0.0) };
+        let skipped = self.skipping >= 1.0;
+        self.zoom = self.default_zoom * talk_zoom(stunt, now);
+        self.tune.iter_mut().for_each(|(_, volume)| *volume = now.min(1.0));
+        let (paths, sounds) = (&self.paths, &mut self.sounds);
+        let mut sound = |name: &str| sounds.extend(paths.find(&format!("sounds/{name}.ogg")).map(|path| (path, 1.0)));
+        let crossed = |at: f32| before < at && now >= at;
+        if stunt == Stunt::Ugh {
+            // "Well well well, what do we got here?", a look at the player, who beeps, and "let's see what you've got!"
+            if crossed(0.1) {
+                sound("wellWellWell");
+            }
+            if crossed(3.0) || crossed(6.0) {
+                let turn = if now < 6.0 { vec2(750.0, 100.0) } else { vec2(-750.0, -100.0) };
+                self.pinned = self.pinned.map(|view| view + turn);
+            }
+            if crossed(4.5) {
+                if let Some(player) = &mut self.player {
+                    player.play("singUP");
+                }
+                sound("bfBeep");
+            }
+            if crossed(6.0) {
+                self.actor.iter_mut().for_each(|actor| (actor.1, actor.2) = ("TANK TALK 1 P2", now));
+                sound("killYou");
+            }
+        } else if let Some(gf) = self.gf.as_mut().filter(|gf| now >= 4.0 && (crossed(4.0) || gf.finished())) {
+            // his bars make her cry, again and again
+            gf.play("sad");
+        }
+        if !skipped && !stunt_at(stunt, now).3 {
+            return false;
+        }
+        // the countdown: the opponent is himself again, the view goes back to the singers
+        (self.actor, self.pinned, self.skipping) = (None, None, 0.0);
+        for character in [&mut self.opponent, &mut self.gf, &mut self.player].into_iter().flatten().filter(|_| skipped) {
+            character.dance();
+        }
+        self.gf.iter_mut().for_each(|gf| gf.dance());
+        if skipped {
+            (self.zoom, self.tune, self.hush) = (self.default_zoom, None, true);
+        } else {
+            self.tune_out.0 = self.tune_out.1;
+        }
+        true
+    }
+
+    /// Runs the stage's own scene on by `dt` seconds. `skip`: Accept is held. True when it is over (or there is none).
+    pub fn stunt(&mut self, dt: f32, skip: bool) -> bool {
+        let Some((stunt, before, view)) = self.stunt else { return true };
+        let now = before + dt;
+        self.stunt = Some((stunt, now, view));
+        let (_, back, _, mut over) = stunt_at(stunt, now);
+        match stunt {
+            Stunt::Ugh | Stunt::Guns => over = self.talk(stunt, before, now, skip),
+            // the view stays where the scene put it, as close as the scene wants it
+            Stunt::LightsOn => (self.camera, self.zoom) = (view, 1.5 + (self.default_zoom - 1.5) * back),
+            _ => self.camera = view,
         }
         // (the dark of the lights going out stays until the screen changes)
-        if over && *stunt != Stunt::LightsOut {
+        if over && stunt != Stunt::LightsOut {
             self.stunt = None;
         }
         over
@@ -1841,8 +1941,15 @@ impl Scene {
                 spirit.draw_as(pose, *time, *at, Color { a: 0.3 - 0.069 * age as f32, ..spirit.tint });
             }
         }
-        for character in fighters.into_iter().flatten() {
-            character.draw();
+        for slot in fighters {
+            match (&self.actor, slot, self.stunt) {
+                // Tankman talks in the opponent's place
+                (Some((talk, part, since)), Some(tankman), Some((_, t, _))) if std::ptr::eq(slot, &self.opponent) => {
+                    talk.draw_symbol(part, ((t - since) * talk.rig.fps) as usize, tankman.position + vec2(419.0, 225.0));
+                }
+                (_, Some(character), _) => character.draw(),
+                _ => {}
+            }
         }
         self.can.iter().for_each(|can| can.draw());
         self.backdrop.iter().filter(|layer| layer.def.front).for_each(|layer| layer.draw(scroll));
@@ -1881,6 +1988,11 @@ mod tests {
         assert_eq!((stunt_at(Stunt::LightsOn, 2.05), stunt_at(Stunt::LightsOn, 3.3)), ((0.0, 0.5, true, false), (0.0, 1.0, true, true)));
         // the lights go out: dark for a second and a half
         assert_eq!((stunt_at(Stunt::LightsOut, 1.0), stunt_at(Stunt::LightsOut, 1.5)), ((1.0, 1.0, false, false), (1.0, 1.0, false, true)));
+        // Tankman talks for twelve seconds before Ugh, the view a fifth closer; before Guns it creeps in, lurches at 4 s and settles
+        assert_eq!((stunt_at(Stunt::Ugh, 11.9).3, stunt_at(Stunt::Ugh, 12.0).3, stunt_at(Stunt::Guns, 11.5).3), (false, true, true));
+        let near = |a: f32, b: f32| (a - b).abs() < 1e-5;
+        assert!(near(super::talk_zoom(Stunt::Ugh, 5.0), 1.2) && near(super::talk_zoom(Stunt::Guns, 0.0), 1.0) && near(super::talk_zoom(Stunt::Guns, 2.0), 1.1));
+        assert!(near(super::talk_zoom(Stunt::Guns, 4.5), 1.44) && near(super::talk_zoom(Stunt::Guns, 6.0), 1.2));
     }
 
     #[test]

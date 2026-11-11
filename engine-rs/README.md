@@ -118,7 +118,9 @@ Done:
   and sounds a language brings in place of the usual ones), chosen at the bottom of the options; the
   stages' own scenes in story mode: lightning before Monster, the lights coming on before Winter Horrorland
   and going out after the song before it; the options' screen for the note delay (its own music, a bar,
-  "Beat Hit!" on the beat as it will be judged) and for placing the rating and the combo count.
+  "Beat Hit!" on the beat as it will be judged) and for placing the rating and the combo count;
+  Tankman's talks before Ugh and Guns in story mode (his lines and music, the view, the beep, the tears;
+  holding Accept for a second skips them).
 
 Not there yet:
 
@@ -134,7 +136,7 @@ Not there yet:
   and its Shaders and GPU Caching switches (nothing to switch here); Discord presence; update check;
   the mouse anywhere (so the rating is placed with keys, not by dragging).
 - **Saved data**: scores of the Haxe engine are not read (it keeps them in its own binary save).
-- **Cutscenes**: week 7's three, weekend 1's;
+- **Cutscenes**: week 7's Stress, weekend 1's;
   videos; dialogue from a song's `dialogue.json` (the kind scripts start).
 - **Scripts**: Lua (about 225 functions and the callbacks). HScript is Haxe code run against the Haxe
   engine's own classes, so mods that use it cannot run here as they are. Custom shaders.

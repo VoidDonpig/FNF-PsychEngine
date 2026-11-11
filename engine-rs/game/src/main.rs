@@ -230,6 +230,8 @@ struct Playing {
     staged: bool,
     /// The song is over and the stage plays a scene of its own before the next.
     bowing: bool,
+    /// The stage's music is playing.
+    tune: bool,
     /// Stage and characters; None when they could not be loaded (the notes still work).
     scene: Option<scene::Scene>,
     /// Ms spent on the play screen before the song starts.
@@ -323,8 +325,8 @@ impl Playing {
         let difficulties = if story { Vec::new() } else { songs.iter().filter(|other| other.week == entry.week && other.title == entry.title).map(|other| other.difficulty.clone()).collect() };
         atlas::forget_unused();
         let mut scene = scene;
-        let staged = story && start_at <= 0.0 && scene.as_mut().is_some_and(|scene| scene.open_with(&funkin_core::content::song_path(&entry.title)));
-        Ok(Playing { entry: entry.clone(), play, song, player_voice, own_skin: None, base: base.to_path_buf(), staged, bowing: false, scene, waited: 0.0, clock: Default::default(), ticked: std::time::Instant::now(), started: false, paused: None, choosing: None, difficulties, story, taunt_until: None, start_at, position: -lead_in, settings: settings.clone(), held_keys: Vec::new(), flash_until: [[f64::MIN; 4]; 2], judgement: None, last_hit: f64::MIN, lanes_used: [false; 4], idled: false, idle_for: 0.0, sang_for: 0.0,
+        let staged = story && start_at <= 0.0 && scene.as_mut().is_some_and(|scene| scene.open_with(&funkin_core::content::song_path(&entry.title), 60.0 / play.chart.bpm as f32));
+        Ok(Playing { entry: entry.clone(), play, song, player_voice, own_skin: None, base: base.to_path_buf(), staged, bowing: false, tune: false, scene, waited: 0.0, clock: Default::default(), ticked: std::time::Instant::now(), started: false, paused: None, choosing: None, difficulties, story, taunt_until: None, start_at, position: -lead_in, settings: settings.clone(), held_keys: Vec::new(), flash_until: [[f64::MIN; 4]; 2], judgement: None, last_hit: f64::MIN, lanes_used: [false; 4], idled: false, idle_for: 0.0, sang_for: 0.0,
             paths, cutscene, lead_in, counted: i64::MIN, popups: Vec::new(), splashes: Vec::new(), dead: None, next_event: 0, speed, speed_change: None }.with(settings))
     }
 
@@ -447,11 +449,9 @@ impl Playing {
             let dt = get_frame_time().min(0.1);
             if let Some(scene) = &mut self.scene {
                 scene.update(dt, self.position, &self.play.chart, &[], [[false; 4]; 2]);
-                self.staged = !scene.stunt(dt);
-                for (path, volume) in scene.sounds.drain(..) {
-                    self.song.play_sound(&path, volume, false);
-                }
+                self.staged = !scene.stunt(dt, controls::down(Ui::Accept));
             }
+            self.stage_sounds();
             return Flow::Continue;
         }
         if let Some(row) = self.paused {
@@ -628,10 +628,8 @@ impl Playing {
             }
             scene.levels = self.song.levels();
             scene.update(dt * rate as f32, judged, &self.play.chart, &events, held);
-            for (path, volume) in scene.sounds.drain(..) {
-                self.song.play_sound(&path, volume, false);
-            }
         }
+        self.stage_sounds();
         if self.started {
             // a moment in the idle move is forgiven, as the Haxe engine forgives it
             if self.scene.as_ref().is_none_or(|scene| scene.player_idle()) {
@@ -663,13 +661,32 @@ impl Playing {
     /// The song is over: whether the stage's own scene before `next` (the folder of the week's next song) still runs.
     fn bows_out(&mut self, next: &str) -> bool {
         let Some(scene) = self.scene.as_mut().filter(|_| self.story) else { return false };
-        if !self.bowing {
-            self.bowing = scene.close_with(next);
-            for (path, volume) in scene.sounds.drain(..) {
-                self.song.play_sound(&path, volume, false);
-            }
+        self.bowing = self.bowing || scene.close_with(next);
+        let runs = self.bowing && !scene.stunt(get_frame_time().min(0.1), false);
+        self.stage_sounds();
+        runs
+    }
+
+    /// Plays what the stage asks for: its sounds, and its music as loud as it wants it just now.
+    fn stage_sounds(&mut self) {
+        let Some(scene) = &mut self.scene else { return };
+        if std::mem::take(&mut scene.hush) {
+            self.song.stop_sounds();
+            self.tune = false;
         }
-        self.bowing && !scene.stunt(get_frame_time().min(0.1))
+        for (path, volume) in scene.sounds.drain(..) {
+            self.song.play_sound(&path, volume, false);
+        }
+        match &scene.tune {
+            Some((path, volume)) => {
+                if !std::mem::replace(&mut self.tune, true) {
+                    self.song.play_sound(path, *volume, true);
+                }
+                self.song.set_music_volume(*volume);
+            }
+            None if std::mem::take(&mut self.tune) => self.song.stop_music(),
+            None => {}
+        }
     }
 
     /// Length of the song in ms.
@@ -694,7 +711,9 @@ impl Playing {
             skin.centered("Enter: retry    Esc: back to the song list", HEIGHT - 30.0, 18, GRAY);
             return;
         }
-        if self.scene.as_ref().is_some_and(|scene| scene.hides_hud()) {
+        if let Some(scene) = self.scene.as_ref().filter(|scene| scene.hides_hud()) {
+            // shortcut: a bar that fills while Accept is held to skip; the Haxe engine fills a ring.
+            draw_rectangle(WIDTH - 200.0, HEIGHT - 80.0, 120.0 * scene.skipping.min(1.0), 10.0, Color::new(1.0, 1.0, 1.0, scene.skipping.min(1.0)));
             return;
         }
         // a faster song does not make the notes travel faster: they are spread out to match
