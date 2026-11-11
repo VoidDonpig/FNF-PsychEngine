@@ -57,7 +57,7 @@ fn layer(image: &'static str, x: f32, y: f32, scroll_x: f32, scroll_y: f32) -> L
 }
 
 /// The backdrop of a stage, back to front. The numbers are those of source/states/stages.
-// shortcut: the running soldiers, the Philly Glow lights and the weekend 1 lighting are not here yet. What `Own` moves is.
+// shortcut: the running soldiers and the weekend 1 lighting are not here yet. What `Own` moves is.
 fn backdrop(stage: &str) -> Vec<LayerDef> {
     use Motion::*;
     use Size::*;
@@ -250,6 +250,52 @@ enum Own {
     Tank { angle: f32, speed: f32 },
 }
 
+/// A colour with its saturation and its brightness scaled, its hue kept.
+fn toned(color: Color, saturation: f32, brightness: f32) -> Color {
+    let brightest = color.r.max(color.g).max(color.b);
+    let tone = |channel: f32| (brightest - (brightest - channel) * saturation) * brightness;
+    Color::new(tone(color.r), tone(color.g), tone(color.b), color.a)
+}
+
+/// A spark rising from the street while the lights are out.
+struct Particle {
+    at: Vec2,
+    speed: Vec2,
+    pull: Vec2,
+    scroll: Vec2,
+    scale: f32,
+    /// Seconds before it starts to fade, and how fast it fades then.
+    life: f32,
+    decay: f32,
+    alpha: f32,
+}
+
+/// The lights-out show of the "Philly Glow" event: the city goes black but for its windows, a glow and sparks, all in one colour.
+struct Glow {
+    gradient: Texture2D,
+    spark: Texture2D,
+    /// The colour of the show (of `WINDOW_LIGHTS`) while it is on.
+    color: Option<usize>,
+    /// How high the glow stands over the street: every burst of sparks lifts it, and it sinks again.
+    height: f32,
+    sparks: Vec<Particle>,
+}
+
+/// The spotlight of the "Dadbattle Spotlight" event, with the smoke that drifts in under it.
+struct Spotlight {
+    light: Texture2D,
+    smoke: Texture2D,
+    on: bool,
+    /// Who it is on (0 the opponent, 1 the player) and for how many seconds.
+    who: usize,
+    since: f32,
+    /// How thick the smoke is, what it is heading for and how fast.
+    fog: f32,
+    fog_to: (f32, f32),
+    /// The two drifts of smoke: where, how large, how fast.
+    drifts: [(Vec2, f32, f32); 2],
+}
+
 #[derive(Clone, Copy, PartialEq)]
 enum Kill {
     Wait,
@@ -317,6 +363,11 @@ impl Layer {
 
     /// `scroll`: the camera's top left corner in stage coordinates.
     fn draw(&self, scroll: Vec2) {
+        self.draw_in(scroll, self.tint);
+    }
+
+    /// Draws it in another colour than its own.
+    fn draw_in(&self, scroll: Vec2, tint: Color) {
         let step = (self.time * self.def.fps) as usize;
         let count = self.frames.len();
         let frame = match self.def.anim {
@@ -340,7 +391,7 @@ impl Layer {
         if self.def.centered {
             at -= size * (scale - 1.0) / 2.0;
         }
-        if self.tint.a <= 0.0 {
+        if tint.a <= 0.0 {
             return;
         }
         // a turned layer is drawn upright with everything turned around its middle
@@ -350,8 +401,8 @@ impl Layer {
             gl.push_model_matrix(Mat4::from_translation(middle) * Mat4::from_rotation_z(self.angle) * Mat4::from_translation(-middle));
         }
         match frame {
-            Some(f) => crate::atlas::draw_frame(&self.texture, self.frames[f], at.x, at.y, scale, self.def.flip, self.tint),
-            None => draw_texture_ex(&self.texture, at.x, at.y, self.tint, DrawTextureParams { dest_size: Some(size * scale), flip_x: self.def.flip, ..Default::default() }),
+            Some(f) => crate::atlas::draw_frame(&self.texture, self.frames[f], at.x, at.y, scale, self.def.flip, tint),
+            None => draw_texture_ex(&self.texture, at.x, at.y, tint, DrawTextureParams { dest_size: Some(size * scale), flip_x: self.def.flip, ..Default::default() }),
         }
         if self.angle != 0.0 {
             gl.pop_model_matrix();
@@ -406,6 +457,8 @@ pub struct Character {
     /// A pose a chart asked for is showing: seconds until the idle move may take over (infinite = until the pose ends).
     special: Option<f32>,
     pub icon: Option<Texture2D>,
+    /// The colour of the light on the character (white: as drawn).
+    tint: Color,
     pub color: Color,
 }
 
@@ -456,6 +509,7 @@ impl Character {
             idle_suffix: String::new(),
             special: None,
             icon,
+            tint: WHITE,
             color: Color::from_rgba(channel(0), channel(1), channel(2), 255),
         })
     }
@@ -521,7 +575,7 @@ impl Character {
         let frame = (self.time * animation.fps) as usize;
         let frame = if animation.looped { frame % animation.frames.len() } else { frame.min(animation.frames.len() - 1) };
         let at = self.position - animation.offset - self.grow;
-        self.sheet.draw(animation.frames[frame], at.x, at.y, self.scale, self.flip_x, WHITE);
+        self.sheet.draw(animation.frames[frame], at.x, at.y, self.scale, self.flip_x, self.tint);
     }
 }
 
@@ -559,6 +613,10 @@ pub struct Scene {
     /// Characters a chart event will swap in, loaded ahead so that the swap does not stall the song.
     spares: HashMap<String, Character>,
     own: Own,
+    glow: Option<Glow>,
+    spotlight: Option<Spotlight>,
+    /// A flash over the whole stage: its colour (and strength), its age and how long it takes to fade.
+    flash: (Color, f32, f32),
     /// The stage's own asset folder ("week6"), and whether it wants the pixel look for notes and HUD.
     pub directory: String,
     pub pixel: bool,
@@ -630,12 +688,25 @@ impl Scene {
                 "tank" => Own::Tank { angle: rand::gen_range(-90.0, 45.0), speed: rand::gen_range(5.0, 7.0) },
                 _ => Own::Nothing,
             },
+            glow: None,
+            spotlight: None,
+            flash: (WHITE, 1.0, 1.0),
             directory: stage["directory"].as_str().unwrap_or("").to_owned(),
             pixel: stage["stageUI"].as_str().is_some_and(|ui| ui == "pixel" || ui.ends_with("-pixel")) || stage["isPixelStage"].as_bool().unwrap_or(false),
             cam_zooms: true,
             flashing: true,
             sounds: Vec::new(),
         };
+        // what only some songs' events use is only loaded for them
+        let uses = |name: &str| chart.events.iter().any(|event| event.name == name);
+        let picture = |name: &str| texture(&scene.paths, &format!("images/{name}.png"));
+        if let (true, Some(gradient), Some(spark)) = (chart.stage == "philly" && uses("Philly Glow"), picture("philly/gradient"), picture("philly/particle")) {
+            scene.glow = Some(Glow { gradient, spark, color: None, height: 0.0, sparks: Vec::new() });
+        }
+        if let (true, Some(light), Some(smoke)) = (chart.stage == "stage" && uses("Dadbattle Spotlight"), picture("spotlight"), picture("smoke")) {
+            let drift = |x: f32, direction: f32| (vec2(x, 660.0 + rand::gen_range(-20.0, 20.0)), rand::gen_range(1.1, 1.22), direction * rand::gen_range(15.0, 22.0));
+            scene.spotlight = Some(Spotlight { light, smoke, on: false, who: 0, since: 0.0, fog: 0.0, fog_to: (0.0, 1.0), drifts: [drift(-1350.0, 1.0), drift(1750.0, -1.0)] });
+        }
         for event in chart.events.iter().filter(|e| e.name == "Change Character") {
             let (role, spot) = scene.role(&event.value1);
             if !scene.spares.contains_key(&event.value2) {
@@ -692,6 +763,89 @@ impl Scene {
                     find(&mut self.backdrop, "weeb/bgFreaks").into_iter().for_each(|girls| girls.play(prefix, Motion::Sway(15)));
                 }
             }
+            "Philly Glow" => {
+                let Some(glow) = &mut self.glow else { return };
+                let lights_out = glow.color.is_some();
+                let mut switched = false;
+                match number(&event.value1).unwrap_or(0.0).round() as i32 {
+                    // sparks, and the glow jumps up
+                    2 => {
+                        let count = rand::gen_range(8, 13);
+                        let apart = 2000.0 / count as f32;
+                        for (row, column) in (0..3).flat_map(|row| (0..count).map(move |column| (row, column))) {
+                            glow.sparks.push(Particle {
+                                at: vec2(-400.0 + apart * column as f32 + rand::gen_range(-apart / 5.0, apart / 5.0), 425.0 + rand::gen_range(0.0, 125.0) + row as f32 * 40.0),
+                                speed: vec2(rand::gen_range(-40.0, 40.0), rand::gen_range(-250.0, -175.0)),
+                                pull: vec2(rand::gen_range(-10.0, 10.0), 25.0),
+                                scroll: vec2(rand::gen_range(0.3, 0.75), rand::gen_range(0.65, 0.75)),
+                                scale: rand::gen_range(0.75, 1.0),
+                                life: rand::gen_range(0.6, 0.9),
+                                // without flashing lights the sparks are fainter and linger
+                                decay: rand::gen_range(0.8, 1.0) * if self.flashing { 1.0 } else { 0.5 },
+                                alpha: if self.flashing { 1.0 } else { 0.5 },
+                            });
+                        }
+                        glow.height = 400.0;
+                    }
+                    // lights out, or another colour
+                    1 => {
+                        let next = (glow.color.unwrap_or(0) + rand::gen_range(1, WINDOW_LIGHTS.len())) % WINDOW_LIGHTS.len();
+                        glow.color = Some(next);
+                        let color = Color::from_hex(WINDOW_LIGHTS[next]);
+                        switched = !lights_out;
+                        if lights_out && self.flashing {
+                            self.flash = (Color { a: 0.25, ..color }, 0.0, 0.5);
+                        }
+                        let on_them = toned(color, if self.flashing { 0.75 } else { 0.5 }, 1.0);
+                        for character in [&mut self.opponent, &mut self.gf, &mut self.player].into_iter().flatten() {
+                            character.tint = on_them;
+                        }
+                        find(&mut self.backdrop, "philly/street").into_iter().for_each(|street| street.tint = toned(color, 1.0, 0.5));
+                    }
+                    // lights on again
+                    _ if lights_out => {
+                        glow.color = None;
+                        switched = true;
+                        for character in [&mut self.opponent, &mut self.gf, &mut self.player].into_iter().flatten() {
+                            character.tint = WHITE;
+                        }
+                        find(&mut self.backdrop, "philly/street").into_iter().for_each(|street| street.tint = WHITE);
+                    }
+                    _ => {}
+                }
+                if switched {
+                    self.flash = (Color { a: if self.flashing { 1.0 } else { 0.5 }, ..WHITE }, 0.0, 0.15);
+                    if self.cam_zooms {
+                        self.zoom += 0.5;
+                        self.hud_zoom += 0.1;
+                    }
+                }
+            }
+            "Dadbattle Spotlight" => {
+                let Some(spot) = &mut self.spotlight else { return };
+                match number(&event.value1).unwrap_or(0.0).round() as i32 {
+                    // on (1), or over to the opponent (2) or the player (3)
+                    aim @ 1..=3 => {
+                        if aim == 1 && !spot.on {
+                            spot.on = true;
+                            self.default_zoom += 0.12;
+                        }
+                        (spot.who, spot.since, spot.fog_to) = ((aim > 2) as usize, 0.0, (0.7, 0.7 / 1.5));
+                    }
+                    _ => {
+                        if std::mem::take(&mut spot.on) {
+                            self.default_zoom -= 0.12;
+                        }
+                        spot.fog_to = (0.0, 1.0);
+                    }
+                }
+            }
+            // shortcut: the two properties the base game's charts set; any other needs the scripting the Haxe engine does this with.
+            "Set Property" => match (event.value1.trim(), number(&event.value2)) {
+                ("defaultCamZoom", Some(zoom)) => self.default_zoom = zoom,
+                ("cameraSpeed", Some(speed)) => self.camera_speed = speed,
+                _ => {}
+            },
             "Trigger BG Ghouls" => find(&mut self.backdrop, "weeb/bgGhouls").into_iter().for_each(|ghouls| ghouls.time = 0.0),
             "Hey!" => {
                 let hold = number(&event.value2).filter(|t| *t > 0.0).unwrap_or(0.6);
@@ -813,6 +967,27 @@ impl Scene {
             shake.1 = (shake.1 - dt).max(0.0);
         }
         self.backdrop.iter_mut().for_each(|layer| layer.time += dt);
+        self.flash.1 += dt;
+        if let Some(glow) = &mut self.glow {
+            glow.height = (glow.height - 1000.0 * dt).max(0.0);
+            for spark in &mut glow.sparks {
+                spark.life -= dt;
+                if spark.life < 0.0 {
+                    spark.alpha -= spark.decay * dt;
+                }
+                spark.at += spark.speed * dt;
+                spark.speed += spark.pull * dt;
+            }
+            glow.sparks.retain(|spark| spark.alpha > 0.0);
+        }
+        if let Some(spot) = &mut self.spotlight {
+            spot.since += dt;
+            let (target, rate) = spot.fog_to;
+            spot.fog += (target - spot.fog).clamp(-rate * dt, rate * dt);
+            for (at, _, speed) in &mut spot.drifts {
+                at.x += *speed * dt;
+            }
+        }
 
         let beat = chart.beat_at(position).floor() as i64;
         let on_beat = beat != self.beat;
@@ -1043,11 +1218,53 @@ impl Scene {
             return;
         }
         let scroll = self.camera - SCREEN / 2.0;
-        self.backdrop.iter().filter(|layer| !layer.def.front).for_each(|layer| layer.draw(scroll));
+        // everything the camera can see, and more
+        let view = SCREEN / self.zoom;
+        let cover = |color: Color| draw_rectangle(self.camera.x - view.x, self.camera.y - view.y, view.x * 2.0, view.y * 2.0, color);
+        for layer in self.backdrop.iter().filter(|layer| !layer.def.front) {
+            // with the lights out the street is all that stays in front of the dark, the glow, the sparks and the lit windows
+            if let (Some(glow), "philly/street") = (&self.glow, layer.def.image) {
+                if let Some(color) = glow.color.map(|index| Color::from_hex(WINDOW_LIGHTS[index])) {
+                    cover(BLACK);
+                    if glow.height > 0.0 {
+                        let at = vec2(-400.0 + scroll.x, 625.0 - glow.height + scroll.y * 0.25);
+                        draw_texture_ex(&glow.gradient, at.x, at.y, color, DrawTextureParams { dest_size: Some(vec2(2000.0, glow.height)), ..Default::default() });
+                    }
+                    for spark in &glow.sparks {
+                        // a fading spark shrinks around its middle
+                        let size = glow.spark.size() * spark.scale * if spark.life < 0.0 { spark.alpha } else { 1.0 };
+                        let at = spark.at + scroll * (Vec2::ONE - spark.scroll) + (glow.spark.size() - size) / 2.0;
+                        draw_texture_ex(&glow.spark, at.x, at.y, Color { a: spark.alpha, ..color }, DrawTextureParams { dest_size: Some(size), ..Default::default() });
+                    }
+                    self.backdrop.iter().filter(|layer| layer.def.image == "philly/window").for_each(|window| window.draw_in(scroll, color));
+                }
+            }
+            layer.draw(scroll);
+        }
+        if let Some(spot) = &self.spotlight {
+            // shortcut: the light and the smoke are laid over the stage; the Haxe engine adds their brightness to it.
+            if spot.on {
+                cover(Color::new(0.0, 0.0, 0.0, 0.25));
+                // the light goes out for a moment whenever it turns to someone
+                if let Some(lit) = [&self.opponent, &self.player][spot.who].as_ref().filter(|_| spot.since >= 0.12) {
+                    let at = vec2(lit.middle().x - spot.light.width() / 2.0, lit.position.y + lit.size.y - spot.light.height() + 50.0);
+                    draw_texture(&spot.light, at.x, at.y, Color::new(1.0, 1.0, 1.0, 0.375));
+                }
+            }
+            for (side, (at, scale, _)) in spot.drifts.iter().enumerate().filter(|_| spot.fog > 0.0) {
+                let at = *at + scroll * (Vec2::ONE - vec2(1.2, 1.05));
+                let params = DrawTextureParams { dest_size: Some(spot.smoke.size() * *scale), flip_x: side == 1, ..Default::default() };
+                draw_texture_ex(&spot.smoke, at.x, at.y, Color::new(1.0, 1.0, 1.0, spot.fog), params);
+            }
+        }
         for character in [&self.gf, &self.opponent, &self.player].into_iter().flatten() {
             character.draw();
         }
         self.backdrop.iter().filter(|layer| layer.def.front).for_each(|layer| layer.draw(scroll));
+        let (color, age, length) = self.flash;
+        if age < length {
+            cover(Color { a: color.a * (1.0 - age / length), ..color });
+        }
         if let Own::Spooky { since, .. } = self.own {
             // the lightning whitens everything: up at once, held, then gone
             let alpha = match since {
@@ -1056,8 +1273,7 @@ impl Scene {
                 t => 0.5 * (1.0 - (t - 0.15) / 0.25),
             };
             if alpha > 0.0 && self.flashing {
-                let view = SCREEN / self.zoom;
-                draw_rectangle(self.camera.x - view.x, self.camera.y - view.y, view.x * 2.0, view.y * 2.0, Color::new(1.0, 1.0, 1.0, alpha));
+                cover(Color::new(1.0, 1.0, 1.0, alpha));
             }
         }
     }
@@ -1086,6 +1302,16 @@ mod tests {
         assert!((4.65..4.75).contains(&quiet), "{quiet}"); // the frame it first moves in counts as rushing
         assert!((30..45).contains(&rushing), "{rushing}");
         assert_eq!((train.x, train.passing, train.cars), (1480.0, None, 8));
+    }
+
+    #[test]
+    fn colours_dim_and_pale_without_changing_hue() {
+        use super::toned;
+        use macroquad::prelude::Color;
+        let red = Color::new(1.0, 0.0, 0.0, 1.0);
+        assert_eq!((toned(red, 0.75, 1.0), toned(red, 1.0, 0.5)), (Color::new(1.0, 0.25, 0.25, 1.0), Color::new(0.5, 0.0, 0.0, 1.0)));
+        let grey = Color::new(0.4, 0.4, 0.4, 1.0);
+        assert_eq!(toned(grey, 0.5, 1.0), grey);
     }
 
     #[test]

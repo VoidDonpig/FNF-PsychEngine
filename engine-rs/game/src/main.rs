@@ -690,7 +690,12 @@ impl Playing {
         if hud {
             // the score swells a little on every hit and settles within a fifth of a second
             let swell = if settings.score_zoom { 1.0 + 0.075 * (1.0 - (position - self.last_hit) / 200.0).clamp(0.0, 1.0) } else { 1.0 };
-            skin.centered(&format!("Score: {} | Misses: {} | Rating: {}", self.play.score, self.play.misses, rating), bar_y + 52.0, (20.0 * swell).round() as u16, WHITE);
+            // the same letters drawn larger, not letters of another size: those would have to be made mid-song, which garbles the text for a frame
+            let line = format!("Score: {} | Misses: {} | Rating: {}", self.play.score, self.play.misses, rating);
+            let x = (WIDTH - measure_text(&line, skin.font.as_ref(), 20, 1.0).width * swell as f32) / 2.0;
+            for (shift, color) in [(2.0, BLACK), (0.0, WHITE)] {
+                draw_text_ex(&line, x + shift, bar_y + 52.0 + shift, TextParams { font: skin.font.as_ref(), font_size: 20, font_scale: swell as f32, color, ..Default::default() });
+            }
         }
         if let Some((text, color, at)) = &self.judgement {
             let age = (position - at) as f32;
