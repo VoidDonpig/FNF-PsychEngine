@@ -185,7 +185,11 @@ impl OptionsMenu {
             line(index, self.row, &format!("{}: {}", option.name, shown(&option.kind, settings)), 150.0 + index as f32 * 30.0);
         }
         let selected = options[self.row];
-        text(selected.about, 40.0, HEIGHT - 40.0, 18, GRAY);
+        // long explanations run on to further lines (the letters are all 11 wide)
+        let about = crate::menu::wrap(selected.about, 1200.0, |text| text.len() as f32 * 11.0);
+        for (line, words) in about.iter().enumerate() {
+            text(words, 40.0, HEIGHT - 40.0 - (about.len() - 1 - line) as f32 * 22.0, 18, GRAY);
+        }
         if steps != 0.0 {
             change(&selected.kind, settings, steps * fast);
         } else if is_key_pressed(KeyCode::Enter) {

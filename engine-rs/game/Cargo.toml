@@ -15,4 +15,6 @@ macroquad = { version = "0.4", default-features = false }
 cpal = { version = "0.15", optional = true }
 lewton = { version = "0.10", optional = true }
 serde_json = "1"
+# Vulkan, for showing frames through a Vulkan swap chain (the "Graphics API" option). Loaded at run time: nothing to install to build.
+ash = "0.38"
 psych_input = { path = "../../native/psych_input", features = ["std"] }

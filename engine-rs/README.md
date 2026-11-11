@@ -18,6 +18,10 @@ song whose name contains the text, `--story <week file>` a whole week,
 `--menu <main|story|freeplay|mods|credits|achievements>` opens at that menu, `--options [page]` at the options. Keys: A S W D or the arrows, Enter or Space, Esc or Backspace. The options are kept in
 `funkin-rs-settings.json` in that folder, scores and finished weeks in `funkin-rs-save.json`.
 
+F11 switches fullscreen. `--opengl` starts with the plain OpenGL way of showing frames, whatever the Graphics
+API option says (the way out when that one shows nothing); why a graphics API was given up is written to
+`funkin-rs-present.log`.
+
 Without ALSA headers (Linux): add `--no-default-features` to build without sound.
 
 ## Where it stands against the Haxe engine
@@ -81,11 +85,17 @@ Done:
   note offset; visuals: note splash opacity, hide HUD, time bar (left, elapsed, song name, off),
   flashing lights, camera zooms, score text growing on a hit, health bar opacity, FPS counter, pause
   music, combo stacking, hit timing in ms, where the rating and the combo count pop up; graphics: low
-  quality (the stage details the Haxe engine leaves out are left out) and anti-aliasing; note colours:
+  quality (the stage details the Haxe engine leaves out are left out), anti-aliasing, frame rate,
+  fullscreen; note colours:
   body, shine and outline of each lane, for pixel stages too (turn the hue, or type a colour code).
 - **Gameplay changers** (an options page, also Ctrl in story mode and freeplay): scroll type and speed,
   playback rate (the pitch follows), health gain and loss, instakill on miss, practice mode, botplay.
   Runs in practice mode or on botplay keep no scores.
+- **Graphics API** (an option, applied at the next start): who shows the frames the game draws with
+  OpenGL. OpenGL itself; DirectX (Windows): the DXGI flip-model swap chain of `native/psych_input`, which
+  Windows can show without its compositor and which can hold the display alone (the Exclusive Fullscreen
+  option); or Vulkan: a Vulkan swap chain in a window of its own over the game's, to which each frame is
+  copied through main memory (so it is the slowest of the three). One that fails falls back to OpenGL.
 - **Input**: on Windows key presses are timed by the raw input thread of `native/psych_input`.
 
 Not there yet:
@@ -95,7 +105,7 @@ Not there yet:
   cheers, the shell flying off the gun, the stage going dark at the shot, rain, light maps, the two rare
   turns of the fight when the player is nearly out), coarse note splashes on pixel stages, other note and splash skins.
 - **Menus**: the mods menu's mouse buttons and per-mod settings; the achievements that
-  need features not here yet (the henchmen count, the title easter egg) and those of mods; the rest of the options (frame rate, note skins, placing the rating and combo by
+  need features not here yet (the henchmen count, the title easter egg) and those of mods; the rest of the options (note skins, placing the rating and combo by
   dragging them, auto pause, gamepad, languages; the options menu is a plain list, not the Haxe engine's
   look, and its Shaders and GPU Caching switches have nothing to switch here); covering the old screen before a change (the new
   one is uncovered by a wipe); the loading screen; a mod's own title screen (`gfDanceTitle.json`).
@@ -106,4 +116,4 @@ Not there yet:
 - **Scripts**: Lua. HScript is Haxe code run against the Haxe engine's own classes, so mods that use it
   cannot run here as they are.
 - **Editors**: chart, character, stage, week, menu character, dialogue, note splash.
-- **Other**: gamepads, Discord presence, exclusive fullscreen and the flip-model presenter.
+- **Other**: gamepads, Discord presence.

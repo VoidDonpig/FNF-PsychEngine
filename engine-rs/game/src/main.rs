@@ -13,9 +13,11 @@ mod fight;
 mod input;
 mod menu;
 mod options;
+mod present;
 mod props;
 mod scene;
 mod settings;
+mod vulkan;
 
 use funkin_core::content::{songs as find_songs, weeks as find_weeks, Paths, SongEntry};
 use funkin_core::achievements::{earned, Run};
@@ -759,8 +761,23 @@ enum Screen {
     Failed(String),
 }
 
+const TITLE: &str = "Friday Night Funkin': Psych Engine (Rust)";
+
+/// The game's files: where `--base` says, else here, else next to the program.
+fn base_dir() -> PathBuf {
+    let args: Vec<String> = std::env::args().collect();
+    args.iter().position(|a| a == "--base").and_then(|i| args.get(i + 1)).map(PathBuf::from).unwrap_or_else(|| {
+        let here = PathBuf::from(".");
+        let beside = std::env::current_exe().ok().and_then(|p| p.parent().map(Path::to_path_buf));
+        if here.join("assets").is_dir() { here } else { beside.filter(|p| p.join("assets").is_dir()).unwrap_or(here) }
+    })
+}
+
 fn window() -> Conf {
-    Conf { window_title: "Friday Night Funkin': Psych Engine (Rust)".to_owned(), window_width: WIDTH as i32, window_height: HEIGHT as i32, ..Default::default() }
+    let fullscreen = Settings::load(&base_dir()).fullscreen;
+    // frames are shown as soon as they are done, as the Haxe engine shows them: the Framerate option is what limits them
+    let platform = macroquad::miniquad::conf::Platform { swap_interval: Some(0), ..Default::default() };
+    Conf { window_title: TITLE.to_owned(), window_width: WIDTH as i32, window_height: HEIGHT as i32, fullscreen, platform, ..Default::default() }
 }
 
 #[macroquad::main(window)]
@@ -773,12 +790,7 @@ async fn main() {
     let shot_when = value("--when").and_then(|s| s.parse::<f64>().ok()).map(|seconds| seconds * 1000.0);
     let start_at = value("--at").and_then(|s| s.parse::<f64>().ok()).unwrap_or(0.0) * 1000.0;
 
-    // the game's files: where asked, else here, else next to the program
-    let base = value("--base").map(PathBuf::from).unwrap_or_else(|| {
-        let here = PathBuf::from(".");
-        let beside = std::env::current_exe().ok().and_then(|p| p.parent().map(Path::to_path_buf));
-        if here.join("assets").is_dir() { here } else { beside.filter(|p| p.join("assets").is_dir()).unwrap_or(here) }
-    });
+    let base = base_dir();
 
     let mut weeks = find_weeks(&base);
     let mut songs = find_songs(&weeks);
@@ -793,6 +805,9 @@ async fn main() {
     let mut settings = Settings::load(&base);
     settings.botplay |= flag("--bot");
     atlas::SMOOTH.store(settings.antialiasing, std::sync::atomic::Ordering::Relaxed);
+    // `--opengl`: the way out when the chosen graphics API shows nothing and the options cannot be reached
+    let mut presenter = present::Presenter::new(if flag("--opengl") { 0 } else { settings.graphics_api }, TITLE);
+    let mut fullscreen = settings.fullscreen;
     let keyboard = Keyboard::start();
     let bindable: Vec<KeyCode> = settings::bindable().into_iter().map(|(key, _)| key).collect();
     let mut frames = 0u32;
@@ -1045,6 +1060,19 @@ async fn main() {
             get_screen_data().export_png(path);
             break;
         }
+        if is_key_pressed(KeyCode::F11) {
+            settings.fullscreen ^= true;
+            settings.save(&base);
+        }
+        if settings.fullscreen != fullscreen {
+            fullscreen = settings.fullscreen;
+            set_fullscreen(fullscreen);
+            if !fullscreen {
+                // the window library leaves a window as large as the screen behind
+                request_new_screen_size(WIDTH, HEIGHT);
+            }
+        }
+        presenter.frame(fullscreen && settings.exclusive_fullscreen, settings.framerate, &base);
         next_frame().await;
     }
 }
