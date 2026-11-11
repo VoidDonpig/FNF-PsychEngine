@@ -2468,7 +2468,9 @@ impl Scene {
         false
     }
 
-    pub fn draw(&self) {
+    /// `extra` draws what scripts add to the stage: with `false` behind the characters, with `true` in front of everything
+    /// (each time with where the camera's corner is).
+    pub fn draw(&self, extra: &dyn Fn(bool, Vec2)) {
         let (strength, left) = self.shake[0];
         let shake = if left > 0.0 && !self.dead { vec2(rand::gen_range(-1.0, 1.0), rand::gen_range(-1.0, 1.0)) * strength * SCREEN / self.zoom } else { Vec2::ZERO };
         set_camera(&Camera2D { target: self.camera + shake, zoom: vec2(2.0 / SCREEN.x, 2.0 / SCREEN.y) * self.zoom, ..Default::default() });
@@ -2555,6 +2557,7 @@ impl Scene {
             pico.draw_as("cock", 0.0, at, Color { a: 0.3 * (1.0 - part), ..pico.tint });
             pop_model_matrix();
         }
+        extra(false, scroll);
         let fighters: Vec<&Option<Character>> = if self.opponent_front { vec![&self.gf, &self.player, &self.opponent] } else { self.cast.iter().map(|who| everyone[*who]).collect() };
         if let Some(spirit) = &self.opponent {
             // fainter the older they are
@@ -2613,6 +2616,7 @@ impl Scene {
         }
         self.can.iter().for_each(|can| can.draw());
         self.backdrop.iter().filter(|layer| layer.def.front).for_each(|layer| layer.draw(scroll));
+        extra(true, scroll);
         let (color, age, length) = self.flash;
         if age < length {
             cover(Color { a: color.a * (1.0 - age / length), ..color });

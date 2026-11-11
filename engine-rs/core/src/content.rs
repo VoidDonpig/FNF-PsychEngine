@@ -21,6 +21,7 @@ pub struct SongEntry {
 }
 
 /// Where a song's files are looked for: its mod first, then files shared by all mods, then the game.
+#[derive(Clone)]
 pub struct Paths {
     roots: Vec<PathBuf>,
 }

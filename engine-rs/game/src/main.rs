@@ -354,7 +354,7 @@ impl Playing {
         atlas::forget_unused();
         let mut scene = scene;
         let staged = story && start_at <= 0.0 && !seen && scene.as_mut().is_some_and(|scene| scene.open_with(&funkin_core::content::song_path(&entry.title), 60.0 / play.chart.bpm as f32));
-        let lua = start_scripts(base, entry, &play.chart, settings, story, seen);
+        let lua = start_scripts(&paths, entry, &play.chart, settings, story, seen);
         Ok(Playing { entry: entry.clone(), play, song, player_voice, own_skin: None, music_fade: None, lua, lua_step: i64::MIN, lua_section: usize::MAX, end_asked: false, end_held: false, base: base.to_path_buf(), staged, bowing: false, tune: false, paused_at: 0.0, pause_scroll: 0.0, deaths: 0, scene, waited: 0.0, clock: Default::default(), ticked: std::time::Instant::now(), started: false, paused: None, choosing: None, difficulties, story, taunt_until: None, start_at, position: -lead_in, settings: settings.clone(), held_keys: Vec::new(), flash_until: [[f64::MIN; 4]; 2], judgement: None, last_hit: f64::MIN, lanes_used: [false; 4], idled: false, idle_for: 0.0, sang_for: 0.0,
             paths, cutscene, lead_in, counted: i64::MIN, popups: Vec::new(), splashes: Vec::new(), dead: None, next_event: 0, speed, speed_change: None }.with(settings))
     }
@@ -915,7 +915,7 @@ impl Playing {
         let (settings, position) = (&self.settings, self.judged());
         // the stage through its own moving camera, then notes and the rest of the HUD on top
         let (hud_zoom, hud_shake) = self.scene.as_ref().map_or((1.0, Vec2::ZERO), |scene| {
-            scene.draw();
+            scene.draw(&|front, scroll| self.lua.draw(lua::Cam::Game, front, scroll));
             (scene.hud_zoom, scene.hud_shake())
         });
         set_camera(&Camera2D { target: vec2(WIDTH / 2.0, HEIGHT / 2.0) + hud_shake, zoom: vec2(2.0 / WIDTH, 2.0 / HEIGHT) * hud_zoom, ..Default::default() });
@@ -1085,6 +1085,11 @@ impl Playing {
             skin.text(line, 10.0, 60.0 + row as f32 * 20.0, 16, Color { a: fade.min(1.0), ..WHITE });
         }
         skin.text(&format!("{} [{}]", self.entry.title, difficulty_name(&self.entry.difficulty)), 12.0, if settings.downscroll { 24.0 } else { HEIGHT - 12.0 }, 16, WHITE);
+        // the scripts' sprites on the HUD's camera, then on the one over everything
+        self.lua.draw(lua::Cam::Hud, false, Vec2::ZERO);
+        set_camera(&Camera2D { target: vec2(WIDTH / 2.0, HEIGHT / 2.0), zoom: vec2(2.0 / WIDTH, 2.0 / HEIGHT), ..Default::default() });
+        self.lua.draw(lua::Cam::Other, false, Vec2::ZERO);
+        set_camera(&Camera2D { target: vec2(WIDTH / 2.0, HEIGHT / 2.0) + hud_shake, zoom: vec2(2.0 / WIDTH, 2.0 / HEIGHT) * hud_zoom, ..Default::default() });
 
         if let Some(talk) = &self.cutscene {
             talk.draw();
@@ -1127,8 +1132,7 @@ impl Playing {
 /// where the system keeps programs' data, under its company's name.
 /// The song's Lua scripts (those of the `scripts/` folders, the song's and the stage's), started, told about the song
 /// and called back once loaded (onCreate, then onCreatePost), as the Haxe engine's PlayState starts them.
-fn start_scripts(base: &Path, entry: &SongEntry, chart: &Chart, settings: &Settings, story: bool, seen: bool) -> lua::Scripts {
-    let paths = Paths::new(base, &entry.source, "");
+fn start_scripts(paths: &Paths, entry: &SongEntry, chart: &Chart, settings: &Settings, story: bool, seen: bool) -> lua::Scripts {
     let song = funkin_core::content::song_path(&entry.title);
     let files = lua::find(paths.roots(), &song, &chart.stage);
     if files.is_empty() {
@@ -1157,7 +1161,7 @@ fn start_scripts(base: &Path, entry: &SongEntry, chart: &Chart, settings: &Setti
         ("noteOffset", json!(settings.offset_ms)), ("healthBarAlpha", json!(settings.health_bar_alpha)), ("noResetButton", json!(settings.no_reset)),
         ("lowQuality", json!(settings.low_quality)), ("shadersEnabled", json!(settings.shaders)),
     ];
-    let shared = lua::Shared::new(settings.mod_settings.clone(), &entry.source);
+    let shared = lua::Shared::new(settings.mod_settings.clone(), &entry.source, paths.clone());
     let mut scripts = lua::Scripts::start(&files, &globals, shared);
     scripts.call("onCreate", ());
     scripts.call("onCreatePost", ());

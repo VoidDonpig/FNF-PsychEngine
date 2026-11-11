@@ -147,7 +147,9 @@ Done:
   the Haxe engine, with its globals and callbacks (onCreate, onUpdate, onStepHit, onBeatHit, onSectionHit,
   goodNoteHit, opponentNoteHit, noteMiss, onEvent, onEndSong, onPause, onGameOver, onTimerCompleted...) and a
   first set of functions (debugPrint, timers, sounds, events, health, character poses, setVar/getVar,
-  getModSetting, and getProperty/setProperty for the camera, health, score and characters).
+  getModSetting, and getProperty/setProperty for the camera, health, score and characters); the scripts' sprites
+  (pictures, animated sheets, plain rectangles; behind the characters, in front, on the HUD or over everything;
+  their place, size, scroll, angle, colour and animations) and tweens with Flixel's easings.
 
 Not there yet:
 
@@ -158,8 +160,8 @@ Not there yet:
   side (no gamepads yet) and debug keys (no editors yet); the GPU Caching switch (nothing to switch here); update check.
 - **Cutscenes**: videos (so weekend 1's video before Darnell and after 2hot; the scene with the can after the
   first is there); dialogue from a song's `dialogue.json` (the kind scripts start).
-- **Scripts**: most of Lua's functions (sprites, tweens, texts, notes, shaders, saves, and getProperty/setProperty
-  beyond the camera, health, score and the characters' place); custom events and note types run by scripts. HScript is Haxe code run against the Haxe
+- **Scripts**: the rest of Lua's functions (texts, notes, shaders, saves, groups, and getProperty/setProperty
+  beyond the camera, health, score, the characters' place and the scripts' sprites); custom events and note types run by scripts. HScript is Haxe code run against the Haxe
   engine's own classes, so mods that use it cannot run here as they are. Custom shaders.
 - **Editors**: chart, character, stage, week, menu character, dialogue, dialogue character, note splash.
 - **Other**: gamepads.
