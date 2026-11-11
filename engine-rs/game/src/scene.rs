@@ -69,7 +69,6 @@ fn layer(image: &'static str, x: f32, y: f32, scroll_x: f32, scroll_y: f32) -> L
 }
 
 /// The backdrop of a stage, back to front. The numbers are those of source/states/stages.
-// shortcut: the weekend 1 lighting is not here yet. What `Own` moves is.
 /// On low quality (`low`) the details the Haxe engine leaves out are left out, and two animated backgrounds stand still.
 fn backdrop(stage: &str, low: bool) -> Vec<LayerDef> {
     use Motion::*;
@@ -190,7 +189,6 @@ fn backdrop(stage: &str, low: bool) -> Vec<LayerDef> {
             light(layer("phillyStreets/phillyHighwayLights_lightmap", 284.0, 305.0, 1.0, 1.0)),
             layer("phillyStreets/phillyHighway", 139.0, 209.0, 1.0, 1.0),
             detail(layer("phillyStreets/phillySmog", -6.0, 245.0, 0.8, 1.0)),
-            // shortcut: the rain (a shader in the Haxe engine) is left out.
             detail(moving("car1", Still, layer("phillyStreets/phillyCars", 1200.0, 818.0, 0.9, 1.0))),
             LayerDef { flip: true, ..detail(moving("car1", Still, layer("phillyStreets/phillyCars", 1200.0, 818.0, 0.9, 1.0))) },
             detail(moving("redtogreen", Once, layer("phillyStreets/phillyTraffic", 1840.0, 608.0, 0.9, 1.0))),
@@ -2356,8 +2354,8 @@ impl Scene {
         self.player.as_ref().is_none_or(|player| ["idle", "danceLeft", "danceRight"].iter().any(|idle| player.current.starts_with(idle)))
     }
 
-    /// Who lies there when the player has lost, the sound of losing, and what is added to the names of the game over music.
-    // shortcut: by stage, as the base game's stages set it; charts and scripts can name another game over character (gameOverChar). Read it from the chart when one needs it.
+    /// Who lies there when the player has lost, the sound of losing, and what is added to the names of the game over music,
+    /// as the base game's stages set them (a chart may name its own).
     pub fn death(&self) -> (&'static str, &'static str, &'static str) {
         match self.stage.as_str() {
             _ if self.pixel => ("bf-pixel-dead", "fnf_loss_sfx-pixel", "-pixel"),
@@ -2368,9 +2366,9 @@ impl Scene {
     }
 
     /// The player lost: swaps in the fallen character and turns the camera to it.
-    pub fn die(&mut self) {
+    pub fn die(&mut self, fallen: &str) {
         self.dead = true;
-        if let Ok(mut fallen) = Character::load(&self.paths, self.death().0, self.spots[1], true) {
+        if let Ok(mut fallen) = Character::load(&self.paths, fallen, self.spots[1], true) {
             fallen.play("firstDeath");
             self.target = fallen.middle() + fallen.camera_offset;
             let sheet = |name: &str| self.paths.find(&format!("images/{name}.png")).and_then(|path| Sheet::load(&path).ok());

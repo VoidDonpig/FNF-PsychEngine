@@ -94,6 +94,9 @@ pub struct Chart {
     pub no_rgb: bool,
     /// The song has voices to play (`needsVoices`).
     pub needs_voices: bool,
+    /// Its own game over: who falls, the sound of the fall, the music after it and at the retry (`gameOverChar`,
+    /// `gameOverSound`, `gameOverLoop`, `gameOverEnd`); empty: the stage's.
+    pub game_over: [String; 4],
 }
 
 impl Chart {
@@ -211,6 +214,7 @@ pub fn parse(text: &str) -> Result<Chart, String> {
         splash_skin: root["splashSkin"].as_str().unwrap_or("").to_owned(),
         no_rgb: root["disableNoteRGB"].as_bool().unwrap_or(false),
         needs_voices: root["needsVoices"].as_bool().unwrap_or(true),
+        game_over: ["gameOverChar", "gameOverSound", "gameOverLoop", "gameOverEnd"].map(|key| root[key].as_str().unwrap_or("").trim().to_owned()),
         notes,
         events,
         sections,
@@ -301,8 +305,10 @@ mod tests {
 
     #[test]
     fn an_events_file_is_a_chart_without_notes() {
-        let chart = parse(r#"{"song":{"events":[[4290,[["Hey!","0",""]]]],"format":"psych_v1"}}"#).unwrap();
+        let chart = parse(r#"{"song":{"events":[[4290,[["Hey!","0",""]]]],"format":"psych_v1","gameOverChar":"pico-dead","gameOverLoop":" "}}"#).unwrap();
         assert!(chart.notes.is_empty());
+        // its own game over, where it names one
+        assert_eq!(chart.game_over, ["pico-dead", "", "", ""].map(str::to_owned));
         assert_eq!(chart.events.len(), 1);
         assert!(parse("not json").is_err());
     }

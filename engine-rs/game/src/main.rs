@@ -387,9 +387,13 @@ impl Playing {
         self.scene.as_ref().is_some_and(|scene| scene.pixel)
     }
 
-    /// What the stage adds to the names of the game over sounds.
-    fn death_suffix(&self) -> &'static str {
-        self.scene.as_ref().map_or("", |scene| scene.death().2)
+    /// The game over: who falls, the sound of the fall, the music after it and at the retry. The chart's own, else the
+    /// stage's, as the Haxe engine has them.
+    fn death(&self) -> [String; 4] {
+        let (fallen, sound, suffix) = self.scene.as_ref().map_or(("bf-dead", "fnf_loss_sfx", ""), |scene| scene.death());
+        let usual = [fallen.to_owned(), sound.to_owned(), format!("gameOver{suffix}"), format!("gameOverEnd{suffix}")];
+        let mut own = self.play.chart.game_over.clone().into_iter();
+        usual.map(|usual| own.next().filter(|own| !own.is_empty()).unwrap_or(usual))
     }
 
     /// What pixel stages add to the names of their countdown sounds.
@@ -418,7 +422,7 @@ impl Playing {
         if (fell || (self.scene.is_none() && since < 1.0 && since + dt >= 1.0)) && confirmed.is_none() {
             // on the tank stage the music stays low while one of Tankman's lines plays over it
             let line = self.paths.find(&format!("sounds/jeffGameover/jeffGameover-{}.ogg", rand::gen_range(1, 26))).filter(|_| self.play.chart.stage == "tank");
-            self.sound(&format!("gameOver{}", self.death_suffix()), if line.is_some() { 0.2 } else { 1.0 }, true);
+            self.sound(&self.death()[2], if line.is_some() { 0.2 } else { 1.0 }, true);
             if let Some(line) = line {
                 self.song.play_sound(&line, 1.0, false);
                 self.taunt_until = Some(since + audio::seconds(&line).unwrap_or(0.0));
@@ -430,7 +434,7 @@ impl Playing {
         }
         if confirm {
             self.song.stop_sounds();
-            self.sound(&format!("gameOverEnd{}", self.death_suffix()), 1.0, false);
+            self.sound(&self.death()[3], 1.0, false);
         }
         let confirmed = if confirm { Some(0.0) } else { confirmed.map(|t| t + dt) };
         self.dead = Some((since + dt, confirmed));
@@ -687,8 +691,9 @@ impl Playing {
             self.dead = Some((0.0, None));
             self.deaths += 1;
             self.song.pause();
-            self.sound(self.scene.as_ref().map_or("fnf_loss_sfx", |scene| scene.death().1), 1.0, false);
-            self.scene.iter_mut().for_each(|scene| scene.die());
+            let [fallen, sound, ..] = self.death();
+            self.sound(&sound, 1.0, false);
+            self.scene.iter_mut().for_each(|scene| scene.die(&fallen));
             return Flow::Continue;
         }
         if self.position < self.length() { Flow::Continue } else { Flow::Finished }
