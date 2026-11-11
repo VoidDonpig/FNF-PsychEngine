@@ -168,7 +168,11 @@ impl Alphabet {
             add((letter, true), format!("{name} bold"), "bold");
             if letter.is_alphabetic() {
                 add((letter, false), format!("{name} lowercase"), "normal");
-                add((letter.to_uppercase().next().unwrap_or(letter), false), format!("{name} uppercase"), "normal");
+                // (only a letter with a capital of its own: "ß" would become "SS" and take the place of "S")
+                let mut capital = letter.to_uppercase();
+                if let (Some(capital), None) = (capital.next(), capital.next()) {
+                    add((capital, false), format!("{name} uppercase"), "normal");
+                }
             } else {
                 add((letter, false), format!("{name} normal"), "normal");
             }
@@ -544,7 +548,7 @@ impl Menus {
     }
 
     /// Width of a line of menu letters.
-    fn width(&self, skin: &Skin, text: &str, bold: bool) -> f32 {
+    pub fn width(&self, skin: &Skin, text: &str, bold: bool) -> f32 {
         match &self.alphabet {
             Some(alphabet) => place(text, bold, |letter| alphabet.size(letter, bold)).1,
             None => measure_text(text, skin.font.as_ref(), 48, 1.0).width,
@@ -625,7 +629,12 @@ impl Menus {
     }
 
     /// The menu background in a colour that follows `target`.
-    fn backdrop(&mut self, target: Vec3, dt: f32) {
+    /// A sheet of the menus' own pictures.
+    pub fn sheet(&mut self, name: &str) -> Option<Rc<Sheet>> {
+        self.art.own_sheet(name)
+    }
+
+    pub fn backdrop(&mut self, target: Vec3, dt: f32) {
         self.tint += (target - self.tint) * (1.0 - (-dt * 5.0).exp());
         if let Some(picture) = self.art.own("menuDesat") {
             draw_texture(&picture, (WIDTH - picture.width()) / 2.0, (HEIGHT - picture.height()) / 2.0, Color::new(self.tint.x, self.tint.y, self.tint.z, 1.0));

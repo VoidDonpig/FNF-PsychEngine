@@ -19,6 +19,46 @@ pub struct OptionsMenu {
     typing: Option<String>,
     /// The screen for the note delay and the place of rating and combo, while it is open.
     adjust: Option<Box<crate::adjust::Adjust>>,
+    /// The list of languages, while it is open: the row chosen.
+    language: Option<usize>,
+    /// Where the list of a page has glided to, and when a switch was last flipped (its box plays its tick).
+    scroll: f32,
+    flipped: f64,
+}
+
+/// The options' first list, in the Haxe engine's order.
+const MAIN: [&str; 7] = ["Note Colors", "Controls", "Adjust Delay and Combo", "Graphics", "Visuals", "Gameplay", "Language"];
+
+/// The pink of the options' background.
+const PINK: Vec3 = vec3(0xEA as f32 / 255.0, 0x71 as f32 / 255.0, 0xFD as f32 / 255.0);
+
+/// Where a list of the Haxe engine's large letters puts a row `from` rows away from the chosen one, starting at `start`.
+fn listed(from: f32, start: Vec2) -> Vec2 {
+    start + vec2(from * 20.0, from * 1.3 * 120.0)
+}
+
+/// The row of `MAIN` that opens page `page`.
+fn main_row(page: usize) -> usize {
+    MAIN.iter().position(|name| *name == PAGES[page]).unwrap_or(0)
+}
+
+/// The tick box of a switch at a row's `at` (the row's corner), `since` seconds after it was last flipped.
+fn checkbox(menus: &mut crate::menu::Menus, on: bool, since: f32, at: Vec2, alpha: f32) {
+    let Some(sheet) = menus.sheet("checkboxanim") else { return };
+    // turning on or off, then still: the animations and the shifts the Haxe engine gives them
+    let (turning, turning_by, still, still_by) = if on { ("checkbox anim0", (34.0, 25.0), "checkbox finish", (3.0, 12.0)) } else { ("checkbox anim reverse", (25.0, 28.0), "checkbox0", (0.0, 2.0)) };
+    let frames = sheet.animation(turning, &[]);
+    let step = (since * 24.0) as usize;
+    let (frame, by) = match frames.get(step) {
+        Some(frame) => (*frame, turning_by),
+        None => match sheet.animation(still, &[]).first() {
+            Some(frame) => (*frame, still_by),
+            None => return,
+        },
+    };
+    // drawn at nine tenths of its size, about its middle
+    let corner = at + vec2(-130.0, 30.0) - vec2(by.0, by.1) + frame.size * 0.05;
+    sheet.draw(frame, corner.x, corner.y, 0.9, false, Color::new(1.0, 1.0, 1.0, alpha));
 }
 
 /// The colour with its hue turned by `degrees`. Greys have none and stay as they are.
@@ -80,45 +120,68 @@ impl OptionsMenu {
         self.adjust.is_some()
     }
 
-    /// `languages`: the languages there are, as (file, name). `base`: the game's folder.
+    /// `languages`: the languages there are, as (file, name). `base`: the game's folder. `menus` lends its letters, pictures and
+    /// sounds, `skin` the plain font.
     #[allow(clippy::too_many_arguments)]
-    pub fn run(&mut self, settings: &mut Settings, text: &dyn Fn(&str, f32, f32, u16, Color), note: &dyn Fn(usize, bool, f32, f32), raw_input: bool, bindable: &[KeyCode], languages: &[(String, String)], base: &std::path::Path) -> bool {
+    pub fn run(&mut self, settings: &mut Settings, menus: &mut crate::menu::Menus, skin: &crate::Skin, text: &dyn Fn(&str, f32, f32, u16, Color), note: &dyn Fn(usize, bool, f32, f32), raw_input: bool, bindable: &[KeyCode], languages: &[(String, String)], base: &std::path::Path) -> bool {
         if let Some(adjust) = &mut self.adjust {
             if adjust.run(settings, text) {
                 self.adjust = None;
             }
             return false;
         }
-        let named = |page: usize| phrase(&format!("options_{}", PAGES[page]), PAGES[page]);
-        let title = self.page.map_or("Options".to_owned(), |page| format!("Options - {}", named(page)));
-        text(&title, 40.0, 60.0, 36, WHITE);
+        let dt = get_frame_time().min(0.1);
         let line = |index: usize, selected: usize, content: &str, y: f32| {
             text(&format!("{}{content}", if index == selected { "> " } else { "  " }), 40.0, y, 24, if index == selected { YELLOW } else { WHITE });
         };
         let step = |rows: usize| (pressed(Ui::Down) as usize + pressed(Ui::Up) as usize * (rows - 1)) % rows;
         let back = pressed(Ui::Back);
-
-        let Some(page) = self.page else {
-            text("Up/Down: choose   Enter: open   Esc: save and back", 40.0, 96.0, 18, GRAY);
-            // the pages, the screen for delay and combo, and below them the language: it is chosen in place
-            self.row = (self.row + step(PAGES.len() + 2)) % (PAGES.len() + 2);
-            for index in 0..PAGES.len() {
-                line(index, self.row, &named(index), 150.0 + index as f32 * 30.0);
+        // the Haxe engine's look: the pink background, lists in large letters (the key binds and the note colours stay plain lists)
+        let plain = self.language.is_none() && matches!(self.page, Some(page) if page == 0 || page == PAGES.len() - 1);
+        match self.page {
+            Some(page) if plain => text(&phrase(&format!("options_{}", PAGES[page]), PAGES[page]), 40.0, 60.0, 36, WHITE),
+            _ => menus.backdrop(PINK, dt),
+        }
+        if back {
+            menus.sound("cancelMenu", 1.0);
+        } else if pressed(Ui::Up) || pressed(Ui::Down) {
+            menus.sound("scrollMenu", 1.0);
+        }
+        // a centred list that does not move, the chosen row marked (the first list, and the languages)
+        let fixed = |menus: &crate::menu::Menus, rows: &[String], chosen: usize, gap: f32, marked: bool| {
+            for (index, name) in rows.iter().enumerate() {
+                let (width, alpha) = (menus.width(skin, name, true), if index == chosen { 1.0 } else { 0.6 });
+                let at = vec2((crate::WIDTH - width) / 2.0, (HEIGHT - 70.0) / 2.0 + gap * (index as f32 - rows.len() as f32 / 2.0) + 45.0);
+                menus.write(skin, name, true, at.x, at.y, 1.0, alpha);
+                if marked && index == chosen {
+                    menus.write(skin, ">", true, at.x - 63.0, at.y, 1.0, 1.0);
+                    menus.write(skin, "<", true, at.x + width + 15.0, at.y, 1.0, 1.0);
+                }
             }
-            line(PAGES.len(), self.row, &phrase("options_adjust_delay_and_combo", "Adjust Delay and Combo"), 150.0 + PAGES.len() as f32 * 30.0);
-            let language = languages.get(next_language(languages, &settings.language, 0)).map_or(settings.language.as_str(), |(_, name)| name);
-            line(PAGES.len() + 1, self.row, &format!("{}: {language}", phrase("options_language", "Language")), 190.0 + PAGES.len() as f32 * 30.0);
-            let turn = pressed(Ui::Right) as usize + pressed(Ui::Accept) as usize + pressed(Ui::Left) as usize * (languages.len().max(1) - 1);
-            if self.row < PAGES.len() {
-                if pressed(Ui::Accept) {
-                    (self.page, self.row) = (Some(self.row), 0);
+        };
+
+        if let Some(row) = self.language {
+            let row = (row + step(languages.len().max(1))) % languages.len().max(1);
+            self.language = Some(row);
+            fixed(menus, &languages.iter().map(|(_, name)| name.clone()).collect::<Vec<_>>(), row, 100.0, false);
+            if pressed(Ui::Accept) {
+                menus.sound("confirmMenu", 0.6);
+                settings.language = languages.get(row).map_or(settings.language.clone(), |(file, _)| file.clone());
+            }
+            if back {
+                (self.language, self.row) = (None, MAIN.len() - 1);
+            }
+            return false;
+        }
+        let Some(page) = self.page else {
+            self.row = (self.row + step(MAIN.len())) % MAIN.len();
+            fixed(menus, &MAIN.map(|name| phrase(&format!("options_{name}"), name)), self.row, 92.0, true);
+            if pressed(Ui::Accept) {
+                match MAIN[self.row] {
+                    "Adjust Delay and Combo" => self.adjust = Some(Box::new(crate::adjust::Adjust::open(base, settings))),
+                    "Language" => self.language = Some(next_language(languages, &settings.language, 0)),
+                    name => (self.page, self.row, self.scroll) = (PAGES.iter().position(|page| *page == name), 0, 0.0),
                 }
-            } else if self.row == PAGES.len() {
-                if pressed(Ui::Accept) {
-                    self.adjust = Some(Box::new(crate::adjust::Adjust::open(base, settings)));
-                }
-            } else if let Some((file, _)) = languages.get(next_language(languages, &settings.language, turn)).filter(|_| turn != 0) {
-                settings.language = file.clone();
             }
             return back;
         };
@@ -167,7 +230,7 @@ impl OptionsMenu {
                 *slot = None;
                 crate::controls::set(settings.ui_keys);
             } else if back {
-                (self.page, self.row) = (None, page);
+                (self.page, self.row) = (None, main_row(page));
                 return self.direct;
             }
             return false;
@@ -222,39 +285,68 @@ impl OptionsMenu {
                 self.pixel ^= true;
             }
             if back {
-                (self.page, self.row) = (None, page);
+                (self.page, self.row) = (None, main_row(page));
             }
             return back && self.direct;
         }
 
-        text("Up/Down: choose   Enter or Left/Right: change (Shift: x10)   Esc: back", 40.0, 96.0, 18, GRAY);
+        // a page of options: its name faint at the top, the options in a slanted list gliding to the chosen one (switches with
+        // a tick box before them, the others with their value after), what the chosen one does in a box at the bottom
         let options: Vec<_> = OPTIONS.iter().filter(|option| option.page == page).collect();
         self.row = (self.row + step(options.len())) % options.len();
+        self.scroll += (self.row as f32 - self.scroll) * (1.0 - (-dt * 9.6).exp());
+        let title = match PAGES[page] {
+            "Gameplay Changers" => phrase("gameplay_changers", "Gameplay Changers"),
+            name => phrase(&format!("{}_menu", name.to_lowercase()), &format!("{name} Settings")),
+        };
+        push_model_matrix(Mat4::from_translation(vec3(75.0, 45.0, 0.0)) * Mat4::from_scale(vec3(0.6, 0.6, 1.0)));
+        menus.write(skin, &title, true, 0.0, 0.0, 1.0, 0.4);
+        pop_model_matrix();
+        let since = (get_time() - self.flipped) as f32;
         for (index, option) in options.iter().enumerate() {
-            let value = shown(&option.kind, settings);
-            // a choice among names may have its names translated too
-            let value = if matches!(option.kind, Kind::Choice(..)) { phrase(&format!("setting_{}-{value}", option.name), &value) } else { value };
-            line(index, self.row, &format!("{}: {value}", phrase(&format!("setting_{}", option.name), option.name)), 150.0 + index as f32 * 30.0);
+            let switch = matches!(option.kind, Kind::Flag(_));
+            let at = listed(index as f32 - self.scroll, vec2(if switch { 220.0 } else { 140.0 }, 260.0));
+            if !(-200.0..HEIGHT + 100.0).contains(&at.y) {
+                continue;
+            }
+            let (name, alpha) = (phrase(&format!("setting_{}", option.name), option.name), if index == self.row { 1.0 } else { 0.6 });
+            menus.write(skin, &name, false, at.x, at.y, 1.0, alpha);
+            if let Kind::Flag(get) = option.kind {
+                checkbox(menus, *get(settings), if index == self.row { since } else { 60.0 }, at, alpha);
+            } else {
+                let value = shown(&option.kind, settings);
+                // a choice among names may have its names translated too
+                let value = if matches!(option.kind, Kind::Choice(..)) { phrase(&format!("setting_{}-{value}", option.name), &value) } else { value };
+                menus.write(skin, &value, false, at.x + menus.width(skin, &name, false) + 60.0, at.y, 1.0, alpha);
+            }
         }
         let selected = options[self.row];
-        // long explanations run on to further lines (the letters are all 11 wide)
         let about = phrase(&format!("description_{}", selected.name), selected.about);
-        let about = crate::menu::wrap(&about, 1200.0, |text| text.chars().count() as f32 * 11.0);
-        for (line, words) in about.iter().enumerate() {
-            text(words, 40.0, HEIGHT - 40.0 - (about.len() - 1 - line) as f32 * 22.0, 18, GRAY);
+        let about = crate::menu::wrap(&about, 1180.0, |words| measure_text(words, skin.font.as_ref(), 32, 1.0).width);
+        let top = (HEIGHT - about.len() as f32 * 32.0) / 2.0 + 270.0;
+        draw_rectangle(40.0, top - 10.0, 1200.0, about.len() as f32 * 32.0 + 25.0, Color::new(0.0, 0.0, 0.0, 0.6));
+        for (row, words) in about.iter().enumerate() {
+            let width = measure_text(words, skin.font.as_ref(), 32, 1.0).width;
+            skin.text(words, (crate::WIDTH - width) / 2.0, top + 26.0 + row as f32 * 32.0, 32, WHITE);
         }
         if steps != 0.0 {
             change(&selected.kind, settings, steps * fast);
+            menus.sound("scrollMenu", 1.0);
         } else if pressed(Ui::Accept) {
+            menus.sound("scrollMenu", 1.0);
             match (selected.key, &selected.kind) {
                 // the frame rate takes the display's own
                 ("framerate", &Kind::Number(get, low, high, ..)) => *get(settings) = refresh_rate().map_or(*get(settings), |rate| rate.round().clamp(low, high)),
-                // Enter flips a switch and steps through a list
-                _ => change(&selected.kind, settings, if matches!(selected.kind, Kind::Choice(..)) { 1.0 } else { 0.0 }),
+                // Enter flips a switch (its box ticks) and steps through a list
+                (_, Kind::Flag(_)) => {
+                    change(&selected.kind, settings, 0.0);
+                    self.flipped = get_time();
+                }
+                _ => change(&selected.kind, settings, 1.0),
             }
         }
         if back {
-            (self.page, self.row) = (None, page);
+            (self.page, self.row) = (None, main_row(page));
         }
         back && self.direct
     }

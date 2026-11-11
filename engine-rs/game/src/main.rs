@@ -747,8 +747,8 @@ impl Playing {
             (scene.hud_zoom, scene.hud_shake())
         });
         set_camera(&Camera2D { target: vec2(WIDTH / 2.0, HEIGHT / 2.0) + hud_shake, zoom: vec2(2.0 / WIDTH, 2.0 / HEIGHT) * hud_zoom, ..Default::default() });
+        // the game over scene is the fallen player alone, as in the Haxe engine
         if self.dead.is_some() {
-            skin.centered("Enter: retry    Esc: back to the song list", HEIGHT - 30.0, 18, GRAY);
             return;
         }
         if let Some(scene) = self.scene.as_ref().filter(|scene| scene.hides_hud()) {
@@ -1196,7 +1196,10 @@ fn main() {
                     }
                 };
                 let adjusting = menu.adjusting();
-                let left = menu.run(&mut settings, &plain, &note, keyboard.raw, &bindable, &languages, &base);
+                let left = match &skin {
+                    Some(skin) => menu.run(&mut settings, &mut menus, skin, &plain, &note, keyboard.raw, &bindable, &languages, &base),
+                    None => true,
+                };
                 // the screen for the delay brings its own music: everything else is quiet meanwhile
                 match (adjusting, menu.adjusting(), &held) {
                     (false, true, None) => menus.quiet(),
