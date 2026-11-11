@@ -51,6 +51,9 @@ pub const SCROLL_TYPES: [&str; 2] = ["multiplicative", "constant"];
 pub const TIME_BARS: [&str; 4] = ["Time Left", "Time Elapsed", "Song Name", "Disabled"];
 /// What the game draws with (see gfx.rs). DirectX is DirectX 12.
 pub const GRAPHICS_APIS: [&str; 3] = ["OpenGL", "DirectX", "Vulkan"];
+// shortcut: the skins the game ships (images/noteSkins/list.txt and images/noteSplashes/list.txt); read the lists when mods add skins
+pub const NOTE_SKINS: [&str; 3] = ["Default", "Future", "Chip"];
+pub const SPLASH_SKINS: [&str; 5] = ["Psych", "Diamond", "Electric", "Sparkles", "Vanilla"];
 pub const PAUSE_MUSIC: [&str; 4] = ["None", "Tea Time", "Breakfast", "Breakfast (Pico)"];
 
 /// Names and texts are the Haxe engine's.
@@ -70,6 +73,8 @@ pub const OPTIONS: &[Opt] = &[
     Opt { page: 1, key: "bad_window", name: "Bad Hit Window", about: "Changes the amount of time you have for hitting a \"Bad\" in milliseconds.", kind: Kind::Number(|s| &mut s.bad_window, 15.0, 135.0, 1.0, "ms") },
     Opt { page: 1, key: "safe_frames", name: "Safe Frames", about: "Changes how many frames you have for hitting a note earlier or late.", kind: Kind::Number(|s| &mut s.safe_frames, 2.0, 10.0, 0.1, "") },
     Opt { page: 1, key: "offset_ms", name: "Note Offset", about: "Notes are judged and drawn this much later, for sound that arrives late (Bluetooth).", kind: Kind::Number(|s| &mut s.offset_ms, -500.0, 500.0, 1.0, "ms") },
+    Opt { page: 2, key: "note_skin", name: "Note Skins", about: "Select your prefered Note skin.", kind: Kind::Choice(|s| &mut s.note_skin, &NOTE_SKINS) },
+    Opt { page: 2, key: "splash_skin", name: "Note Splashes", about: "Select your prefered Note Splash variation.", kind: Kind::Choice(|s| &mut s.splash_skin, &SPLASH_SKINS) },
     Opt { page: 2, key: "splash_alpha", name: "Note Splash Opacity", about: "How much transparent should the Note Splashes be.", kind: Kind::Number(|s| &mut s.splash_alpha, 0.0, 1.0, 0.1, "%") },
     Opt { page: 2, key: "hide_hud", name: "Hide HUD", about: "If checked, hides most HUD elements.", kind: Kind::Flag(|s| &mut s.hide_hud) },
     Opt { page: 2, key: "time_bar", name: "Time Bar", about: "What should the Time Bar display?", kind: Kind::Choice(|s| &mut s.time_bar, &TIME_BARS) },
@@ -156,6 +161,9 @@ pub struct Settings {
     pub safe_frames: f64,
     /// Notes are judged and drawn this many ms later (for sound that arrives late, such as Bluetooth).
     pub offset_ms: f64,
+    /// Indexes into `NOTE_SKINS` and `SPLASH_SKINS`.
+    pub note_skin: usize,
+    pub splash_skin: usize,
     pub splash_alpha: f64,
     pub hide_hud: bool,
     /// Index into `TIME_BARS`.
@@ -202,7 +210,7 @@ impl Default for Settings {
         Settings {
             downscroll: false, middlescroll: false, opponent_strums: true, ghost_tapping: true, no_reset: false, one_note_holds: true, auto_pause: true, volume: 1.0, botplay: false,
             hitsound_volume: 0.0, rating_offset: 0.0, sick_window: 45.0, good_window: 90.0, bad_window: 135.0, safe_frames: 10.0, offset_ms: 0.0,
-            splash_alpha: 0.6, hide_hud: false, time_bar: 0, flashing: true, cam_zooms: true, score_zoom: true, health_bar_alpha: 1.0, show_fps: true,
+            note_skin: 0, splash_skin: 0, splash_alpha: 0.6, hide_hud: false, time_bar: 0, flashing: true, cam_zooms: true, score_zoom: true, health_bar_alpha: 1.0, show_fps: true,
             pause_music: 1, combo_stacking: true, show_ms: false,
             scroll_type: 0, scroll_speed: 1.0, playback_rate: 1.0, health_gain: 1.0, health_loss: 1.0, instakill: false, practice: false,
             combo_offset: [0.0; 4], low_quality: false, antialiasing: true, framerate: refresh_rate().clamp(60.0, 1000.0), graphics_api: if cfg!(windows) { 1 } else { 2 }, fullscreen: false, exclusive_fullscreen: false, note_colors: LANE_COLORS, pixel_note_colors: PIXEL_LANE_COLORS,

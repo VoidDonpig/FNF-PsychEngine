@@ -57,6 +57,8 @@ struct Skin {
     /// Pictures for ready, set, go.
     countdown: Vec<Texture2D>,
     splashes: Option<atlas::Sheet>,
+    /// The splash animation of each lane, as the splash skin names it.
+    splash_names: [String; 4],
     /// How much the note pictures are enlarged, and how wide a hold's body and how long its end cap are drawn.
     note_scale: f32,
     hold: Vec2,
@@ -98,16 +100,27 @@ impl Skin {
         if found.len() == names.len() { found } else { Vec::new() }
     }
 
-    fn load(base: &Path) -> Result<Skin, String> {
+    /// `skins`: the note skin and the splash skin chosen in the options (the first of each is the usual one).
+    fn load(base: &Path, skins: (usize, usize)) -> Result<Skin, String> {
         let dir = base.join("assets/shared/images/noteSkins");
         let read = |name: &str| std::fs::read(dir.join(name)).map_err(|e| format!("{}: {e}", dir.join(name).display()));
-        let sheet = atlas::picture(&dir.join("NOTE_assets.png")).ok_or(format!("{}: not found", dir.join("NOTE_assets.png").display()))?;
-        let frames = atlas::parse(&String::from_utf8_lossy(&read("NOTE_assets.xml")?));
+        // "NOTE_assets-future", "noteSplashes-diamond": the skin's name after the usual file's
+        let named = |file: &str, skin: usize, names: &[&str]| if skin == 0 { file.to_owned() } else { format!("{file}-{}", names[skin].to_lowercase()) };
+        let notes = named("NOTE_assets", skins.0, &settings::NOTE_SKINS);
+        let sheet = atlas::picture(&dir.join(format!("{notes}.png"))).ok_or(format!("{}: not found", dir.join(format!("{notes}.png")).display()))?;
+        let frames = atlas::parse(&String::from_utf8_lossy(&read(&format!("{notes}.xml"))?));
         let font = std::fs::read(base.join("assets/fonts/vcr.ttf")).ok().and_then(|bytes| load_ttf_font_from_bytes(&bytes).ok());
         let images = base.join("assets/shared/images");
         let digits = Skin::pictures(&images, &["num0", "num1", "num2", "num3", "num4", "num5", "num6", "num7", "num8", "num9"], false);
-        let splashes = atlas::Sheet::load(&images.join("noteSplashes/noteSplashes.png")).ok();
-        Ok(Skin { sheet, frames, lanes: Default::default(), font, ratings: Skin::pictures(&images, &["sick", "good", "bad", "shit"], false), digits, countdown: Skin::pictures(&images, &["ready", "set", "go"], false), splashes,
+        let splash = images.join(format!("noteSplashes/{}.png", named("noteSplashes", skins.1, &settings::SPLASH_SKINS)));
+        let splashes = atlas::Sheet::load(&splash).ok();
+        // the skin's own file says what each lane's animation is called
+        let named: serde_json::Value = std::fs::read_to_string(splash.with_extension("json")).ok().and_then(|text| serde_json::from_str(&text).ok()).unwrap_or_default();
+        let splash_names = [0, 1, 2, 3].map(|lane| {
+            let own = named["animations"].as_object().into_iter().flatten().find(|(_, animation)| animation["noteData"] == lane).and_then(|(_, animation)| animation["prefix"].as_str());
+            own.map_or(format!("note splash {} 1", NOTE_NAMES[lane]), str::to_owned)
+        });
+        Ok(Skin { sheet, frames, lanes: Default::default(), font, ratings: Skin::pictures(&images, &["sick", "good", "bad", "shit"], false), digits, countdown: Skin::pictures(&images, &["ready", "set", "go"], false), splashes, splash_names,
             note_scale: NOTE_SCALE, hold: vec2(50.0, 64.0) * NOTE_SCALE, popup_scales: [0.7, 0.5, 1.0] })
     }
 
@@ -150,7 +163,7 @@ impl Skin {
         // shortcut: the usual splashes; the Haxe engine coarsens them with a shader on pixel stages.
         let splashes = atlas::Sheet::load(&base.join("assets/shared/images/noteSplashes/noteSplashes.png")).ok();
         Ok(Skin { sheet, frames, lanes: Default::default(), font, ratings: Skin::pictures(&dir, &["sick-pixel", "good-pixel", "bad-pixel", "shit-pixel"], true), digits,
-            countdown: Skin::pictures(&dir, &["ready-pixel", "set-pixel", "date-pixel"], true), splashes, note_scale: PIXEL_ZOOM, hold: end * PIXEL_ZOOM, popup_scales: [PIXEL_ZOOM * 0.85, PIXEL_ZOOM, PIXEL_ZOOM] })
+            countdown: Skin::pictures(&dir, &["ready-pixel", "set-pixel", "date-pixel"], true), splashes, splash_names: NOTE_NAMES.map(|name| format!("note splash {name} 1")), note_scale: PIXEL_ZOOM, hold: end * PIXEL_ZOOM, popup_scales: [PIXEL_ZOOM * 0.85, PIXEL_ZOOM, PIXEL_ZOOM] })
     }
 
     /// Draws a sheet frame centred on (x, y), stretched to `size` if given. `lane` recolours it.
@@ -671,7 +684,7 @@ impl Playing {
         // a burst on the strum for every "sick" hit
         if let Some(sheet) = &skin.splashes {
             for &(lane, at) in &self.splashes {
-                let frames = sheet.animation(&format!("note splash {} 1", NOTE_NAMES[lane]), &[]);
+                let frames = sheet.animation(&skin.splash_names[lane], &[]);
                 if let Some(&frame) = frames.get(((position - at) * 0.024) as usize) {
                     recolor(Some(skin.lanes.get()[lane]));
                     sheet.draw(frame, lane_x(settings, true, lane) - frame.size.x / 2.0, strum_y - frame.size.y / 2.0, 1.0, false, Color::new(1.0, 1.0, 1.0, settings.splash_alpha as f32));
@@ -899,7 +912,8 @@ fn main() {
         _ => Page::Title,
     };
     let pixel_skin = Skin::load_pixel(&base).map_err(|error| eprintln!("No pixel note skin: {error}")).ok();
-    let (mut skin, mut screen) = match Skin::load(&base) {
+    let mut skins = (settings.note_skin, settings.splash_skin);
+    let (mut skin, mut screen) = match Skin::load(&base, skins) {
         Ok(skin) => (Some(skin), Screen::Menu(first)),
         Err(error) => (None, Screen::Failed(format!("Could not load the note skin.\n{error}\nRun the game from the folder that holds \"assets\", or pass --base <folder>."))),
     };
@@ -1173,12 +1187,19 @@ fn main() {
                 draw_rectangle(WIDTH / 2.0 - 59.0 + bar as f32 * 12.0, 26.0 - height, 8.0, height, if bar < lit { WHITE } else { Color::new(1.0, 1.0, 1.0, 0.3) });
             }
         }
-        if atlas::SMOOTH.swap(settings.antialiasing, std::sync::atomic::Ordering::Relaxed) != settings.antialiasing {
+        let smoothing = atlas::SMOOTH.swap(settings.antialiasing, std::sync::atomic::Ordering::Relaxed) != settings.antialiasing;
+        if smoothing {
             // the Anti-Aliasing option changed: what is already loaded is loaded again, to look as chosen
             menus.forget();
-            if let Ok(new) = Skin::load(&base) {
-                new.recolor(&settings.note_colors);
-                skin = Some(new);
+        }
+        if smoothing || skins != (settings.note_skin, settings.splash_skin) {
+            skins = (settings.note_skin, settings.splash_skin);
+            match Skin::load(&base, skins) {
+                Ok(new) => {
+                    new.recolor(&settings.note_colors);
+                    skin = Some(new);
+                }
+                Err(error) => eprintln!("Note skin: {error}"),
             }
         }
         if std::mem::take(&mut menus.reload) {
