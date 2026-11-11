@@ -178,7 +178,6 @@ impl Skin {
         }
         let font = std::fs::read(base.join("assets/fonts/vcr.ttf")).ok().and_then(|bytes| load_ttf_font_from_bytes(&bytes).ok());
         let digits = Skin::pictures(&dir, &["num0-pixel", "num1-pixel", "num2-pixel", "num3-pixel", "num4-pixel", "num5-pixel", "num6-pixel", "num7-pixel", "num8-pixel", "num9-pixel"], true);
-        // shortcut: the usual splashes; the Haxe engine coarsens them with a shader on pixel stages.
         let splashes = atlas::Sheet::load(&Skin::splash_file(base, own.filter(|(_, chart)| !chart.splash_skin.is_empty()).map(|(paths, chart)| (paths, chart.splash_skin.as_str())), 0)).ok();
         Ok(Skin { sheet, frames, lanes: Default::default(), font, ratings: Skin::pictures(&dir, &["sick-pixel", "good-pixel", "bad-pixel", "shit-pixel"], true), digits,
             countdown: Skin::pictures(&dir, &["ready-pixel", "set-pixel", "date-pixel"], true), splashes, splash_names: NOTE_NAMES.map(|name| format!("note splash {name} 1")), plain: own.is_some_and(|(_, chart)| chart.no_rgb), note_scale: PIXEL_ZOOM, hold: end * PIXEL_ZOOM, popup_scales: [PIXEL_ZOOM * 0.85, PIXEL_ZOOM, PIXEL_ZOOM] })
@@ -724,8 +723,10 @@ impl Playing {
                 let frames = sheet.animation(&skin.splash_names[lane], &[]);
                 if let Some(&frame) = frames.get(((position - at) * 0.024) as usize) {
                     recolor(skin.colors(lane));
+                    // pixel stages show them as coarse as everything else there
+                    coarse(if self.pixel() { PIXEL_ZOOM } else { 0.0 });
                     sheet.draw(frame, lane_x(settings, true, lane) - frame.size.x / 2.0, strum_y - frame.size.y / 2.0, 1.0, false, Color::new(1.0, 1.0, 1.0, settings.splash_alpha as f32));
-                    recolor(None);
+                    (recolor(None), coarse(0.0));
                 }
             }
         }

@@ -383,6 +383,8 @@ struct Vertex {
     green: [f32; 3],
     blue: [f32; 3],
     recolored: f32,
+    /// Above 0: the picture is shown in squares of this many of its pixels.
+    blocks: f32,
 }
 
 const SHADER: &str = "
@@ -394,12 +396,14 @@ struct Corner {
     @location(3) green: vec3<f32>,
     @location(4) blue: vec3<f32>,
     @location(5) recolored: f32,
+    @location(6) blocks: f32,
 }
 
 @vertex
 fn corner(@location(0) position: vec2<f32>, @location(1) uv: vec2<f32>, @location(2) color: vec4<f32>,
-          @location(3) red: vec3<f32>, @location(4) green: vec3<f32>, @location(5) blue: vec3<f32>, @location(6) recolored: f32) -> Corner {
-    return Corner(vec4<f32>(position, 0.0, 1.0), uv, color, red, green, blue, recolored);
+          @location(3) red: vec3<f32>, @location(4) green: vec3<f32>, @location(5) blue: vec3<f32>, @location(6) recolored: f32,
+          @location(7) blocks: f32) -> Corner {
+    return Corner(vec4<f32>(position, 0.0, 1.0), uv, color, red, green, blue, recolored, blocks);
 }
 
 @group(0) @binding(0) var picture: texture_2d<f32>;
@@ -407,7 +411,9 @@ fn corner(@location(0) position: vec2<f32>, @location(1) uv: vec2<f32>, @locatio
 
 @fragment
 fn pixel(at: Corner) -> @location(0) vec4<f32> {
-    let seen = textureSample(picture, stretch, at.uv);
+    // coarse: every square shows the pixel at its corner
+    let squares = vec2<f32>(textureDimensions(picture)) / max(at.blocks, 1.0);
+    let seen = textureSample(picture, stretch, select(at.uv, floor(at.uv * squares) / squares, at.blocks > 0.0));
     // notes are stored as three masks, each of which takes one of the lane's colours
     let mixed = vec4<f32>(min(seen.r * at.red + seen.g * at.green + seen.b * at.blue, vec3<f32>(1.0)), seen.a);
     return mix(seen, mixed, at.recolored) * at.color;
@@ -481,6 +487,7 @@ struct Context {
     camera: Mat4,
     models: Vec<Mat4>,
     recolor: Option<[Vec3; 3]>,
+    blocks: f32,
     down: HashSet<KeyCode>,
     pressed: HashSet<KeyCode>,
     released: HashSet<KeyCode>,
@@ -609,7 +616,7 @@ pub fn open(conf: Conf) -> Result<(String, Option<String>), String> {
         ],
     });
     let pipeline_layout = device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor { label: None, bind_group_layouts: &[Some(&layout)], ..Default::default() });
-    let attributes = wgpu::vertex_attr_array![0 => Float32x2, 1 => Float32x2, 2 => Float32x4, 3 => Float32x3, 4 => Float32x3, 5 => Float32x3, 6 => Float32];
+    let attributes = wgpu::vertex_attr_array![0 => Float32x2, 1 => Float32x2, 2 => Float32x4, 3 => Float32x3, 4 => Float32x3, 5 => Float32x3, 6 => Float32, 7 => Float32];
     let pipeline = device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
         label: None,
         layout: Some(&pipeline_layout),
@@ -638,7 +645,7 @@ pub fn open(conf: Conf) -> Result<(String, Option<String>), String> {
     let now = Instant::now();
     let mut context = Context {
         event_loop: Some(event_loop), app, window, instance, surface: Some(surface), device, queue, config, format, pipeline, layout, samplers, pictures: 0, white: None, letters: None,
-        vertices: Vec::new(), calls: Vec::new(), buffer: None, background: BLACK, camera: Mat4::IDENTITY, models: Vec::new(), recolor: None,
+        vertices: Vec::new(), calls: Vec::new(), buffer: None, background: BLACK, camera: Mat4::IDENTITY, models: Vec::new(), recolor: None, blocks: 0.0,
         down: HashSet::new(), pressed: HashSet::new(), released: HashSet::new(), last_pressed: None, typed: VecDeque::new(), alt_enter: false, focused: true,
         started: now, frame_began: now, frame_time: 1.0 / 60.0, due: now, open: true,
     };
@@ -704,7 +711,7 @@ impl Context {
         let [red, green, blue] = self.recolor.unwrap_or_default().map(|part| part.to_array());
         let corner = |index: usize| {
             let position = place.transform_point3(corners[index].extend(0.0));
-            Vertex { position: [position.x, position.y], uv: uvs[index].to_array(), color: [color.r, color.g, color.b, color.a], red, green, blue, recolored: self.recolor.is_some() as u8 as f32 }
+            Vertex { position: [position.x, position.y], uv: uvs[index].to_array(), color: [color.r, color.g, color.b, color.a], red, green, blue, recolored: self.recolor.is_some() as u8 as f32, blocks: self.blocks }
         };
         self.vertices.extend([0, 1, 2, 0, 2, 3].map(corner));
         if let Some(call) = self.calls.last_mut() {
@@ -894,7 +901,7 @@ pub fn next_frame(fps: f64) -> bool {
         context.vertices.clear();
         context.calls.clear();
         context.models.clear();
-        (context.recolor, context.last_pressed) = (None, None);
+        (context.recolor, context.blocks, context.last_pressed) = (None, 0.0, None);
 
         // sleeping is coarse: it stops a little short, and the rest is waited out awake
         if let Some(left) = context.due.checked_duration_since(Instant::now()).and_then(|left| left.checked_sub(Duration::from_millis(1))) {
@@ -946,6 +953,11 @@ pub fn pop_model_matrix() {
 }
 
 /// From now on pictures are drawn as masks: their red, green and blue each become one of these colours. None: as they are.
+/// Pictures drawn from now on are shown in squares of `blocks` of their own pixels (0: as they are).
+pub fn coarse(blocks: f32) {
+    with(|context| context.blocks = blocks);
+}
+
 pub fn recolor(colors: Option<[Vec3; 3]>) {
     with(|context| context.recolor = colors);
 }

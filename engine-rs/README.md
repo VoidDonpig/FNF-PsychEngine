@@ -111,14 +111,16 @@ Done:
   looking in the first mod switched on before the game's files; the title screen's four hidden dancers
   (their words typed on it, the jingles, Pessy's achievement); a dark edge closing over the old screen
   before every change of screen, as one uncovers the new; a chart's own note and splash pictures
-  (`arrowSkin`, `splashSkin`) and notes left in the colours they were painted in (`disableNoteRGB`).
+  (`arrowSkin`, `splashSkin`) and notes left in the colours they were painted in (`disableNoteRGB`);
+  sprite sheets described in JSON (Aseprite, TexturePacker) beside the XML and text kinds; note splashes
+  as coarse as the rest on pixel stages.
 
 Not there yet:
 
 - **Play screen**: the events and note types that belong to scripts (Set Property beyond the camera, custom
   ones); what is left of weekend 1 (Nene's
   knife and cheers, the shell flying off the gun, the stage going dark at the shot, rain, light maps, the two
-  rare turns of the fight when the player is nearly out); coarse note splashes on pixel stages; the Haxe
+  rare turns of the fight when the player is nearly out); the Haxe
   fork's Display Lag Correction; the charting mode entries of the pause menu.
 - **Stages**: objects of a stage file listed between two characters are drawn behind all three; `flipY`,
   colour names and the story-mode/freeplay filters of stage objects.
@@ -131,6 +133,5 @@ Not there yet:
   videos; dialogue from a song's `dialogue.json` (the kind scripts start).
 - **Scripts**: Lua (about 225 functions and the callbacks). HScript is Haxe code run against the Haxe
   engine's own classes, so mods that use it cannot run here as they are. Custom shaders.
-- **Files**: Aseprite (JSON) sprite sheets.
 - **Editors**: chart, character, stage, week, menu character, dialogue, dialogue character, note splash.
 - **Other**: gamepads.

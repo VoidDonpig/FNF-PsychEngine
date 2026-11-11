@@ -54,6 +54,33 @@ pub fn parse_packer(txt: &str) -> Vec<(String, Frame)> {
     }).collect()
 }
 
+/// Frames of a sheet described in JSON (what Aseprite and TexturePacker write), each animation's frames in the order of their numbers.
+pub fn parse_json(json: &str) -> Vec<(String, Frame)> {
+    let json: serde_json::Value = serde_json::from_str(json).unwrap_or_default();
+    // the frames are a list with a "filename" each, or a table by file name
+    let listed = json["frames"].as_array().into_iter().flatten().filter_map(|frame| Some((frame["filename"].as_str()?, frame)));
+    let tabled = json["frames"].as_object().into_iter().flatten().map(|(name, frame)| (name.as_str(), frame));
+    let mut frames: Vec<(String, Frame)> = listed.chain(tabled).filter_map(|(name, frame)| {
+        let number = |value: &serde_json::Value| value.as_f64().map(|n| n as f32);
+        let (rect, rotated) = (&frame["frame"], frame["rotated"].as_bool().unwrap_or(false));
+        // a turned frame's width and height are given as they were before turning
+        let (w, h) = (number(&rect["w"])?, number(&rect["h"])?);
+        let source = if rotated { Rect::new(number(&rect["x"])?, number(&rect["y"])?, h, w) } else { Rect::new(number(&rect["x"])?, number(&rect["y"])?, w, h) };
+        let offset = vec2(number(&frame["spriteSourceSize"]["x"]).unwrap_or(0.0), number(&frame["spriteSourceSize"]["y"]).unwrap_or(0.0));
+        let size = vec2(number(&frame["sourceSize"]["w"]).unwrap_or(w), number(&frame["sourceSize"]["h"]).unwrap_or(h));
+        // "walk 10.aseprite": the name is what stands before the file ending
+        let name = [".aseprite", ".ase", ".png"].iter().find_map(|ending| name.strip_suffix(ending)).unwrap_or(name);
+        Some((name.to_owned(), Frame { source, offset, size, rotated }))
+    }).collect();
+    // by name and then by number, so that "walk 10" comes after "walk 9"
+    let parts = |name: &str| {
+        let stem = name.trim_end_matches(|c: char| c.is_ascii_digit());
+        (stem.to_owned(), name[stem.len()..].parse::<u32>().unwrap_or(0))
+    };
+    frames.sort_by_cached_key(|(name, _)| parts(name));
+    frames
+}
+
 /// The Anti-Aliasing option: when off, pictures are loaded to keep their hard edges however they are stretched.
 pub static SMOOTH: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(true);
 
@@ -92,9 +119,15 @@ impl Sheet {
     pub fn load(image: &Path) -> Result<Sheet, String> {
         let read = |path: &Path| std::fs::read(path).map_err(|e| format!("{}: {e}", path.display()));
         let texture = picture(image).ok_or_else(|| format!("{}: not found", image.display()))?;
-        let frames = match read(&image.with_extension("xml")) {
-            Ok(xml) => parse(&String::from_utf8_lossy(&xml)),
-            Err(missing) => parse_packer(&String::from_utf8_lossy(&read(&image.with_extension("txt")).map_err(|_| missing)?)),
+        // the frames are described beside the picture in one of three ways
+        let text = |ending: &str| read(&image.with_extension(ending)).map(|bytes| String::from_utf8_lossy(&bytes).into_owned());
+        let frames = match text("xml") {
+            Ok(xml) => parse(&xml),
+            Err(missing) => match text("json").map(|json| parse_json(&json)) {
+                // (a JSON file beside a picture may be about something else)
+                Ok(frames) if !frames.is_empty() => frames,
+                _ => parse_packer(&text("txt").map_err(|_| missing)?),
+            },
         };
         Ok(Sheet { texture, frames })
     }
@@ -136,6 +169,21 @@ mod tests {
         <SubTexture name="left press0000" x="289" y="395" width="140" height="142" frameX="-3" frameY="-4" frameWidth="146" frameHeight="149"/>
         <SubTexture name="turned0000" x="0" y="0" width="30" height="10" rotated="true"/>
     </TextureAtlas>"#;
+
+    #[test]
+    fn reads_sheets_described_in_json() {
+        // a list, as Aseprite writes it: numbers without leading zeros, and a trimmed frame
+        let frames = parse_json(r#"{"frames": [
+            {"filename": "walk 10.aseprite", "frame": {"x": 20, "y": 0, "w": 8, "h": 9}},
+            {"filename": "walk 2.aseprite", "frame": {"x": 10, "y": 0, "w": 8, "h": 9}, "spriteSourceSize": {"x": 1, "y": 2, "w": 8, "h": 9}, "sourceSize": {"w": 16, "h": 16}},
+            {"filename": "idle 0.aseprite", "frame": {"x": 0, "y": 0, "w": 8, "h": 9}}]}"#);
+        assert_eq!(frames.iter().map(|(name, _)| name.as_str()).collect::<Vec<_>>(), ["idle 0", "walk 2", "walk 10"]);
+        assert_eq!(frames[1].1, Frame { source: Rect::new(10.0, 0.0, 8.0, 9.0), offset: vec2(1.0, 2.0), size: vec2(16.0, 16.0), rotated: false });
+        assert_eq!(animation(&frames, "walk", &[10]).len(), 1);
+        // a table, as TexturePacker writes it; a turned frame lies on its side in the picture
+        let frames = parse_json(r#"{"frames": {"spin0001.png": {"frame": {"x": 0, "y": 0, "w": 30, "h": 10}, "rotated": true}}}"#);
+        assert_eq!(frames, vec![("spin0001".to_owned(), Frame { source: Rect::new(0.0, 0.0, 10.0, 30.0), offset: Vec2::ZERO, size: vec2(30.0, 10.0), rotated: true })]);
+    }
 
     #[test]
     fn reads_frames_with_their_trim() {
