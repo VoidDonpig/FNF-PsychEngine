@@ -586,8 +586,10 @@ impl Playing {
                 self.held_keys.push(key.key);
                 if !self.play.botplay {
                     self.lanes_used[lane] = true;
-                    // judged where the song was when the key went down, not where it is this frame
-                    events.extend(self.play.press(lane, judged - key.age_ms));
+                    // judged where the song was when the key went down, not where it is this frame; and, if asked, where the
+                    // picture on screen was, which is behind the song
+                    let lag = if self.settings.display_lag_correction { display_lag() } else { 0.0 };
+                    events.extend(self.play.press(lane, judged - (key.age_ms + lag) * self.settings.playback_rate));
                 }
             } else if !key.pressed {
                 self.held_keys.retain(|held| *held != key.key);

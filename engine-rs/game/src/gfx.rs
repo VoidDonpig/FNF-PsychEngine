@@ -491,6 +491,9 @@ struct Context {
     started: Instant,
     frame_began: Instant,
     frame_time: f32,
+    /// When the last frame was shown, and how far behind the start of its frame a picture is on screen on average (ms).
+    shown: Instant,
+    display_lag: f64,
     due: Instant,
     open: bool,
     window: Arc<winit::window::Window>,
@@ -643,7 +646,7 @@ pub fn open(conf: Conf) -> Result<(String, Option<String>), String> {
         event_loop: Some(event_loop), app, window, instance, surface: Some(surface), device, queue, config, format, pipeline, adding, layout, samplers, pictures: 0, white: None, letters: None,
         vertices: Vec::new(), calls: Vec::new(), buffer: None, background: BLACK, camera: Mat4::IDENTITY, models: Vec::new(), recolor: None, blocks: 0.0, add: false,
         down: HashSet::new(), pressed: HashSet::new(), released: HashSet::new(), last_pressed: None, typed: VecDeque::new(), alt_enter: false, focused: true, mouse: Mouse::default(),
-        started: now, frame_began: now, frame_time: 1.0 / 60.0, due: now, open: true,
+        started: now, frame_began: now, frame_time: 1.0 / 60.0, shown: now, display_lag: 0.0, due: now, open: true,
     };
     context.white = Some(context.picture(1, 1, &[255; 4]));
     context.fullscreen(conf.fullscreen, false);
@@ -903,6 +906,14 @@ pub fn next_frame(fps: f64) -> bool {
                 let view = frame.texture.create_view(&wgpu::TextureViewDescriptor { format: Some(context.format), ..Default::default() });
                 context.render(&view);
                 context.queue.present(frame);
+                // from the start of the frame until it is shown, and half the time it then stays up; smoothed, and a long one
+                // is a loading stall, not a frame
+                let now = Instant::now();
+                let lag = (now - context.frame_began).as_secs_f64() * 1000.0 + (now - context.shown).as_secs_f64() * 500.0;
+                if lag < 500.0 {
+                    context.display_lag += (lag - context.display_lag) * 0.2;
+                }
+                context.shown = now;
             }
             // the window changed under the surface: fitted again, and this frame is skipped
             Outdated => context.surface.iter().for_each(|surface| surface.configure(&context.device, &context.config)),
@@ -1092,6 +1103,11 @@ pub fn get_time() -> f64 {
 }
 
 /// How long the last frame took, in seconds.
+/// How far behind the start of its frame a picture is on screen, on average, in ms.
+pub fn display_lag() -> f64 {
+    with(|context| context.display_lag)
+}
+
 pub fn get_frame_time() -> f32 {
     with(|context| context.frame_time)
 }

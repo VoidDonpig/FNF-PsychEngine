@@ -98,7 +98,9 @@ Done:
   machine does not have is replaced by one it has. Frames are shown as soon as they are done; the
   Framerate option limits them. Fullscreen is a window without borders over the screen, or, with the
   Exclusive Fullscreen option, the display taken for the game alone.
-- **Input**: on Windows key presses are timed by the raw input thread of `native/psych_input`.
+- **Input**: on Windows key presses are timed by the raw input thread of `native/psych_input`; the Haxe
+  fork's Display Lag Correction (presses judged against the picture on screen, the time frames take to be shown
+  taken off).
 
 - **Since**: rating names and full-combo grades in the score line; the pause menu's Change Difficulty and
   Options; "Sustains as One Note" (off: holds judged sixteenth by sixteenth); arrows dropping in at the start;
@@ -141,8 +143,7 @@ Not there yet:
 
 - **Play screen**: the events and note types that belong to scripts (Set Property beyond the camera, custom
   ones); the rain of weekend 1 is drawn as falling streaks, growing heavier through the song, not with the Haxe
-  engine's shader; the Haxe
-  fork's Display Lag Correction; the charting mode entries of the pause menu.
+  engine's shader; the charting mode entries of the pause menu.
 - **Menus**: the mods menu's buttons (enable, disable, move: here they are keys) and per-mod settings;
   achievements of mods; the note colours' copy and paste buttons (no clipboard here); the key binds' gamepad
   side (no gamepads yet) and debug keys (no editors yet); the Shaders and GPU Caching switches (nothing to switch here); update check.
