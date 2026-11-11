@@ -42,6 +42,8 @@ Done:
   marked for alternative poses or for the girlfriend.
 - **Pixel stages**: notes, holds, ratings, combo digits and countdown in their pixel look and colours,
   the pixel countdown and game over sounds, and the pixel game over character.
+- **Dialogue**: the talks before Senpai, Roses and Thorns in story mode: the text boxes, portraits,
+  typed lines, their sounds and music, and Senpai's end before Thorns.
 - **HUD**: countdown with its sounds, rating and combo pictures, note splashes, hold end caps, time bar,
   miss sounds, the game over scene (fall, music, retry).
 - **Sound**: instrumental and vocals as separate tracks (the player's voice drops out on a miss), song
@@ -81,7 +83,8 @@ Not there yet:
   transitions between screens, loading screen, a mod's own title screen (`gfDanceTitle.json`).
 - **Saved data**: translations. Scores of the Haxe engine are
   not read (it keeps them in its own binary save).
-- **Cutscenes**: dialogue, videos.
+- **Cutscenes**: dialogue from a song's `dialogue.json` (the portrait and speech bubble kind that
+  scripts start), the other weeks' cutscenes, videos.
 - **Scripts**: Lua. HScript is Haxe code run against the Haxe engine's own classes, so mods that use it
   cannot run here as they are.
 - **Editors**: chart, character, stage, week, menu character, dialogue, note splash.

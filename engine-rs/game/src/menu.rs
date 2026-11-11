@@ -82,7 +82,7 @@ fn place(text: &str, bold: bool, size: impl Fn(char) -> Option<(Vec2, Vec2)>) ->
 }
 
 /// Text broken into lines no wider than `width`, at spaces.
-fn wrap(text: &str, width: f32, measure: impl Fn(&str) -> f32) -> Vec<String> {
+pub fn wrap(text: &str, width: f32, measure: impl Fn(&str) -> f32) -> Vec<String> {
     let mut lines = Vec::new();
     for paragraph in text.lines() {
         let mut line = String::new();

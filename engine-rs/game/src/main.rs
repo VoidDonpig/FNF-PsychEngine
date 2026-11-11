@@ -7,6 +7,7 @@
 //! once the song has reached `--when <seconds>`) and quits.
 mod atlas;
 mod audio;
+mod dialogue;
 mod input;
 mod menu;
 mod options;
@@ -242,6 +243,8 @@ struct Playing {
     flash_until: [[f64; 4]; 2],
     /// Last judgement to show, and when it happened.
     judgement: Option<(String, Color, f64)>,
+    /// The talk before the song, while it lasts.
+    cutscene: Option<dialogue::Dialogue>,
     /// When the player last hit a note: the score text swells for a moment.
     last_hit: f64,
     /// For the achievements: the lanes the player pressed, whether the player's character ever went back to its
@@ -269,7 +272,8 @@ struct Playing {
 }
 
 impl Playing {
-    fn open(base: &Path, entry: &SongEntry, settings: &Settings, start_at: f64) -> Result<Playing, String> {
+    /// `story`: played in story mode, where some songs open with a talk.
+    fn open(base: &Path, entry: &SongEntry, settings: &Settings, start_at: f64, story: bool) -> Result<Playing, String> {
         let text = std::fs::read_to_string(&entry.chart).map_err(|e| format!("{}: {e}", entry.chart.display()))?;
         let mut chart = funkin_core::chart::parse(&text).map_err(|e| format!("{}: {e}", entry.chart.display()))?;
         // events shared by all difficulties of the song sit in their own file
@@ -292,13 +296,15 @@ impl Playing {
         let speed = settings.note_speed(chart.speed) as f32;
         // sounds may sit in the stage's own folder
         let directory = scene.as_ref().map_or(String::new(), |scene| scene.directory.clone());
+        let paths = Paths::new(base, &entry.source, &directory);
+        let cutscene = if story && start_at <= 0.0 { dialogue::Dialogue::load(base, &paths, &funkin_core::content::song_path(&entry.title), &chart.stage) } else { None };
         let mut play = Play::new(chart, settings.botplay);
         play.ghost_tapping = settings.ghost_tapping;
         play.timing = settings.timing();
         (play.health_gain, play.health_loss, play.instakill) = (settings.health_gain, settings.health_loss, settings.instakill);
         play.skip_to(start_at);
         Ok(Playing { entry: entry.clone(), play, song, player_voice, scene, waited: 0.0, started: false, paused: None, start_at, position: -lead_in, settings: settings.clone(), held_keys: Vec::new(), flash_until: [[f64::MIN; 4]; 2], judgement: None, last_hit: f64::MIN, lanes_used: [false; 4], idled: false, idle_for: 0.0, sang_for: 0.0,
-            paths: Paths::new(base, &entry.source, &directory), lead_in, counted: i64::MIN, popups: Vec::new(), splashes: Vec::new(), dead: None, next_event: 0, speed, speed_change: None })
+            paths, cutscene, lead_in, counted: i64::MIN, popups: Vec::new(), splashes: Vec::new(), dead: None, next_event: 0, speed, speed_change: None })
     }
 
     /// Whether the stage wants the pixel look for notes and HUD.
@@ -352,6 +358,23 @@ impl Playing {
     fn update(&mut self, keys: &[KeyEvent], skin: &Skin) -> Flow {
         if let Some((since, confirmed)) = self.dead {
             return self.update_dead(since, confirmed);
+        }
+        if let Some(talk) = &mut self.cutscene {
+            let accept = is_key_pressed(KeyCode::Enter) || is_key_pressed(KeyCode::Space);
+            let back = is_key_pressed(KeyCode::Escape) || is_key_pressed(KeyCode::Backspace);
+            let (cues, over) = talk.update(get_frame_time().min(0.1), accept, back);
+            if over {
+                self.cutscene = None;
+            }
+            for cue in cues {
+                match cue {
+                    dialogue::Cue::Sound(name, volume) => self.sound(name, volume, false),
+                    dialogue::Cue::Music(name) => self.sound(name, 0.8, true),
+                    // shortcut: the music stops at once; the Haxe engine fades it out over a second and a half.
+                    dialogue::Cue::Quiet => self.song.stop_sounds(),
+                }
+            }
+            return Flow::Continue;
         }
         if let Some(row) = self.paused {
             let row = (row + is_key_pressed(KeyCode::Down) as usize + 2 * is_key_pressed(KeyCode::Up) as usize) % 3;
@@ -681,6 +704,9 @@ impl Playing {
         }
         skin.text(&format!("{} [{}]", self.entry.title, self.entry.difficulty), 12.0, if settings.downscroll { 24.0 } else { HEIGHT - 12.0 }, 16, WHITE);
 
+        if let Some(talk) = &self.cutscene {
+            talk.draw();
+        }
         if let Some(row) = self.paused {
             set_camera(&Camera2D { target: vec2(WIDTH / 2.0, HEIGHT / 2.0), zoom: vec2(2.0 / WIDTH, 2.0 / HEIGHT), ..Default::default() });
             draw_rectangle(0.0, 0.0, WIDTH, HEIGHT, Color::new(0.0, 0.0, 0.0, 0.6));
@@ -767,7 +793,7 @@ async fn main() {
         // compared as file names are, so that spaces, hyphens and capitals do not matter
         let wanted = funkin_core::content::song_path(&wanted);
         screen = match songs.iter().find(|s| funkin_core::content::song_path(&format!("{} {}", s.title, s.difficulty)).contains(&wanted)) {
-            Some(entry) => Playing::open(&base, entry, &settings, start_at).map_or_else(Screen::Failed, |p| Screen::Playing(Box::new(p))),
+            Some(entry) => Playing::open(&base, entry, &settings, start_at, false).map_or_else(Screen::Failed, |p| Screen::Playing(Box::new(p))),
             None => Screen::Failed(format!("No song matches \"{wanted}\".")),
         };
     }
@@ -778,7 +804,7 @@ async fn main() {
             Some((week, mut list)) => {
                 let entry = &songs[list.remove(0)];
                 story = Some((week, list, 0, 0));
-                Playing::open(&base, entry, &settings, start_at).map_or_else(Screen::Failed, |p| Screen::Playing(Box::new(p)))
+                Playing::open(&base, entry, &settings, start_at, true).map_or_else(Screen::Failed, |p| Screen::Playing(Box::new(p)))
             }
             None => Screen::Failed(format!("No week \"{wanted}\" with a Normal difficulty.")),
         };
@@ -805,7 +831,7 @@ async fn main() {
                     menus.quiet();
                     let entry = &songs[list.remove(0)];
                     story = week.map(|week| (week, list, 0, 0));
-                    Playing::open(&base, entry, &settings, 0.0).map_or_else(Screen::Failed, |p| Screen::Playing(Box::new(p)))
+                    Playing::open(&base, entry, &settings, 0.0, story.is_some()).map_or_else(Screen::Failed, |p| Screen::Playing(Box::new(p)))
                 }
                 Some(Go::Quit) | None => break,
             },
@@ -860,7 +886,7 @@ async fn main() {
                                 save.save(&base);
                                 let next = &songs[rest.remove(0)];
                                 story = Some((week, rest, score + play.score, misses + play.misses));
-                                Playing::open(&base, next, &settings, start_at).map_or_else(Screen::Failed, |p| Screen::Playing(Box::new(p)))
+                                Playing::open(&base, next, &settings, start_at, true).map_or_else(Screen::Failed, |p| Screen::Playing(Box::new(p)))
                             }
                             Some((week, _, score, _)) => {
                                 if playing.settings.keeps_scores() {
@@ -876,7 +902,8 @@ async fn main() {
                             }
                         }
                     }
-                    Flow::Restart => Playing::open(&base, &playing.entry, &settings, 0.0).map_or_else(Screen::Failed, |p| Screen::Playing(Box::new(p))),
+                    // a retry goes straight to the song: the talk was heard
+                    Flow::Restart => Playing::open(&base, &playing.entry, &settings, 0.0, false).map_or_else(Screen::Failed, |p| Screen::Playing(Box::new(p))),
                     Flow::Quit => Screen::Menu(if story.take().is_some() { Page::Story } else { Page::Freeplay }),
                 }
             }
