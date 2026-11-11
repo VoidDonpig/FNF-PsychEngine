@@ -40,6 +40,26 @@ pub enum NoteKind {
     Fight(u8),
 }
 
+impl NoteKind {
+    /// The note type's name as charts and the Haxe engine's scripts have it ("" for a plain note).
+    pub fn name(self) -> String {
+        match self {
+            NoteKind::Normal | NoteKind::GfSing => "",
+            NoteKind::Hurt => "Hurt Note",
+            NoteKind::Alt => "Alt Animation",
+            NoteKind::Hey => "Hey!",
+            NoteKind::NoAnimation => "No Animation",
+            NoteKind::LightCan => "weekend-1-lightcan",
+            NoteKind::KickCan => "weekend-1-kickcan",
+            NoteKind::KneeCan => "weekend-1-kneecan",
+            NoteKind::CockGun => "weekend-1-cockgun",
+            NoteKind::FireGun => "weekend-1-firegun",
+            NoteKind::Fight(index) => return format!("weekend-1-{}", FIGHT_MOVES.get(index as usize).unwrap_or(&"")),
+        }
+        .to_owned()
+    }
+}
+
 /// The moves of the weekend 1 fist fight: note types named "weekend-1-" and one of these.
 pub const FIGHT_MOVES: [&str; 26] = [
     "punchlow", "punchlowblocked", "punchlowdodged", "punchlowspin", "punchhigh", "punchhighblocked", "punchhighdodged", "punchhighspin",

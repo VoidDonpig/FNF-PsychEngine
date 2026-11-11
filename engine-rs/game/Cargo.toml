@@ -23,3 +23,4 @@ glam = "0.27"
 pollster = "0.4"
 bytemuck = "1"
 psych_input = { path = "../../native/psych_input", features = ["std"] }
+mlua = { version = "0.12.2", features = ["lua54", "vendored"] }

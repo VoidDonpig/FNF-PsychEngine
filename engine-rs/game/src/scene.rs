@@ -1370,6 +1370,59 @@ impl Scene {
         [&mut self.opponent, &mut self.player, &mut self.gf][who].as_mut()
     }
 
+    /// A value scripts may read by the Haxe engine's name for it (getProperty): the camera's, and the characters' place
+    /// and opacity. None for one this stage does not know.
+    pub fn property(&self, name: &str) -> Option<f64> {
+        let character = |who: &str| [&self.opponent, &self.player, &self.gf][self::who(who)].as_ref();
+        Some(match name {
+            "defaultCamZoom" => self.default_zoom as f64,
+            "camGame.zoom" | "FlxG.camera.zoom" => self.zoom as f64,
+            "camHUD.zoom" => self.hud_zoom as f64,
+            "cameraSpeed" => self.camera_speed as f64,
+            _ => {
+                let (who, field) = name.split_once('.')?;
+                let character = character(match who { "boyfriend" => "bf", "dad" => "dad", "gf" => "gf", _ => return None })?;
+                match field {
+                    "x" => character.position.x as f64,
+                    "y" => character.position.y as f64,
+                    "alpha" => character.tint.a as f64,
+                    _ => return None,
+                }
+            }
+        })
+    }
+
+    /// Sets what `property` reads; false for a name it does not know.
+    pub fn set_property(&mut self, name: &str, value: f64) -> bool {
+        let value = value as f32;
+        match name {
+            "defaultCamZoom" => self.default_zoom = value,
+            "camGame.zoom" | "FlxG.camera.zoom" => self.zoom = value,
+            "camHUD.zoom" => self.hud_zoom = value,
+            "cameraSpeed" => self.camera_speed = value,
+            _ => {
+                let Some((who, field)) = name.split_once('.') else { return false };
+                let who = match who { "boyfriend" => 1, "dad" => 0, "gf" => 2, _ => return false };
+                let Some(character) = self.singer(who) else { return false };
+                match field {
+                    "x" => character.position.x = value,
+                    "y" => character.position.y = value,
+                    "alpha" => character.tint.a = value,
+                    _ => return false,
+                }
+            }
+        }
+        true
+    }
+
+    /// A character (by a chart event's name for it) goes back to its idle move.
+    pub fn dance(&mut self, who: &str) {
+        if let Some(character) = self.singer(self::who(who)) {
+            character.special = None;
+            character.dance();
+        }
+    }
+
     /// Hud shake offset for this frame, in pixels.
     pub fn hud_shake(&self) -> Vec2 {
         let (strength, left) = self.shake[1];

@@ -143,7 +143,11 @@ Done:
   Darnell in story mode, and its game over (the RETRY sign over Pico, Nene's knife toss); a mod's own settings
   (`data/settings.json`, from the mods menu's settings button; switches, numbers, percentages, lists and keys,
   kept in the settings file by mod); Reset on the options pages puts an option back, and held Left/Right keeps a
-  number going.
+  number going; Lua scripts (`scripts/`, `data/<song>/`, `stages/<stage>.lua`), each in a Lua of its own as in
+  the Haxe engine, with its globals and callbacks (onCreate, onUpdate, onStepHit, onBeatHit, onSectionHit,
+  goodNoteHit, opponentNoteHit, noteMiss, onEvent, onEndSong, onPause, onGameOver, onTimerCompleted...) and a
+  first set of functions (debugPrint, timers, sounds, events, health, character poses, setVar/getVar,
+  getModSetting, and getProperty/setProperty for the camera, health, score and characters).
 
 Not there yet:
 
@@ -154,7 +158,8 @@ Not there yet:
   side (no gamepads yet) and debug keys (no editors yet); the GPU Caching switch (nothing to switch here); update check.
 - **Cutscenes**: videos (so weekend 1's video before Darnell and after 2hot; the scene with the can after the
   first is there); dialogue from a song's `dialogue.json` (the kind scripts start).
-- **Scripts**: Lua (about 225 functions and the callbacks). HScript is Haxe code run against the Haxe
+- **Scripts**: most of Lua's functions (sprites, tweens, texts, notes, shaders, saves, and getProperty/setProperty
+  beyond the camera, health, score and the characters' place); custom events and note types run by scripts. HScript is Haxe code run against the Haxe
   engine's own classes, so mods that use it cannot run here as they are. Custom shaders.
 - **Editors**: chart, character, stage, week, menu character, dialogue, dialogue character, note splash.
 - **Other**: gamepads.
