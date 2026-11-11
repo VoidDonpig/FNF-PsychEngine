@@ -688,6 +688,14 @@ fn stunt_at(stunt: Stunt, t: f32) -> (f32, f32, bool, bool) {
     }
 }
 
+/// 0 to 1, springing about at both ends: Flixel's elasticInOut, as it is written there.
+fn elastic_in_out(part: f32) -> f32 {
+    const PERIOD: f32 = 0.4;
+    let t = part.clamp(0.0, 1.0) - 0.5;
+    let wave = ((t - PERIOD / 4.0) * std::f32::consts::TAU / PERIOD).sin();
+    if part < 0.5 { -0.5 * 2f32.powf(10.0 * t) * wave } else { 2f32.powf(-10.0 * t) * wave * 0.5 + 1.0 }
+}
+
 /// 0 to 1, overshooting a little before it settles.
 fn back_out(part: f32) -> f32 {
     let (part, c1) = (part.clamp(0.0, 1.0) - 1.0, 1.70158);
@@ -932,13 +940,16 @@ impl Character {
         let sways = animations.contains_key("danceLeft") && animations.contains_key("danceRight");
         let current = if sways { "danceRight" } else { "idle" }.to_owned();
         let scale = json["scale"].as_f64().unwrap_or(1.0) as f32;
-        let frame_size = animations.get(&current).or(animations.values().next()).map_or(Vec2::ZERO, |a| a.frames[0].size);
+        // as in Flixel, the first frame of the sheet gives the size the camera and the scaling go by, whatever is shown
+        let first = sheets.first().and_then(|sheet| sheet.frames.first()).map(|(_, frame)| frame.size);
+        let frame_size = first.or_else(|| animations.get(&current).or(animations.values().next()).and_then(|a| a.frames.first()).map(|f| f.size)).unwrap_or(Vec2::ZERO);
         let size = frame_size * scale;
         if json["no_antialiasing"].as_bool().unwrap_or(false) {
             sheets.iter().for_each(|sheet| sheet.texture.set_filter(FilterMode::Nearest)); // pixel art keeps its hard edges
         }
         let rgb = &json["healthbar_colors"];
-        let channel = |i: usize| rgb[i].as_u64().unwrap_or(255) as u8;
+        // without three of them, the Haxe engine's grey
+        let channel = |i: usize| if rgb.as_array().is_some_and(|rgb| rgb.len() >= 3) { rgb[i].as_f64().unwrap_or(161.0).clamp(0.0, 255.0) as u8 } else { 161 };
         let icon_name = json["healthicon"].as_str().unwrap_or("face");
         let icon = texture(paths, &format!("images/icons/icon-{icon_name}.png")).or_else(|| texture(paths, &format!("images/icons/{icon_name}.png"))).or_else(|| texture(paths, "images/icons/icon-face.png"));
         Ok(Character {
@@ -958,7 +969,8 @@ impl Character {
             time: 0.0,
             since_note: 0.0,
             sways,
-            swayed_right: false,
+            // (the first move was to the right: the first beat sways left)
+            swayed_right: sways,
             idle_suffix: String::new(),
             special: None,
             icon,
@@ -1016,7 +1028,10 @@ impl Character {
         } else {
             "idle"
         };
-        if !self.play(&format!("{pose}{}", self.idle_suffix)) {
+        // as the Haxe engine's (not forced): an idle move still playing goes on
+        let suffixed = format!("{pose}{}", self.idle_suffix);
+        let pose = if self.animations.contains_key(&suffixed) { suffixed.as_str() } else { pose };
+        if self.current != pose || self.finished() {
             self.play(pose);
         }
     }
@@ -1068,6 +1083,9 @@ pub struct Scene {
     pub hud_zoom: f32,
     /// The beat bumps start once the opponent has sung a note.
     bumping: bool,
+    /// The tutorial's camera: no bumps, a swing of the zoom at each section (from, to, seconds in, seconds long).
+    tutorial: bool,
+    zoom_swing: Option<(f32, f32, f32, f32)>,
     beat: i64,
     /// The chart section the song is in (the camera bumps as each begins).
     section: usize,
@@ -1168,7 +1186,11 @@ impl Scene {
     /// `story`: the song is played in story mode (a stage file may show some things only then, or only out of it).
     /// `shaders`: what the Haxe engine draws with shaders (the rain) is drawn.
     pub fn load(base: &std::path::Path, source: &str, chart: &Chart, low: bool, shaders: bool, story: bool) -> Result<Scene, String> {
-        let stage = read_json(&Paths::new(base, source, ""), &format!("stages/{}.json", chart.stage))?;
+        // a stage without a file stands as the Haxe engine's stand-in stage does
+        let stage = read_json(&Paths::new(base, source, ""), &format!("stages/{}.json", chart.stage)).unwrap_or_else(|error| {
+            eprintln!("Stage: {error}; the stand-in stage is used");
+            serde_json::json!({ "directory": "", "defaultZoom": 0.9, "boyfriend": [770, 100], "girlfriend": [400, 130], "opponent": [100, 100], "camera_speed": 1 })
+        });
         let paths = Paths::new(base, source, stage["directory"].as_str().unwrap_or(""));
         let mut loaded = Pictures::new();
         // a stage the engine knows has its own backdrop; any other is built from the objects its file lists, if it lists any
@@ -1212,6 +1234,8 @@ impl Scene {
             zoom: default_zoom,
             hud_zoom: 1.0,
             bumping: false,
+            tutorial: funkin_core::content::song_path(&chart.song) == "tutorial",
+            zoom_swing: None,
             beat: i64::MIN,
             section: usize::MAX,
             icon_scale: 1.0,
@@ -1284,7 +1308,8 @@ impl Scene {
             let cues = scene.paths.find(&format!("data/{}/picospeaker.json", funkin_core::content::song_path(&chart.song))).and_then(|path| std::fs::read_to_string(path).ok());
             scene.shots = cues.and_then(|text| funkin_core::chart::parse(&text).ok()).map_or(Vec::new(), |cues| cues.notes.iter().map(|note| (note.time, note.lane)).collect());
             let sheet = scene.paths.find("images/tankmanKilled1.png").filter(|_| chart.stage == "tank" && !low).and_then(|path| Sheet::load(&path).ok());
-            if let Some(sheet) = sheet {
+            // (a sheet without the running frames, as a mod may bring, has no soldiers to show)
+            if let Some(sheet) = sheet.filter(|sheet| !sheet.animation("tankman running", &[]).is_empty()) {
                 let list = scene.shots.iter().filter(|_| chance(0.16)).map(|&(shot_at, lane)| Soldier {
                     shot_at, y: 200.0 + rand::gen_range(50.0, 100.0), right: lane < 2, short: rand::gen_range(50.0, 200.0), speed: rand::gen_range(0.6, 1.0), fall: rand::gen_range(0, 2), step: rand::gen_range(0, 14),
                 }).collect();
@@ -1464,7 +1489,9 @@ impl Scene {
                     self.player.iter_mut().for_each(|c| c.pose("hey", Some(hold)));
                 }
                 if !matches!(only.as_str(), "bf" | "boyfriend" | "0") {
-                    self.gf.iter_mut().for_each(|c| c.pose("cheer", Some(hold)));
+                    // (the tutorial's girlfriend is the opponent)
+                    let her = if self.opponent.as_ref().is_some_and(|c| c.name.starts_with("gf")) { &mut self.opponent } else { &mut self.gf };
+                    her.iter_mut().for_each(|c| c.pose("cheer", Some(hold)));
                 }
             }
             "Set GF Speed" => self.gf_speed = number(&event.value1).map_or(1, |n| (n.round() as i64).max(1)),
@@ -1555,7 +1582,7 @@ impl Scene {
                 Event::Miss { lane, note, combo } => (lane, note, 1, true, combo, None),
                 Event::OpponentHit { lane, note } => (lane, Some(note), 0, false, 0, None),
             };
-            self.bumping |= side == 0;
+            self.bumping |= side == 0 && !self.tutorial;
             let note = note.map(|index| &chart.notes[index]);
             let kind = note.map_or(NoteKind::Normal, |n| n.kind);
             // in the fist fight nobody sings: every note is an exchange of moves, and the opponent's notes count as the player's misses
@@ -1664,6 +1691,12 @@ impl Scene {
             if let Some(character) = character {
                 if held[side].contains(&true) {
                     character.since_note = 0.0; // still singing the hold
+                    // with a pose of its own for holding ("singLEFT-hold"), that one
+                    let holding = (0..4).any(|lane| held[side][lane] && character.current.starts_with(SING[lane]));
+                    if holding && !character.current.contains("-hold") {
+                        let hold = format!("{}-hold", character.current);
+                        character.play(&hold);
+                    }
                 }
                 // a miss pose plays through and gives way at once; a sung one is held a while after the last note
                 let missed = character.current.ends_with("miss");
@@ -1682,6 +1715,13 @@ impl Scene {
                 if left <= 0.0 || (left.is_infinite() && character.finished()) {
                     character.special = None;
                     character.dance();
+                }
+            }
+            // a pose played through goes on with its "-loop" when it has one (as the Haxe engine's characters do)
+            if character.finished() && !character.current.ends_with("-loop") {
+                let next = format!("{}-loop", character.current);
+                if character.animations.contains_key(&next) {
+                    (character.current, character.time) = (next, 0.0);
                 }
             }
         }
@@ -1731,9 +1771,25 @@ impl Scene {
 
         // the camera bumps as each section begins, as in the Haxe engine (not past a zoom of 1.35)
         let section = chart.sections.iter().rposition(|section| section.start <= position).unwrap_or(usize::MAX);
-        if std::mem::replace(&mut self.section, section) != section && section != usize::MAX && self.bumping && self.cam_zooms && self.zoom < 1.35 {
+        let new_section = std::mem::replace(&mut self.section, section) != section && section != usize::MAX;
+        if new_section && self.bumping && self.cam_zooms && self.zoom < 1.35 {
             self.zoom += 0.015;
             self.hud_zoom += 0.03;
+        }
+        // the tutorial's camera instead swings in on the girlfriend and back out to the player, over a bar's quarter
+        if new_section && self.tutorial && self.zoom_swing.is_none() {
+            let to = if chart.sections[section].must_hit { 1.0 } else { 1.3 };
+            if self.zoom != to {
+                self.zoom_swing = Some((self.zoom, to, 0.0, chart.step_ms(position) as f32 * 4.0 / 1000.0));
+            }
+        }
+        if let Some((from, to, t, length)) = &mut self.zoom_swing {
+            *t += dt;
+            let part = (*t / *length).min(1.0);
+            self.zoom = *from + (*to - *from) * elastic_in_out(part);
+            if part >= 1.0 {
+                self.zoom_swing = None;
+            }
         }
         let beat = chart.beat_at(position).floor() as i64;
         let on_beat = beat != self.beat;
@@ -1745,7 +1801,8 @@ impl Scene {
 
             for (who, character) in [&mut self.opponent, &mut self.player, &mut self.gf].into_iter().enumerate() {
                 let Some(character) = character else { continue };
-                let every = if character.sways { 1 } else { 2 } * if who == 2 { self.gf_speed } else { 1 };
+                // (the girlfriend as the opponent, in the tutorial, sways every other beat, as the Haxe engine has her)
+                let every = if character.sways && !(who == 0 && character.name.starts_with("gf")) { 1 } else { 2 } * if who == 2 { self.gf_speed } else { 1 };
                 if !character.singing() && beat % every == 0 {
                     character.dance();
                 }
@@ -1756,7 +1813,10 @@ impl Scene {
         // everything eases back at a fixed rate, whatever the frame rate
         let ease = |rate: f32| 1.0 - (-dt * rate).exp();
         self.camera += (self.target - self.camera) * ease(2.4 * self.camera_speed);
-        self.zoom += (self.default_zoom - self.zoom) * ease(3.125);
+        // (only once the camera zooms with the song, as in the Haxe engine: never in the tutorial)
+        if self.bumping || !self.tutorial {
+            self.zoom += (self.default_zoom - self.zoom) * ease(3.125);
+        }
         self.hud_zoom += (1.0 - self.hud_zoom) * ease(3.125);
         self.icon_scale += (1.0 - self.icon_scale) * ease(9.0);
     }
@@ -2396,7 +2456,9 @@ impl Scene {
                     let falling = &soldiers.falling[soldier.fall];
                     if let Some((at, fell, frame)) = soldier.at(self.position, soldiers.running.len(), falling.len()) {
                         let frames = if fell { falling } else { &soldiers.running };
-                        soldiers.sheet.draw(frames[frame], at.x, at.y, 0.8, soldier.right, WHITE);
+                        if let Some(frame) = frames.get(frame) {
+                            soldiers.sheet.draw(*frame, at.x, at.y, 0.8, soldier.right, WHITE);
+                        }
                     }
                 }
             }
@@ -2458,6 +2520,10 @@ impl Scene {
                 (_, Some((.., Some(alone))), Some(player)) if std::ptr::eq(slot, &self.player) => alone.draw_as("idle", 60.0, player.position + vec2(0.0, 20.0), WHITE),
                 // Pico flickers after the can hits him
                 (_, _, Some(_)) if std::ptr::eq(slot, &self.player) && !self.flicker.is_none_or(pico_shown) => {}
+                // the girlfriend (also as the tutorial's opponent) stands a little further back: she moves at 95% of the camera
+                (_, _, Some(character)) if std::ptr::eq(slot, &self.gf) || (std::ptr::eq(slot, &self.opponent) && character.name.starts_with("gf")) => {
+                    character.draw_as(&character.current, character.time, character.position + scroll * 0.05, character.tint);
+                }
                 (_, _, Some(character)) => character.draw(),
                 _ => {}
             }
@@ -2597,6 +2663,10 @@ mod tests {
         assert!((at(6.4).0.x - 1280.0).abs() < 1e-3 && at(6.2).0.x > 1280.0 - 80.0);
         assert!((at(9.6).0.x - 1200.0).abs() < 1e-3);
         assert!(super::stunt_at(super::Stunt::Darnell, 10.0).3 && !super::stunt_at(super::Stunt::Darnell, 9.9).3);
+        // the tutorial's swing of the zoom: from where it was to where it goes, springing past it on the way
+        let swing = super::elastic_in_out;
+        assert!(swing(0.0).abs() < 0.02 && (swing(1.0) - 1.0).abs() < 0.02 && (swing(0.5) - 0.5).abs() < 1e-3);
+        assert!((0..100).map(|i| swing(i as f32 / 100.0)).any(|part| part > 1.0));
     }
 
     #[test]

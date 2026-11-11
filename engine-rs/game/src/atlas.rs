@@ -20,7 +20,7 @@ pub fn parse(xml: &str) -> Vec<(String, Frame)> {
         let start = tag.find(&format!(" {name}=\""))? + name.len() + 3;
         Some(tag[start..start + tag[start..].find('"')?].to_owned())
     };
-    let mut frames: Vec<(String, Frame)> = xml.split("<SubTexture").skip(1).filter_map(|tag| {
+    let frames: Vec<(String, Frame)> = xml.split("<SubTexture").skip(1).filter_map(|tag| {
         let number = |name| attr(tag, name)?.parse::<f32>().ok();
         let source = Rect::new(number("x")?, number("y")?, number("width")?, number("height")?);
         let rotated = attr(tag, "rotated").is_some_and(|r| r == "true");
@@ -29,13 +29,20 @@ pub fn parse(xml: &str) -> Vec<(String, Frame)> {
         let size = vec2(number("frameWidth").unwrap_or(upright.x), number("frameHeight").unwrap_or(upright.y));
         Some((attr(tag, "name")?.replace("&apos;", "'").replace("&amp;", "&"), Frame { source, offset, size, rotated }))
     }).collect();
-    frames.sort_by(|a, b| a.0.cmp(&b.0));
+    // (kept in the file's order: the first frame gives a character its size, as in Flixel)
     frames
+}
+
+/// What frames are put in order by within an animation: the name, then its number, so that "walk 10" comes after "walk 9".
+fn order(name: &str) -> (&str, u32) {
+    let stem = name.trim_end_matches(|c: char| c.is_ascii_digit());
+    (stem, name[stem.len()..].parse::<u32>().unwrap_or(0))
 }
 
 /// Frames of the animation whose frame names start with `prefix`, or only those numbered in `indices`.
 pub fn animation(frames: &[(String, Frame)], prefix: &str, indices: &[u32]) -> Vec<Frame> {
-    let all: Vec<&(String, Frame)> = frames.iter().filter(|(name, _)| name.starts_with(prefix)).collect();
+    let mut all: Vec<&(String, Frame)> = frames.iter().filter(|(name, _)| name.starts_with(prefix)).collect();
+    all.sort_by(|a, b| order(&a.0).cmp(&order(&b.0)));
     if indices.is_empty() {
         return all.iter().map(|(_, f)| *f).collect();
     }
@@ -57,13 +64,13 @@ pub fn parse_packer(txt: &str) -> Vec<(String, Frame)> {
     }).collect()
 }
 
-/// Frames of a sheet described in JSON (what Aseprite and TexturePacker write), each animation's frames in the order of their numbers.
+/// Frames of a sheet described in JSON (what Aseprite and TexturePacker write), in the file's order.
 pub fn parse_json(json: &str) -> Vec<(String, Frame)> {
     let json: serde_json::Value = serde_json::from_str(json).unwrap_or_default();
     // the frames are a list with a "filename" each, or a table by file name
     let listed = json["frames"].as_array().into_iter().flatten().filter_map(|frame| Some((frame["filename"].as_str()?, frame)));
     let tabled = json["frames"].as_object().into_iter().flatten().map(|(name, frame)| (name.as_str(), frame));
-    let mut frames: Vec<(String, Frame)> = listed.chain(tabled).filter_map(|(name, frame)| {
+    let frames: Vec<(String, Frame)> = listed.chain(tabled).filter_map(|(name, frame)| {
         let number = |value: &serde_json::Value| value.as_f64().map(|n| n as f32);
         let (rect, rotated) = (&frame["frame"], frame["rotated"].as_bool().unwrap_or(false));
         // a turned frame's width and height are given as they were before turning
@@ -75,12 +82,6 @@ pub fn parse_json(json: &str) -> Vec<(String, Frame)> {
         let name = [".aseprite", ".ase", ".png"].iter().find_map(|ending| name.strip_suffix(ending)).unwrap_or(name);
         Some((name.to_owned(), Frame { source, offset, size, rotated }))
     }).collect();
-    // by name and then by number, so that "walk 10" comes after "walk 9"
-    let parts = |name: &str| {
-        let stem = name.trim_end_matches(|c: char| c.is_ascii_digit());
-        (stem.to_owned(), name[stem.len()..].parse::<u32>().unwrap_or(0))
-    };
-    frames.sort_by_cached_key(|(name, _)| parts(name));
     frames
 }
 
@@ -180,7 +181,9 @@ mod tests {
             {"filename": "walk 10.aseprite", "frame": {"x": 20, "y": 0, "w": 8, "h": 9}},
             {"filename": "walk 2.aseprite", "frame": {"x": 10, "y": 0, "w": 8, "h": 9}, "spriteSourceSize": {"x": 1, "y": 2, "w": 8, "h": 9}, "sourceSize": {"w": 16, "h": 16}},
             {"filename": "idle 0.aseprite", "frame": {"x": 0, "y": 0, "w": 8, "h": 9}}]}"#);
-        assert_eq!(frames.iter().map(|(name, _)| name.as_str()).collect::<Vec<_>>(), ["idle 0", "walk 2", "walk 10"]);
+        assert_eq!(frames.iter().map(|(name, _)| name.as_str()).collect::<Vec<_>>(), ["walk 10", "walk 2", "idle 0"]);
+        // an animation plays by number: 2 before 10
+        assert_eq!(animation(&frames, "walk", &[]).iter().map(|f| f.source.x).collect::<Vec<_>>(), [10.0, 20.0]);
         assert_eq!(frames[1].1, Frame { source: Rect::new(10.0, 0.0, 8.0, 9.0), offset: vec2(1.0, 2.0), size: vec2(16.0, 16.0), rotated: false });
         assert_eq!(animation(&frames, "walk", &[10]).len(), 1);
         // a table, as TexturePacker writes it; a turned frame lies on its side in the picture
