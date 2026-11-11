@@ -89,7 +89,7 @@ impl Skin {
 
     /// The pictures named, from a folder; all of them or none (missing pictures only cost their effect).
     fn pictures(dir: &Path, names: &[&str], pixel: bool) -> Vec<Texture2D> {
-        let found: Vec<Texture2D> = names.iter().filter_map(|name| std::fs::read(dir.join(format!("{name}.png"))).ok()).map(|bytes| atlas::texture(&bytes)).collect();
+        let found: Vec<Texture2D> = names.iter().filter_map(|name| atlas::picture(&dir.join(format!("{name}.png")))).collect();
         if pixel {
             found.iter().for_each(|picture| picture.set_filter(FilterMode::Nearest));
         }
@@ -99,7 +99,7 @@ impl Skin {
     fn load(base: &Path) -> Result<Skin, String> {
         let dir = base.join("assets/shared/images/noteSkins");
         let read = |name: &str| std::fs::read(dir.join(name)).map_err(|e| format!("{}: {e}", dir.join(name).display()));
-        let sheet = atlas::texture(&read("NOTE_assets.png")?);
+        let sheet = atlas::picture(&dir.join("NOTE_assets.png")).ok_or(format!("{}: not found", dir.join("NOTE_assets.png").display()))?;
         let frames = atlas::parse(&String::from_utf8_lossy(&read("NOTE_assets.xml")?));
         let font = std::fs::read(base.join("assets/fonts/vcr.ttf")).ok().and_then(|bytes| load_ttf_font_from_bytes(&bytes).ok());
         let images = base.join("assets/shared/images");
@@ -267,6 +267,7 @@ impl Playing {
         play.timing = settings.timing();
         (play.health_gain, play.health_loss, play.instakill) = (settings.health_gain, settings.health_loss, settings.instakill);
         play.skip_to(start_at);
+        atlas::forget_unused();
         Ok(Playing { entry: entry.clone(), play, song, player_voice, scene, waited: 0.0, started: false, paused: None, start_at, position: -lead_in, settings: settings.clone(), held_keys: Vec::new(), flash_until: [[f64::MIN; 4]; 2], judgement: None, last_hit: f64::MIN, lanes_used: [false; 4], idled: false, idle_for: 0.0, sang_for: 0.0,
             paths, cutscene, lead_in, counted: i64::MIN, popups: Vec::new(), splashes: Vec::new(), dead: None, next_event: 0, speed, speed_change: None })
     }

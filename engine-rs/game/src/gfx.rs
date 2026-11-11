@@ -268,6 +268,11 @@ impl Texture2D {
     pub fn set_filter(&self, filter: FilterMode) {
         self.0.filter.set(filter);
     }
+
+    /// No copy of it is held anywhere else.
+    pub fn alone(&self) -> bool {
+        Rc::strong_count(&self.0) == 1
+    }
 }
 
 /// Where a letter of one size sits in its font's sheet of letters, and how it is placed on the line.

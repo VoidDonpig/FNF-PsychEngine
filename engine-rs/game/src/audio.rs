@@ -203,23 +203,48 @@ mod output {
         Ok((samples, reader.ident_hdr.audio_sample_rate))
     }
 
+    /// A decoded file: its samples, its rate, and whether it is a track of a song.
+    type Decoded = (std::path::PathBuf, Arc<Vec<f32>>, u32, bool);
+
+    /// The files decoded so far: sounds for good (they are short, or come back all the time like the menu music), the tracks of a
+    /// song until another song is opened. Playing or trying a song again does not decode it again.
+    static DECODED: Mutex<Vec<Decoded>> = Mutex::new(Vec::new());
+
+    pub(super) fn decoded(path: &Path, track: bool) -> Result<(Arc<Vec<f32>>, u32), String> {
+        if let Some((_, samples, rate, _)) = DECODED.lock().unwrap().iter().find(|kept| kept.0 == path) {
+            return Ok((samples.clone(), *rate));
+        }
+        let (samples, rate) = decode(path)?;
+        let samples = Arc::new(samples);
+        DECODED.lock().unwrap().push((path.to_owned(), samples.clone(), rate, track));
+        Ok((samples, rate))
+    }
+
+    /// The tracks of a song, decoded side by side. Those of the song before are let go of.
+    pub(super) fn tracks_of(tracks: &[&Path]) -> Vec<Result<(Arc<Vec<f32>>, u32), String>> {
+        if !tracks.is_empty() {
+            DECODED.lock().unwrap().retain(|kept| !kept.3 || tracks.contains(&kept.0.as_path()));
+        }
+        std::thread::scope(|scope| {
+            let decoding: Vec<_> = tracks.iter().map(|track| scope.spawn(move || decoded(track, true))).collect();
+            decoding.into_iter().map(|track| track.join().unwrap_or_else(|_| Err("decoding failed".to_owned()))).collect()
+        })
+    }
+
     impl Output {
         pub fn open(tracks: &[&Path], speed: f64) -> Result<Output, String> {
+            let mut decoded = tracks_of(tracks).into_iter();
             // no tracks: an output that only plays sounds, as the menus use it
-            let (first, rate) = match tracks.first() {
-                Some(track) => decode(track)?,
-                None => (Vec::new(), 44100),
-            };
-            let first = Arc::new(first);
+            let (first, rate) = decoded.next().unwrap_or_else(|| Ok((Arc::default(), 44100)))?;
             let mut loaded = vec![first.clone()];
-            for track in tracks.iter().skip(1) {
-                let (samples, track_rate) = decode(track)?;
+            for (track, other) in tracks.iter().skip(1).zip(decoded) {
+                let (samples, track_rate) = other?;
                 if track_rate != rate {
                     // shortcut: tracks of one song share a sample rate in every song seen so far; resample here if one does not.
                     eprintln!("{} has another sample rate than the instrumental, left silent", track.display());
                     loaded.push(Arc::default());
                 } else {
-                    loaded.push(Arc::new(samples));
+                    loaded.push(samples);
                 }
             }
             let volumes: Arc<Vec<AtomicU32>> = Arc::new(loaded.iter().map(|_| AtomicU32::new(1.0f32.to_bits())).collect());
@@ -297,10 +322,9 @@ mod output {
             self.shared.playing.store(true, Ordering::Relaxed);
         }
 
-        // shortcut: the file is read and decoded when the sound is asked for (a few ms for the short ones). Keep decoded sounds around if a hitch shows.
         pub fn play_sound(&self, path: &Path, volume: f32, looped: bool) {
-            match decode(path) {
-                Ok((samples, rate)) => self.sounds.lock().unwrap().push(Voice { samples: Arc::new(samples), step: rate as f64 / self.device_rate, cursor: 0.0, volume, looped }),
+            match decoded(path, false) {
+                Ok((samples, rate)) => self.sounds.lock().unwrap().push(Voice { samples, step: rate as f64 / self.device_rate, cursor: 0.0, volume, looped }),
                 Err(error) => eprintln!("Sound: {error}"),
             }
         }
@@ -340,6 +364,26 @@ mod output {
 
 #[cfg(test)]
 mod tests {
+    #[cfg(feature = "audio")]
+    #[test]
+    fn sounds_are_decoded_once_and_a_songs_tracks_until_another_song() {
+        use super::output::{decoded, tracks_of};
+        use std::sync::Arc;
+        let sounds = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../../assets/shared/sounds");
+        let [scroll, confirm, cancel] = ["scrollMenu.ogg", "confirmMenu.ogg", "cancelMenu.ogg"].map(|name| sounds.join(name));
+        let track = |path: &std::path::Path| tracks_of(&[path]).remove(0).unwrap().0;
+        let sound = decoded(&scroll, false).unwrap().0;
+        let song = track(&confirm);
+        assert!(!song.is_empty() && Arc::ptr_eq(&song, &track(&confirm)), "tried again: not decoded again");
+        // the menus open the output without tracks: the song's stay
+        assert!(tracks_of(&[]).is_empty() && Arc::ptr_eq(&song, &track(&confirm)));
+        // another song, and back: the first one's tracks were let go of, sounds never are
+        track(&cancel);
+        assert!(!Arc::ptr_eq(&song, &track(&confirm)));
+        assert!(Arc::ptr_eq(&sound, &decoded(&scroll, false).unwrap().0));
+        assert!(decoded(&sounds.join("no such sound.ogg"), false).is_err());
+    }
+
     #[test]
     fn a_paused_song_stays_where_it_is_wound_to() {
         let mut song = super::Song::load(&[]);

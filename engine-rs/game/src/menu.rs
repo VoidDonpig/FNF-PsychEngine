@@ -179,14 +179,14 @@ impl Art {
         let base = &self.base;
         self.images.entry(format!("{source}/{name}")).or_insert_with(|| {
             let path = Paths::new(base, source, "").find(&format!("images/{name}.png"))?;
-            Some(crate::atlas::texture(&std::fs::read(path).ok()?))
+            crate::atlas::picture(&path)
         }).clone()
     }
 
     /// A mod's own picture, the "pack.png" in its folder.
     fn pack(&mut self, folder: &str) -> Option<Texture2D> {
         let path = self.base.join("mods").join(folder).join("pack.png");
-        self.images.entry(format!("{folder}/pack.png")).or_insert_with(|| Some(crate::atlas::texture(&std::fs::read(path).ok()?))).clone()
+        self.images.entry(format!("{folder}/pack.png")).or_insert_with(|| crate::atlas::picture(&path)).clone()
     }
 
     fn sheet(&mut self, source: &str, name: &str) -> Option<Rc<Sheet>> {

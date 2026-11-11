@@ -472,7 +472,7 @@ impl Layer {
                     let sheet = Sheet::load(&image).map_err(|e| eprintln!("Stage: {e}")).ok()?;
                     (sheet.texture, std::rc::Rc::new(sheet.frames))
                 }
-                None => (crate::atlas::texture(&std::fs::read(image).ok()?), Default::default()),
+                None => (crate::atlas::picture(&image)?, Default::default()),
             };
             loaded.insert(key, picture);
         }
@@ -561,7 +561,7 @@ fn read_json(paths: &Paths, relative: &str) -> Result<Value, String> {
 }
 
 fn texture(paths: &Paths, relative: &str) -> Option<Texture2D> {
-    Some(crate::atlas::texture(&std::fs::read(paths.find(relative)?).ok()?))
+    crate::atlas::picture(&paths.find(relative)?)
 }
 
 struct Animation {

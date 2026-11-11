@@ -89,7 +89,7 @@ impl Dialogue {
             Some(sheet)
         };
         let picture = |name: &str| {
-            let picture = Texture2D::from_file_with_format(&std::fs::read(paths.find(&format!("images/weeb/{name}.png"))?).ok()?, None);
+            let picture = crate::atlas::picture(&paths.find(&format!("images/weeb/{name}.png"))?)?;
             picture.set_filter(FilterMode::Nearest);
             Some(picture)
         };

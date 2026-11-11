@@ -57,13 +57,29 @@ pub fn parse_packer(txt: &str) -> Vec<(String, Frame)> {
 /// The Anti-Aliasing option: when off, pictures are loaded to keep their hard edges however they are stretched.
 pub static SMOOTH: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(true);
 
-/// A picture from the bytes of its file.
-pub fn texture(bytes: &[u8]) -> Texture2D {
-    let texture = Texture2D::from_file_with_format(bytes, None);
-    if !SMOOTH.load(std::sync::atomic::Ordering::Relaxed) {
-        texture.set_filter(FilterMode::Nearest);
-    }
-    texture
+thread_local! {
+    /// The pictures read so far, by file: a song played again, or tried again, does not read its pictures again.
+    static PICTURES: std::cell::RefCell<std::collections::HashMap<std::path::PathBuf, Texture2D>> = Default::default();
+}
+
+/// The picture in a file. None when there is no such file.
+pub fn picture(path: &Path) -> Option<Texture2D> {
+    let kept = PICTURES.with(|pictures| pictures.borrow().get(path).cloned());
+    let texture = match kept {
+        Some(texture) => texture,
+        None => {
+            let texture = Texture2D::from_file_with_format(&std::fs::read(path).ok()?, None);
+            PICTURES.with(|pictures| pictures.borrow_mut().insert(path.to_owned(), texture.clone()));
+            texture
+        }
+    };
+    texture.set_filter(if SMOOTH.load(std::sync::atomic::Ordering::Relaxed) { FilterMode::Linear } else { FilterMode::Nearest });
+    Some(texture)
+}
+
+/// Lets go of the pictures nothing shows any more. Called when a song has been loaded: what only the song before used goes.
+pub fn forget_unused() {
+    PICTURES.with(|pictures| pictures.borrow_mut().retain(|_, texture| !texture.alone()));
 }
 
 pub struct Sheet {
@@ -75,7 +91,7 @@ impl Sheet {
     /// Loads `image` (a .png) and the .xml beside it.
     pub fn load(image: &Path) -> Result<Sheet, String> {
         let read = |path: &Path| std::fs::read(path).map_err(|e| format!("{}: {e}", path.display()));
-        let texture = texture(&read(image)?);
+        let texture = picture(image).ok_or_else(|| format!("{}: not found", image.display()))?;
         let frames = match read(&image.with_extension("xml")) {
             Ok(xml) => parse(&String::from_utf8_lossy(&xml)),
             Err(missing) => parse_packer(&String::from_utf8_lossy(&read(&image.with_extension("txt")).map_err(|_| missing)?)),
