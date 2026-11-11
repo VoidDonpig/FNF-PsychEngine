@@ -35,7 +35,9 @@ Done:
   get their usual one.
 - **Stage mechanics**: lightning over the haunted house (thunder, scared poses, flash), the window lights
   and the passing train of week 3 (with the girlfriend's hair blowing), the car speeding past the limo,
-  the tank rolling round the hill of week 7.
+  the tank rolling round the hill of week 7. Stage events: Kill Henchmen (the pole sweeping the limo's
+  dancers off, the limo fetching new ones), the mall crowd cheering on Hey!, BG Freaks Expression, Trigger
+  BG Ghouls.
 - **Chart events**: Hey!, Set GF Speed, Add Camera Zoom, Play Animation, Camera Follow Pos, Alt Idle
   Animation, Screen Shake, Change Character, Change Scroll Speed, Play Sound, from the chart and from the
   song's `events.json`. Note types: Hurt Note, Alt Animation, Hey!, GF Sing, No Animation, and sections
@@ -72,8 +74,8 @@ Done:
 Not there yet:
 
 - **Play screen**: the events and note types that belong to one stage or to scripts (Set Property,
-  Philly Glow, the weekend 1 fight notes, custom ones), the rest of what stages do by themselves (the limo's henchmen, the
-  running soldiers of Stress, crowd reactions to events, the speaker and lighting of weekend 1), the weekend 1
+  Philly Glow, the weekend 1 fight notes, custom ones), the rest of what stages do by themselves (the
+  running soldiers of Stress, the spotlight of Dad Battle, the speaker and lighting of weekend 1), the weekend 1
   fight stage, coarse note splashes on pixel stages, characters made of several sheets or of
   Animate atlases, other note and splash skins.
 - **Menus**: the mods menu's mouse buttons, per-mod settings and restart flag, the achievements

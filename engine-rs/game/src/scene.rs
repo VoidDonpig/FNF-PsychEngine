@@ -28,6 +28,8 @@ enum Motion {
     Sway(usize),
     /// Rests on its last frame until the stage plays it through once.
     Once,
+    /// Shows only while the stage plays it through once.
+    Flash,
 }
 
 /// One picture of a stage's backdrop.
@@ -55,7 +57,7 @@ fn layer(image: &'static str, x: f32, y: f32, scroll_x: f32, scroll_y: f32) -> L
 }
 
 /// The backdrop of a stage, back to front. The numbers are those of source/states/stages.
-// shortcut: the running soldiers, the crowds' reactions to events, the limo's henchmen and the weekend 1 lighting are not here yet. What `Own` moves is.
+// shortcut: the running soldiers, the Philly Glow lights and the weekend 1 lighting are not here yet. What `Own` moves is.
 fn backdrop(stage: &str) -> Vec<LayerDef> {
     use Motion::*;
     use Size::*;
@@ -84,11 +86,19 @@ fn backdrop(stage: &str) -> Vec<LayerDef> {
             layer("philly/street", -40.0, 50.0, 1.0, 1.0),
         ],
         "limo" => {
+            // between the dancers' limo and the dancers: what the "Kill Henchmen" event brings (a pole, its lamp, who it leaves behind, what flies off)
+            let gore = |prefix: &'static str, motion: Motion, y: f32| moving(prefix, motion, layer("gore/noooooo", -500.0, y, 0.4, 0.4));
             let mut layers = vec![
                 layer("limo/limoSunset", -120.0, -50.0, 0.1, 0.1),
+                layer("gore/metalPole", -500.0, 220.0, 0.4, 0.4),
                 moving("background limo pink", Loop, layer("limo/bgLimo", -150.0, 480.0, 0.4, 0.4)),
+                gore("Henchmen on rail", Loop, 90.0),
+                gore("henchmen death", Loop, 220.0),
             ];
             layers.extend((0..5).map(|i| moving("bg dancer sketch PINK", Sway(15), layer("limo/limoDancer", 370.0 * i as f32 + 170.0, 80.0, 0.4, 0.4))));
+            layers.push(layer("gore/coldHeartKiller", -680.0, 140.0, 0.4, 0.4));
+            layers.extend(["hench leg spin PINK", "hench arm spin PINK", "hench head spin PINK", "hench leg spin 2 PINK", "hench arm spin 2 PINK", "hench head spin 2 PINK"].map(|prefix| gore(prefix, Flash, 0.0)));
+            layers.extend([0, 1].map(|_| LayerDef { flip: true, ..moving("blood", Flash, layer("gore/stupidBlood", -400.0, -400.0, 0.4, 0.4)) }));
             layers.push(layer("limo/fastCarLol", -12600.0, 160.0, 1.0, 1.0));
             layers.push(moving("Limo stage", Loop, layer("limo/limoDrive", -120.0, 550.0, 1.0, 1.0)));
             layers
@@ -116,7 +126,11 @@ fn backdrop(stage: &str) -> Vec<LayerDef> {
             pixel(sized(Wide(wide), moving("PETALS ALL", Loop, layer("weeb/petals", -200.0, -40.0, 0.85, 0.85)))),
             pixel(sized(Times(6.0), moving("BG girls group", Sway(15), layer("weeb/bgFreaks", -100.0, 190.0, 0.9, 0.9)))),
         ],
-        "schoolEvil" => vec![LayerDef { centered: true, ..pixel(sized(Times(6.0), moving("background 2", Loop, layer("weeb/animatedEvilSchool", 400.0, 200.0, 0.8, 0.9)))) }],
+        "schoolEvil" => vec![
+            LayerDef { centered: true, ..pixel(sized(Times(6.0), moving("background 2", Loop, layer("weeb/animatedEvilSchool", 400.0, 200.0, 0.8, 0.9)))) },
+            // the ghouls of the "Trigger BG Ghouls" event
+            pixel(sized(Times(6.0), moving("BG freaks glitch instance", Flash, layer("weeb/bgGhouls", -100.0, 190.0, 0.9, 0.9)))),
+        ],
         "tank" => vec![
             layer("tankSky", -400.0, -400.0, 0.0, 0.0),
             layer("tankClouds", -400.0, 0.0, 0.1, 0.1),
@@ -150,12 +164,17 @@ fn backdrop(stage: &str) -> Vec<LayerDef> {
     }
 }
 
+/// The pictures of a stage as read from disk, by name and by whether their sheet was read with them.
+type Pictures = HashMap<(&'static str, bool), (Texture2D, std::rc::Rc<Vec<(String, Frame)>>)>;
+
 /// A backdrop picture, loaded.
 struct Layer {
     def: LayerDef,
     texture: Texture2D,
     /// Its animation's frames; empty for a plain picture.
     frames: Vec<Frame>,
+    /// Every frame of its sheet, for changing animation.
+    sheet: std::rc::Rc<Vec<(String, Frame)>>,
     /// Seconds into the animation.
     time: f32,
     /// Sway: on the second half of its frames.
@@ -221,9 +240,27 @@ enum Own {
     /// The colour of the window lights, and the train.
     Philly { light: usize, train: Train },
     /// The car speeding past: its speed (px/s) and the seconds until it is back at its start.
-    Limo { speed: f32, back_in: Option<f32> },
+    /// And the pole that takes the dancers off their limo, which then drives off for new ones at `limo_speed`.
+    Limo { speed: f32, back_in: Option<f32>, kill: Kill, limo_speed: f32 },
+    /// Seconds the crowd at the front keeps cheering.
+    Mall { hey: f32 },
+    /// Whether the girls in the back have turned sour.
+    School { sour: bool },
     /// The tank rolling round behind the ground: where on its circle it is (degrees) and how fast it goes.
     Tank { angle: f32, speed: f32 },
+}
+
+#[derive(Clone, Copy, PartialEq)]
+enum Kill {
+    Wait,
+    /// The pole sweeps along the limo.
+    Sweep,
+    /// The dancers' limo falls back out of sight,
+    Leaving,
+    /// comes back with new dancers,
+    Returning,
+    /// and settles in its place.
+    Settling,
 }
 
 const WINDOW_LIGHTS: [u32; 5] = [0x31A2FD, 0x31FD8C, 0xFB33F5, 0xFD4531, 0xFBA633];
@@ -237,21 +274,34 @@ fn find<'a>(backdrop: &'a mut [Layer], image: &str) -> Option<&'a mut Layer> {
 }
 
 impl Layer {
-    fn load(paths: &Paths, def: LayerDef) -> Option<Layer> {
-        let image = paths.find(&format!("images/{}.png", def.image))?;
-        let (texture, frames) = match def.anim {
-            Some((prefix, _)) => {
-                let sheet = Sheet::load(&image).map_err(|e| eprintln!("Stage: {e}")).ok()?;
-                let frames = sheet.animation(prefix, &[]);
-                (sheet.texture, frames)
-            }
-            None => (Texture2D::from_file_with_format(&std::fs::read(image).ok()?, None), Vec::new()),
-        };
+    /// `loaded` keeps the pictures read so far: layers of one picture share it.
+    fn load(paths: &Paths, def: LayerDef, loaded: &mut Pictures) -> Option<Layer> {
+        let key = (def.image, def.anim.is_some());
+        if !loaded.contains_key(&key) {
+            let image = paths.find(&format!("images/{}.png", def.image))?;
+            let picture = match def.anim {
+                Some(_) => {
+                    let sheet = Sheet::load(&image).map_err(|e| eprintln!("Stage: {e}")).ok()?;
+                    (sheet.texture, std::rc::Rc::new(sheet.frames))
+                }
+                None => (Texture2D::from_file_with_format(&std::fs::read(image).ok()?, None), Default::default()),
+            };
+            loaded.insert(key, picture);
+        }
+        let (texture, sheet) = loaded[&key].clone();
         if def.pixel {
             texture.set_filter(FilterMode::Nearest);
         }
-        let time = if matches!(def.anim, Some((_, Motion::Once))) { 1e9 } else { 0.0 };
-        Some(Layer { def, texture, frames, time, swayed: false, tint: WHITE, angle: 0.0 })
+        let frames = def.anim.map_or(Vec::new(), |(prefix, _)| crate::atlas::animation(&sheet, prefix, &[]));
+        let time = if matches!(def.anim, Some((_, Motion::Once | Motion::Flash))) { 1e9 } else { 0.0 };
+        Some(Layer { def, texture, frames, sheet, time, swayed: false, tint: WHITE, angle: 0.0 })
+    }
+
+    /// Changes to another animation of its sheet, from its start.
+    fn play(&mut self, prefix: &'static str, motion: Motion) {
+        self.frames = crate::atlas::animation(&self.sheet, prefix, &[]);
+        self.def.anim = Some((prefix, motion));
+        self.time = 0.0;
     }
 
     fn beat(&mut self) {
@@ -277,6 +327,8 @@ impl Layer {
                 Some(first + step.min(len - 1))
             }
             Some((_, Motion::Beat | Motion::Once)) => Some(step.min(count - 1)),
+            Some((_, Motion::Flash)) if step >= count => return,
+            Some((_, Motion::Flash)) => Some(step),
             _ => Some(0),
         };
         let size = frame.map_or(self.texture.size(), |f| self.frames[f].size);
@@ -530,7 +582,15 @@ impl Scene {
     pub fn load(base: &std::path::Path, source: &str, chart: &Chart) -> Result<Scene, String> {
         let stage = read_json(&Paths::new(base, source, ""), &format!("stages/{}.json", chart.stage))?;
         let paths = Paths::new(base, source, stage["directory"].as_str().unwrap_or(""));
-        let backdrop = backdrop(&chart.stage).into_iter().filter_map(|def| Layer::load(&paths, def)).collect();
+        let mut loaded = Pictures::new();
+        let mut backdrop: Vec<Layer> = backdrop(&chart.stage).into_iter().filter_map(|def| Layer::load(&paths, def, &mut loaded)).collect();
+        // what only shows when its moment comes
+        for hidden in backdrop.iter_mut().filter(|layer| ["philly/window", "gore/metalPole", "gore/coldHeartKiller"].contains(&layer.def.image) || matches!(layer.def.anim, Some(("Henchmen on rail" | "henchmen death", _)))) {
+            hidden.tint.a = 0.0;
+        }
+        for blood in backdrop.iter_mut().filter(|layer| layer.def.image == "gore/stupidBlood") {
+            blood.angle = -57.5f32.to_radians();
+        }
         let character = |name: &str, spot: &str, is_player: bool| Character::load(&paths, name, pair(&stage[spot]), is_player).map_err(|e| eprintln!("Character {name}: {e}")).ok();
         // an opponent that is the girlfriend (the tutorial) stands in her place, and she is not drawn twice
         let opponent_is_gf = chart.opponent.starts_with("gf");
@@ -564,7 +624,9 @@ impl Scene {
             own: match chart.stage.as_str() {
                 "spooky" => Own::Spooky { struck: 0, wait: 8, since: 1e9 },
                 "philly" => Own::Philly { light: 0, train: Train::new() },
-                "limo" => Own::Limo { speed: 0.0, back_in: None },
+                "limo" => Own::Limo { speed: 0.0, back_in: None, kill: Kill::Wait, limo_speed: 0.0 },
+                "mall" => Own::Mall { hey: 0.0 },
+                "school" => Own::School { sour: false },
                 "tank" => Own::Tank { angle: rand::gen_range(-90.0, 45.0), speed: rand::gen_range(5.0, 7.0) },
                 _ => Own::Nothing,
             },
@@ -574,9 +636,6 @@ impl Scene {
             flashing: true,
             sounds: Vec::new(),
         };
-        if let Some(window) = find(&mut scene.backdrop, "philly/window") {
-            window.tint.a = 0.0; // dark until the first light
-        }
         for event in chart.events.iter().filter(|e| e.name == "Change Character") {
             let (role, spot) = scene.role(&event.value1);
             if !scene.spares.contains_key(&event.value2) {
@@ -613,9 +672,35 @@ impl Scene {
     pub fn event(&mut self, event: &ChartEvent) {
         let number = |value: &str| value.trim().parse::<f32>().ok();
         match event.name.as_str() {
+            "Kill Henchmen" => {
+                if let Own::Limo { kill: kill @ Kill::Wait, .. } = &mut self.own {
+                    *kill = Kill::Sweep;
+                    for layer in self.backdrop.iter_mut() {
+                        match (layer.def.image, layer.def.anim) {
+                            ("gore/metalPole", _) => (layer.def.at.x, layer.tint.a) = (-400.0, 1.0),
+                            ("gore/coldHeartKiller", _) => layer.tint.a = 1.0,
+                            ("gore/noooooo", Some((_, Motion::Loop))) => layer.tint.a = 0.0,
+                            _ => {}
+                        }
+                    }
+                }
+            }
+            "BG Freaks Expression" => {
+                if let Own::School { sour } = &mut self.own {
+                    *sour = !*sour;
+                    let prefix = if *sour { "BG fangirls dissuaded" } else { "BG girls group" };
+                    find(&mut self.backdrop, "weeb/bgFreaks").into_iter().for_each(|girls| girls.play(prefix, Motion::Sway(15)));
+                }
+            }
+            "Trigger BG Ghouls" => find(&mut self.backdrop, "weeb/bgGhouls").into_iter().for_each(|ghouls| ghouls.time = 0.0),
             "Hey!" => {
                 let hold = number(&event.value2).filter(|t| *t > 0.0).unwrap_or(0.6);
                 let only = event.value1.trim().to_lowercase();
+                // the crowd at the front of the mall cheers along, unless the cheer is the player's alone
+                if let (Own::Mall { hey }, false) = (&mut self.own, matches!(only.as_str(), "bf" | "boyfriend" | "0")) {
+                    *hey = hold;
+                    find(&mut self.backdrop, "christmas/bottomBop").into_iter().for_each(|crowd| crowd.play("Bottom Level Boppers HEY!!", Motion::Once));
+                }
                 if !matches!(only.as_str(), "gf" | "girlfriend" | "1") {
                     self.player.iter_mut().for_each(|c| c.pose("hey", Some(hold)));
                 }
@@ -808,7 +893,88 @@ impl Scene {
                 }
                 find(&mut self.backdrop, "philly/train").into_iter().for_each(|picture| picture.def.at.x = train.x);
             }
-            Own::Limo { speed, back_in } => {
+            Own::Mall { hey } => {
+                if *hey > 0.0 {
+                    *hey -= dt;
+                    if *hey <= 0.0 {
+                        find(&mut self.backdrop, "christmas/bottomBop").into_iter().for_each(|crowd| crowd.play("Bottom Level Boppers Idle", Motion::Beat));
+                    }
+                }
+            }
+            Own::School { .. } => {}
+            Own::Limo { speed, back_in, kill, limo_speed } => {
+                let all = |backdrop: &[Layer], image: &str| backdrop.iter().enumerate().filter(|(_, layer)| layer.def.image == image).map(|(index, _)| index).collect::<Vec<_>>();
+                let b = &mut self.backdrop;
+                // corpses on the rail and under it, then the flying parts of the first and of the fourth dancer
+                let (gore, blood, dancers) = (all(b, "gore/noooooo"), all(b, "gore/stupidBlood"), all(b, "limo/limoDancer"));
+                let single = |image: &str| all(b, image).first().copied();
+                if let (Some(pole), Some(lamp), Some(limo), true) = (single("gore/metalPole"), single("gore/coldHeartKiller"), single("limo/bgLimo"), gore.len() == 8 && blood.len() == 2 && dancers.len() == 5) {
+                    match *kill {
+                        Kill::Wait => {}
+                        Kill::Sweep => {
+                            b[pole].def.at.x += 5000.0 * dt;
+                            let x = b[pole].def.at.x - 180.0;
+                            (b[lamp].def.at.x, b[gore[0]].def.at.x, b[gore[1]].def.at.x) = (x, x - 50.0, x + 35.0);
+                            for (place, &dancer) in dancers.iter().enumerate() {
+                                let at = b[dancer].def.at;
+                                if at.x >= SCREEN.x * 1.5 || x <= 370.0 * place as f32 + 170.0 {
+                                    continue;
+                                }
+                                match place {
+                                    0 | 3 => {
+                                        if place == 0 {
+                                            sound("dancerdeath", 0.5);
+                                        }
+                                        // a leg, an arm and the head fly off, and blood
+                                        for (part, shift) in [vec2(200.0, 0.0), vec2(160.0, 200.0), vec2(0.0, 50.0)].into_iter().enumerate() {
+                                            let flying = &mut b[gore[2 + place + part]];
+                                            (flying.def.at, flying.time) = (at + shift, 0.0);
+                                        }
+                                        let splash = &mut b[blood[place / 3]];
+                                        (splash.def.at, splash.time) = (at + vec2(-110.0, 20.0), 0.0);
+                                    }
+                                    // the second stays on the rail, the third under it
+                                    1 | 2 => b[gore[place - 1]].tint.a = 1.0,
+                                    _ => {}
+                                }
+                                b[dancer].def.at.x += SCREEN.x * 2.0;
+                            }
+                            if b[pole].def.at.x > SCREEN.x * 2.0 {
+                                for gone in [pole, lamp, gore[0], gore[1]] {
+                                    (b[gone].tint.a, b[gone].def.at.x) = (0.0, -500.0);
+                                }
+                                (*limo_speed, *kill) = (800.0, Kill::Leaving);
+                            }
+                        }
+                        Kill::Leaving => {
+                            *limo_speed -= 4000.0 * dt;
+                            b[limo].def.at.x -= *limo_speed * dt;
+                            if b[limo].def.at.x > SCREEN.x * 1.5 {
+                                (*limo_speed, *kill) = (3000.0, Kill::Returning);
+                            }
+                        }
+                        Kill::Returning | Kill::Settling => {
+                            let x = &mut b[limo].def.at.x;
+                            if *kill == Kill::Returning {
+                                *limo_speed = (*limo_speed - 2000.0 * dt).max(1000.0);
+                                *x -= *limo_speed * dt;
+                                if *x < -275.0 {
+                                    *kill = Kill::Settling;
+                                }
+                            } else {
+                                *x = -150.0 + (*x + 150.0) * (-dt * 9.0).exp();
+                                if x.round() == -150.0 {
+                                    (*x, *kill) = (-150.0, Kill::Wait);
+                                }
+                            }
+                            // the new dancers ride in on it
+                            let limo_x = *x;
+                            for (place, &dancer) in dancers.iter().enumerate() {
+                                b[dancer].def.at.x = 370.0 * place as f32 + 320.0 + limo_x;
+                            }
+                        }
+                    }
+                }
                 let Some(car) = find(&mut self.backdrop, "limo/fastCarLol") else { return };
                 car.def.at.x += *speed * dt;
                 match back_in {
