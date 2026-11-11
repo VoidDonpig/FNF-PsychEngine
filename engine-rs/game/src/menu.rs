@@ -1112,7 +1112,9 @@ impl Menus {
         }
         let selected = listed[self.achievement];
         draw_rectangle(0.0, 570.0, WIDTH, HEIGHT - 570.0, Color::new(0.0, 0.0, 0.0, 0.6));
-        let centred = |text: &str, top: f32, size: u16| drop(label(skin, text, (WIDTH - measure_text(text, skin.font.as_ref(), size, 1.0).width) / 2.0, top, size, WHITE, false));
+        let centred = |text: &str, top: f32, size: u16| {
+            label(skin, text, (WIDTH - measure_text(text, skin.font.as_ref(), size, 1.0).width) / 2.0, top, size, WHITE, false);
+        };
         centred(if save.unlocked(selected.id) { selected.name } else { "???" }, 580.0, 32);
         centred(selected.text, 618.0, 24);
         if save.unlocked(selected.id) {

@@ -42,7 +42,6 @@ pub const RED: Color = Color::new(0.90, 0.16, 0.22, 1.0);
 pub const GREEN: Color = Color::new(0.0, 0.89, 0.19, 1.0);
 pub const YELLOW: Color = Color::new(0.99, 0.98, 0.0, 1.0);
 pub const ORANGE: Color = Color::new(1.0, 0.63, 0.0, 1.0);
-pub const PINK: Color = Color::new(1.0, 0.43, 0.76, 1.0);
 
 /// Hue, saturation and lightness of a colour, each 0 to 1.
 pub fn rgb_to_hsl(color: Color) -> (f32, f32, f32) {
@@ -183,7 +182,10 @@ impl Image {
         let info = reader.next_frame(&mut raw).map_err(|error| error.to_string())?;
         let pixels = info.width as usize * info.height as usize;
         let bytes: Vec<u8> = match info.color_type {
-            png::ColorType::Rgba => raw[..pixels * 4].to_vec(),
+            png::ColorType::Rgba => {
+                raw.truncate(pixels * 4);
+                raw
+            }
             png::ColorType::Rgb => raw[..pixels * 3].chunks(3).flat_map(|p| [p[0], p[1], p[2], 255]).collect(),
             png::ColorType::GrayscaleAlpha => raw[..pixels * 2].chunks(2).flat_map(|p| [p[0], p[0], p[0], p[1]]).collect(),
             png::ColorType::Grayscale => raw[..pixels].iter().flat_map(|&p| [p, p, p, 255]).collect(),
@@ -343,9 +345,6 @@ impl Default for TextParams<'_> {
 
 pub struct TextDimensions {
     pub width: f32,
-    pub height: f32,
-    /// How far above the baseline the tallest letter reaches.
-    pub offset_y: f32,
 }
 
 #[derive(Clone, Default)]
@@ -408,6 +407,24 @@ fn pixel(at: Corner) -> @location(0) vec4<f32> {
     return mix(seen, mixed, at.recolored) * at.color;
 }";
 
+/// Where a picture of size `whole` drawn at (x, y) lands: its four corners clockwise from the top left, and the part of the
+/// picture (0 to 1) that goes to each.
+fn placed(whole: Vec2, x: f32, y: f32, params: &DrawTextureParams) -> ([Vec2; 4], [Vec2; 4]) {
+    let source = params.source.unwrap_or(Rect::new(0.0, 0.0, whole.x, whole.y));
+    let size = params.dest_size.unwrap_or(vec2(source.w, source.h));
+    let middle = vec2(x, y) + size / 2.0;
+    let turn = Vec2::from_angle(params.rotation);
+    let corners = [vec2(x, y), vec2(x + size.x, y), vec2(x + size.x, y + size.y), vec2(x, y + size.y)].map(|corner| middle + turn.rotate(corner - middle));
+    let (mut left, mut right, mut top, mut bottom) = (source.x / whole.x, (source.x + source.w) / whole.x, source.y / whole.y, (source.y + source.h) / whole.y);
+    if params.flip_x {
+        (left, right) = (right, left);
+    }
+    if params.flip_y {
+        (top, bottom) = (bottom, top);
+    }
+    (corners, [vec2(left, top), vec2(right, top), vec2(right, bottom), vec2(left, bottom)])
+}
+
 /// Consecutive things drawn from one picture, up to vertex `end`.
 struct Call {
     group: wgpu::BindGroup,
@@ -438,7 +455,9 @@ struct Context {
     event_loop: Option<winit::event_loop::EventLoop<()>>,
     app: App,
     window: Arc<winit::window::Window>,
-    surface: wgpu::Surface<'static>,
+    instance: wgpu::Instance,
+    /// None when it was lost and could not be made again yet.
+    surface: Option<wgpu::Surface<'static>>,
     device: wgpu::Device,
     queue: wgpu::Queue,
     config: wgpu::SurfaceConfiguration,
@@ -516,32 +535,42 @@ pub fn open(conf: Conf) -> Result<(String, Option<String>), String> {
         "OpenGL" => Some(wgpu::Backends::GL),
         _ => None,
     };
-    let connect = |backends: wgpu::Backends| -> Result<(wgpu::Surface<'static>, wgpu::Adapter), String> {
+    // `software`: also when it is the processor that would draw, which every Windows offers for DirectX 12 and which is far too slow
+    let connect = |backends: wgpu::Backends, software: bool| -> Result<(wgpu::Instance, wgpu::Surface<'static>, wgpu::Adapter), String> {
         let mut descriptor = wgpu::InstanceDescriptor::new_with_display_handle(Box::new(event_loop.owned_display_handle()));
         descriptor.backends = backends;
         let instance = wgpu::Instance::new(descriptor);
         let surface = instance.create_surface(window.clone()).map_err(|error| error.to_string())?;
         let options = wgpu::RequestAdapterOptions { power_preference: wgpu::PowerPreference::HighPerformance, compatible_surface: Some(&surface), ..Default::default() };
         let adapter = pollster::block_on(instance.request_adapter(&options)).map_err(|error| error.to_string())?;
-        Ok((surface, adapter))
-    };
-    let mut note = None;
-    let (surface, adapter) = match wanted.map(connect) {
-        Some(Ok(found)) => found,
-        other => {
-            if let Some(Err(why)) = other {
-                note = Some(format!("{} is not available here ({why}): drawing with what is", conf.api));
-            }
-            connect(wgpu::Backends::all())?
+        if !software && adapter.get_info().device_type == wgpu::DeviceType::Cpu {
+            return Err("no graphics card draws with it, only the processor".to_owned());
         }
+        Ok((instance, surface, adapter))
     };
+    // the API asked for on a graphics card; else any API on a graphics card; else drawn by the processor
+    let (all, mut found, mut why) = (wgpu::Backends::all(), None, None);
+    for (backends, software) in [(wanted.unwrap_or(all), false), (all, false), (wanted.unwrap_or(all), true), (all, true)] {
+        match connect(backends, software) {
+            Ok(connected) => {
+                found = Some(connected);
+                break;
+            }
+            Err(error) => drop(why.get_or_insert(error)),
+        }
+    }
+    let Some((instance, surface, adapter)) = found else { return Err(why.unwrap_or_default()) };
+    let note = why.filter(|_| wanted.is_some()).map(|why| format!("{} could not be used as asked ({why})", conf.api));
     let device = wgpu::DeviceDescriptor { required_limits: adapter.limits(), ..Default::default() };
     let (device, queue) = pollster::block_on(adapter.request_device(&device)).map_err(|error| error.to_string())?;
 
     let size = window.inner_size();
     let able = surface.get_capabilities(&adapter);
     // colours go to the screen as the pictures have them: a surface that would convert them is written to as if it did not
-    let surface_format = *able.formats.iter().find(|format| !format.is_srgb()).or(able.formats.first()).ok_or("the window cannot be drawn to")?;
+    // (eight bits a colour where there is such a format, which is also what a screenshot is read back as)
+    let plain = [wgpu::TextureFormat::Bgra8Unorm, wgpu::TextureFormat::Rgba8Unorm];
+    let formats = || able.formats.iter();
+    let surface_format = *formats().find(|format| plain.contains(format)).or(formats().find(|format| plain.contains(&format.remove_srgb_suffix()))).or(formats().next()).ok_or("the window cannot be drawn to")?;
     let format = surface_format.remove_srgb_suffix();
     let config = wgpu::SurfaceConfiguration {
         usage: wgpu::TextureUsages::RENDER_ATTACHMENT,
@@ -598,7 +627,7 @@ pub fn open(conf: Conf) -> Result<(String, Option<String>), String> {
     let info = adapter.get_info();
     let now = Instant::now();
     let mut context = Context {
-        event_loop: Some(event_loop), app, window, surface, device, queue, config, format, pipeline, layout, samplers, pictures: 0, white: None, letters: None,
+        event_loop: Some(event_loop), app, window, instance, surface: Some(surface), device, queue, config, format, pipeline, layout, samplers, pictures: 0, white: None, letters: None,
         vertices: Vec::new(), calls: Vec::new(), buffer: None, background: BLACK, camera: Mat4::IDENTITY, models: Vec::new(), recolor: None,
         down: HashSet::new(), pressed: HashSet::new(), released: HashSet::new(), last_pressed: None, typed: VecDeque::new(),
         started: now, frame_began: now, frame_time: 1.0 / 60.0, due: now, open: true,
@@ -644,8 +673,7 @@ impl Context {
         };
         let groups = [group(&self.samplers[0]), group(&self.samplers[1])];
         self.pictures += 1;
-        let filter = if crate::atlas::SMOOTH.load(std::sync::atomic::Ordering::Relaxed) { FilterMode::Linear } else { FilterMode::Nearest };
-        Texture2D(Rc::new(Picture { texture, width, height, groups, filter: Cell::new(filter), id: self.pictures }))
+        Texture2D(Rc::new(Picture { texture, width, height, groups, filter: Cell::new(FilterMode::Linear), id: self.pictures }))
     }
 
     /// Puts pixels into a part of a picture.
@@ -653,10 +681,6 @@ impl Context {
         let place = wgpu::TexelCopyTextureInfo { texture, mip_level: 0, origin: wgpu::Origin3d { x, y, z: 0 }, aspect: wgpu::TextureAspect::All };
         let rows = wgpu::TexelCopyBufferLayout { offset: 0, bytes_per_row: Some(width * 4), rows_per_image: Some(height) };
         self.queue.write_texture(place, pixels, rows, wgpu::Extent3d { width, height, depth_or_array_layers: 1 });
-    }
-
-    fn size(&self) -> Vec2 {
-        vec2(self.config.width as f32, self.config.height as f32)
     }
 
     /// A four-cornered piece of a picture: corners clockwise from the top left, with the part of the picture (0 to 1) at each.
@@ -679,27 +703,15 @@ impl Context {
     }
 
     fn texture(&mut self, picture: &Texture2D, x: f32, y: f32, color: Color, params: &DrawTextureParams) {
-        let whole = picture.size();
-        let source = params.source.unwrap_or(Rect::new(0.0, 0.0, whole.x, whole.y));
-        let size = params.dest_size.unwrap_or(vec2(source.w, source.h));
-        let middle = vec2(x, y) + size / 2.0;
-        let turn = Vec2::from_angle(params.rotation);
-        let corners = [vec2(x, y), vec2(x + size.x, y), vec2(x + size.x, y + size.y), vec2(x, y + size.y)].map(|corner| middle + turn.rotate(corner - middle));
-        let (mut left, mut right, mut top, mut bottom) = (source.x / whole.x, (source.x + source.w) / whole.x, source.y / whole.y, (source.y + source.h) / whole.y);
-        if params.flip_x {
-            (left, right) = (right, left);
-        }
-        if params.flip_y {
-            (top, bottom) = (bottom, top);
-        }
-        self.quad(picture, corners, [vec2(left, top), vec2(right, top), vec2(right, bottom), vec2(left, bottom)], color);
+        let (corners, uvs) = placed(picture.size(), x, y, params);
+        self.quad(picture, corners, uvs, color);
     }
 
-    /// Draws the text with its baseline at (x, y), or only measures it.
-    fn text(&mut self, text: &str, x: f32, y: f32, params: &TextParams, draw: bool) -> TextDimensions {
-        let Some(font) = params.font.or(self.letters.as_ref()).cloned() else { return TextDimensions { width: 0.0, height: 0.0, offset_y: 0.0 } };
+    /// Draws the text with its baseline at (x, y), or only measures it. Returns how wide it is.
+    fn text(&mut self, text: &str, x: f32, y: f32, params: &TextParams, draw: bool) -> f32 {
+        let Some(font) = params.font.or(self.letters.as_ref()).cloned() else { return 0.0 };
         let scale = params.font_scale;
-        let (mut pen, mut lowest, mut highest) = (0.0f32, f32::MAX, f32::MIN);
+        let mut pen = 0.0;
         for letter in text.chars() {
             let glyph = font.glyph(letter, params.font_size, self);
             let (width, height) = (glyph.source.w * scale, glyph.source.h * scale);
@@ -708,13 +720,9 @@ impl Context {
                 let from = DrawTextureParams { dest_size: Some(vec2(width, height)), source: Some(glyph.source), ..Default::default() };
                 self.texture(&font.0.sheet, x + pen + glyph.left * scale, top, params.color, &from);
             }
-            (lowest, highest) = (lowest.min(glyph.bottom * scale), highest.max(height + glyph.bottom * scale));
             pen += glyph.advance * scale;
         }
-        if text.is_empty() {
-            (lowest, highest) = (0.0, 0.0);
-        }
-        TextDimensions { width: pen, height: highest - lowest, offset_y: highest }
+        pen
     }
 
     /// Sends the frame so far to the graphics card, to be drawn into `target`.
@@ -804,23 +812,28 @@ impl Context {
                 WindowEvent::CloseRequested => self.open = false,
                 WindowEvent::Resized(size) if size.width > 0 && size.height > 0 => {
                     (self.config.width, self.config.height) = (size.width, size.height);
-                    self.surface.configure(&self.device, &self.config);
+                    if let Some(surface) = &self.surface {
+                        surface.configure(&self.device, &self.config);
+                    }
                 }
                 // keys let go of while another window was in front are not heard of
                 WindowEvent::Focused(false) => self.down.clear(),
-                WindowEvent::KeyboardInput { event, .. } => {
+                WindowEvent::KeyboardInput { event, is_synthetic, .. } => {
                     let code = match event.physical_key {
                         winit::keyboard::PhysicalKey::Code(code) => key(code),
                         _ => None,
                     };
-                    if event.state == ElementState::Pressed {
+                    // winit also reports the keys that are down when the window comes to the front: held, but not pressed now
+                    if event.state == ElementState::Pressed && !is_synthetic {
                         self.typed.extend(event.text.iter().flat_map(|text| text.chars()));
                     }
                     match (code, event.state) {
                         (Some(code), ElementState::Pressed) if !event.repeat => {
                             self.down.insert(code);
-                            self.pressed.insert(code);
-                            self.last_pressed = Some(code);
+                            if !is_synthetic {
+                                self.pressed.insert(code);
+                                self.last_pressed = Some(code);
+                            }
                         }
                         (Some(code), ElementState::Released) => {
                             self.down.remove(&code);
@@ -840,14 +853,25 @@ impl Context {
 pub fn next_frame(fps: f64) -> bool {
     with(|context| {
         use wgpu::CurrentSurfaceTexture::*;
-        match context.surface.get_current_texture() {
+        match context.surface.as_ref().map_or(Lost, wgpu::Surface::get_current_texture) {
             Success(frame) | Suboptimal(frame) => {
                 let view = frame.texture.create_view(&wgpu::TextureViewDescriptor { format: Some(context.format), ..Default::default() });
                 context.render(&view);
                 context.queue.present(frame);
             }
             // the window changed under the surface: fitted again, and this frame is skipped
-            Outdated | Lost => context.surface.configure(&context.device, &context.config),
+            Outdated => context.surface.iter().for_each(|surface| surface.configure(&context.device, &context.config)),
+            // the surface is gone (the graphics driver started over, say): a new one, once the old one is out of the window's way
+            Lost => {
+                context.surface = None;
+                match context.instance.create_surface(context.window.clone()) {
+                    Ok(surface) => {
+                        surface.configure(&context.device, &context.config);
+                        context.surface = Some(surface);
+                    }
+                    Err(error) => eprintln!("The window cannot be drawn to: {error}"),
+                }
+            }
             _ => {}
         }
         context.vertices.clear();
@@ -893,7 +917,9 @@ pub fn push_model_matrix(model: Mat4) {
 }
 
 pub fn pop_model_matrix() {
-    with(|context| drop(context.models.pop()));
+    with(|context| {
+        context.models.pop();
+    });
 }
 
 /// From now on pictures are drawn as masks: their red, green and blue each become one of these colours. None: as they are.
@@ -931,7 +957,7 @@ pub fn draw_text_ex(text: &str, x: f32, y: f32, params: TextParams) {
 }
 
 pub fn measure_text(text: &str, font: Option<&Font>, font_size: u16, font_scale: f32) -> TextDimensions {
-    with(|context| context.text(text, 0.0, 0.0, &TextParams { font, font_size, font_scale, color: WHITE }, false))
+    TextDimensions { width: with(|context| context.text(text, 0.0, 0.0, &TextParams { font, font_size, font_scale, color: WHITE }, false)) }
 }
 
 pub fn is_key_down(key: KeyCode) -> bool {
@@ -968,14 +994,6 @@ pub fn get_frame_time() -> f32 {
 
 pub fn get_fps() -> i32 {
     (1.0 / get_frame_time()) as i32
-}
-
-pub fn screen_width() -> f32 {
-    with(|context| context.size().x)
-}
-
-pub fn screen_height() -> f32 {
-    with(|context| context.size().y)
 }
 
 /// `exclusive`: the display is taken for the game alone, instead of covered by a window without borders.
@@ -1021,6 +1039,21 @@ mod tests {
         assert!((0..200).map(|_| rand::gen_range(-1.0f32, 1.0)).all(|roll| (-1.0..1.0).contains(&roll)));
         rand::srand(7);
         assert_eq!((0..200).map(|_| rand::gen_range(0, 3)).collect::<Vec<i32>>(), rolls);
+    }
+
+    #[test]
+    fn a_picture_lands_where_asked_stretched_cut_flipped_and_turned() {
+        let whole = vec2(100.0, 50.0);
+        // as it is: its own size, all of it
+        let (corners, uvs) = placed(whole, 10.0, 20.0, &DrawTextureParams::default());
+        assert_eq!((corners, uvs), ([vec2(10.0, 20.0), vec2(110.0, 20.0), vec2(110.0, 70.0), vec2(10.0, 70.0)], [vec2(0.0, 0.0), vec2(1.0, 0.0), vec2(1.0, 1.0), vec2(0.0, 1.0)]));
+        // a part of it, stretched and mirrored: the part's right edge is drawn on the left
+        let part = DrawTextureParams { source: Some(Rect::new(50.0, 0.0, 25.0, 25.0)), dest_size: Some(vec2(4.0, 2.0)), flip_x: true, ..Default::default() };
+        let (corners, uvs) = placed(whole, 10.0, 20.0, &part);
+        assert_eq!((corners[2], uvs[0], uvs[2]), (vec2(14.0, 22.0), vec2(0.75, 0.0), vec2(0.5, 0.5)));
+        // a quarter turn clockwise about its middle (12, 21): the top left corner ends up at the top right
+        let (corners, _) = placed(whole, 10.0, 20.0, &DrawTextureParams { rotation: std::f32::consts::FRAC_PI_2, ..part });
+        assert!(corners[0].distance(vec2(13.0, 19.0)) < 1e-4 && corners[1].distance(vec2(13.0, 23.0)) < 1e-4, "{corners:?}");
     }
 
     #[test]
