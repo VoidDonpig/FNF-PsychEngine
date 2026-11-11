@@ -113,7 +113,9 @@ Done:
   before every change of screen, as one uncovers the new; a chart's own note and splash pictures
   (`arrowSkin`, `splashSkin`) and notes left in the colours they were painted in (`disableNoteRGB`);
   sprite sheets described in JSON (Aseprite, TexturePacker) beside the XML and text kinds; note splashes
-  as coarse as the rest on pixel stages; the title screen's colours turned with Left and Right.
+  as coarse as the rest on pixel stages; the title screen's colours turned with Left and Right; languages
+  (`data/<language>.lang` of the game and of mods: the words the Haxe engine translates, and the pictures
+  and sounds a language brings in place of the usual ones), chosen at the bottom of the options.
 
 Not there yet:
 
@@ -127,7 +129,7 @@ Not there yet:
 - **Menus**: the mods menu's
   mouse buttons and per-mod settings; achievements of mods; the options menu's look (it is a plain list)
   and its Shaders and GPU Caching switches (nothing to switch here); the screen for adjusting delay and
-  placing the rating by dragging; Discord presence; update check; languages; the mouse anywhere.
+  placing the rating by dragging; Discord presence; update check; the mouse anywhere.
 - **Saved data**: scores of the Haxe engine are not read (it keeps them in its own binary save).
 - **Cutscenes**: week 2's Monster, week 5's Winter Horrorland and Eggnog, week 7's three, weekend 1's;
   videos; dialogue from a song's `dialogue.json` (the kind scripts start).

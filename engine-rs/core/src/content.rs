@@ -35,8 +35,8 @@ impl Paths {
         }
         // mods that say they run globally lend their files to every song
         roots.extend(mods(base).into_iter().filter(|(name, on)| *on && name != source && runs_globally(base, name)).map(|(name, _)| base.join("mods").join(name)));
-        // "secrets" holds the title screen's hidden dancers
-        roots.extend([base.join("mods"), assets.join("shared"), assets.join("base_game/shared"), assets.join("secrets")]);
+        // "secrets" holds the title screen's hidden dancers, "translations" what other languages bring
+        roots.extend([base.join("mods"), assets.join("shared"), assets.join("base_game/shared"), assets.join("secrets"), assets.join("translations/shared")]);
         if !directory.is_empty() {
             roots.extend([assets.join(directory), assets.join("base_game").join(directory)]);
         }
@@ -44,9 +44,39 @@ impl Paths {
     }
 
     /// First existing file for a path such as "images/characters/BOYFRIEND.png".
+    /// The file of this name, from the first folder that has it; the chosen language's own file in its place, when it has one.
     pub fn find(&self, relative: &str) -> Option<PathBuf> {
-        self.roots.iter().map(|root| root.join(relative)).find(|path| path.is_file())
+        let within = |relative: &str| self.roots.iter().map(|root| root.join(relative)).find(|path| path.is_file());
+        crate::lang::file(relative).and_then(|own| within(&own)).or_else(|| within(relative))
     }
+
+    /// Every file of this name, the one `find` gives last.
+    pub fn find_all(&self, relative: &str) -> Vec<PathBuf> {
+        self.roots.iter().rev().map(|root| root.join(relative)).filter(|path| path.is_file()).collect()
+    }
+
+    /// The folders looked in, the first to be asked first.
+    pub fn roots(&self) -> &[PathBuf] {
+        &self.roots
+    }
+}
+
+/// The languages there are files for under `roots` (`data/<file>.lang`), as (file, name), in the order of their names.
+pub fn languages(roots: &[PathBuf]) -> Vec<(String, String)> {
+    let mut found = vec![(crate::lang::ENGLISH.0.to_owned(), crate::lang::ENGLISH.1.to_owned())];
+    for path in roots.iter().flat_map(|root| sorted(&root.join("data"))).filter(|path| path.extension().is_some_and(|ending| ending == "lang")) {
+        let Some(file) = path.file_stem().and_then(|file| file.to_str()) else { continue };
+        // a file without a name of its own leaves the naming to another file of that language
+        let text = std::fs::read_to_string(&path).unwrap_or_default();
+        let name = crate::lang::name_of(&text).unwrap_or(file).to_owned();
+        match found.iter_mut().find(|(known, _)| known == file) {
+            Some((known, shown)) if shown == known => *shown = name,
+            Some(_) => {}
+            None => found.push((file.to_owned(), name)),
+        }
+    }
+    found.sort_by_key(|(_, name)| name.to_lowercase());
+    found
 }
 
 /// Folder and file name a song title maps to.
@@ -200,6 +230,21 @@ fn sorted(dir: &Path) -> Vec<PathBuf> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn languages_are_listed_by_name_with_the_games_own() {
+        let dir = std::env::temp_dir().join(format!("funkin_core_languages_{}", std::process::id()));
+        let (game, of_a_mod) = (dir.join("shared"), dir.join("mod"));
+        for (folder, file, text) in [(&game, "pt-BR.lang", "Português (Brasil)\nbotplay: \"Automático\"\n"), (&of_a_mod, "pt-BR.lang", "botplay: \"Robô\"\n"), (&of_a_mod, "de.lang", "Deutsch\n")] {
+            std::fs::create_dir_all(folder.join("data")).unwrap();
+            std::fs::write(folder.join("data").join(file), text).unwrap();
+        }
+        let found = languages(&[of_a_mod, game, dir.join("missing")]);
+        let _ = std::fs::remove_dir_all(&dir);
+        // the mod's file has no name of its own: the game's file of that language names it
+        let names: Vec<(&str, &str)> = found.iter().map(|(file, name)| (file.as_str(), name.as_str())).collect();
+        assert_eq!(names, [("de", "Deutsch"), ("en-US", "English (US)"), ("pt-BR", "Português (Brasil)")]);
+    }
 
     #[test]
     fn song_paths() {

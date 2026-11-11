@@ -265,7 +265,7 @@ impl Dialogue {
             draw_texture_ex(hand, 1042.0, 590.0, tint, DrawTextureParams { dest_size: Some(hand.size() * ZOOM), ..Default::default() });
         }
         if talk.ending.is_none() {
-            let hint = "Press BACK to Skip";
+            let hint = &funkin_core::lang::phrase("dialogue_skip", "Press BACK to Skip");
             draw_text(hint, WIDTH - 20.0 - measure_text(hint, None, 16, 1.0).width, HEIGHT - 16.0, 16.0, WHITE);
         }
     }

@@ -3,6 +3,7 @@ use crate::controls::{pressed, Ui, NAMES};
 use crate::settings::{hex, Kind, Settings, LANE_COLORS, OPTIONS, PAGES, PIXEL_LANE_COLORS};
 use crate::{DIRECTIONS, HEIGHT};
 use crate::gfx::*;
+use funkin_core::lang::phrase;
 
 #[derive(Default)]
 pub struct OptionsMenu {
@@ -66,8 +67,10 @@ impl OptionsMenu {
 
     /// Runs and draws one frame. `text` writes a line with its baseline at (x, y). Returns true when the player leaves the options.
     /// `note` draws a lane's note (of pixel stages or not) centred on (x, y).
-    pub fn run(&mut self, settings: &mut Settings, text: &dyn Fn(&str, f32, f32, u16, Color), note: &dyn Fn(usize, bool, f32, f32), raw_input: bool, bindable: &[KeyCode]) -> bool {
-        let title = self.page.map_or("Options".to_owned(), |page| format!("Options - {}", PAGES[page]));
+    /// `languages`: the languages there are, as (file, name).
+    pub fn run(&mut self, settings: &mut Settings, text: &dyn Fn(&str, f32, f32, u16, Color), note: &dyn Fn(usize, bool, f32, f32), raw_input: bool, bindable: &[KeyCode], languages: &[(String, String)]) -> bool {
+        let named = |page: usize| phrase(&format!("options_{}", PAGES[page]), PAGES[page]);
+        let title = self.page.map_or("Options".to_owned(), |page| format!("Options - {}", named(page)));
         text(&title, 40.0, 60.0, 36, WHITE);
         let line = |index: usize, selected: usize, content: &str, y: f32| {
             text(&format!("{}{content}", if index == selected { "> " } else { "  " }), 40.0, y, 24, if index == selected { YELLOW } else { WHITE });
@@ -77,12 +80,21 @@ impl OptionsMenu {
 
         let Some(page) = self.page else {
             text("Up/Down: choose   Enter: open   Esc: save and back", 40.0, 96.0, 18, GRAY);
-            self.row = (self.row + step(PAGES.len())) % PAGES.len();
-            for (index, name) in PAGES.iter().enumerate() {
-                line(index, self.row, name, 150.0 + index as f32 * 30.0);
+            // the pages, and below them the language: it is chosen in place
+            self.row = (self.row + step(PAGES.len() + 1)) % (PAGES.len() + 1);
+            for index in 0..PAGES.len() {
+                line(index, self.row, &named(index), 150.0 + index as f32 * 30.0);
             }
-            if pressed(Ui::Accept) {
-                (self.page, self.row) = (Some(self.row), 0);
+            let spoken = languages.iter().position(|(file, _)| *file == settings.language).unwrap_or(0);
+            let language = languages.get(spoken).map_or(settings.language.as_str(), |(_, name)| name);
+            line(PAGES.len(), self.row, &format!("{}: {language}", phrase("options_language", "Language")), 160.0 + PAGES.len() as f32 * 30.0);
+            let turn = pressed(Ui::Right) as usize + pressed(Ui::Left) as usize * (languages.len().max(1) - 1);
+            if self.row < PAGES.len() {
+                if pressed(Ui::Accept) {
+                    (self.page, self.row) = (Some(self.row), 0);
+                }
+            } else if let Some((file, _)) = languages.get((spoken + turn + pressed(Ui::Accept) as usize) % languages.len().max(1)) {
+                settings.language = file.clone();
             }
             return back;
         };
@@ -195,11 +207,15 @@ impl OptionsMenu {
         let options: Vec<_> = OPTIONS.iter().filter(|option| option.page == page).collect();
         self.row = (self.row + step(options.len())) % options.len();
         for (index, option) in options.iter().enumerate() {
-            line(index, self.row, &format!("{}: {}", option.name, shown(&option.kind, settings)), 150.0 + index as f32 * 30.0);
+            let value = shown(&option.kind, settings);
+            // a choice among names may have its names translated too
+            let value = if matches!(option.kind, Kind::Choice(..)) { phrase(&format!("setting_{}-{value}", option.name), &value) } else { value };
+            line(index, self.row, &format!("{}: {value}", phrase(&format!("setting_{}", option.name), option.name)), 150.0 + index as f32 * 30.0);
         }
         let selected = options[self.row];
         // long explanations run on to further lines (the letters are all 11 wide)
-        let about = crate::menu::wrap(selected.about, 1200.0, |text| text.len() as f32 * 11.0);
+        let about = phrase(&format!("description_{}", selected.name), selected.about);
+        let about = crate::menu::wrap(&about, 1200.0, |text| text.chars().count() as f32 * 11.0);
         for (line, words) in about.iter().enumerate() {
             text(words, 40.0, HEIGHT - 40.0 - (about.len() - 1 - line) as f32 * 22.0, 18, GRAY);
         }

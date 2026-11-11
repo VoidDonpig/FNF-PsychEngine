@@ -5,6 +5,7 @@ use crate::{Skin, HEIGHT, WIDTH};
 use funkin_core::content::{mods as find_mods, save_mods, song_path, Paths, SongEntry, Week};
 use funkin_core::achievements::{LIST as ACHIEVEMENTS, ROADKILL};
 use funkin_core::save::Save;
+use funkin_core::lang::{phrase, phrase_with};
 use funkin_core::title::{typed, Title};
 use crate::controls::Ui;
 use crate::gfx::*;
@@ -577,11 +578,12 @@ impl Menus {
         let fade = (since * 2.5).min(1.0);
         // long names are squeezed to fit
         let squeeze = if shown.chars().count() > 18 { 0.8 } else { 1.0 };
-        let what = if week == Reset::Achievement { "Reset Achievement:" } else { "Reset the score of" };
-        for (line, y, squeeze) in [(what, 180.0, 1.0), (shown.as_str(), 270.0, squeeze)] {
+        let what = if week == Reset::Achievement { phrase("reset_achievement", "Reset Achievement:") } else { phrase("reset_score", "Reset the score of") };
+        for (line, y, squeeze) in [(what.as_str(), 180.0, 1.0), (shown.as_str(), 270.0, squeeze)] {
             self.write(skin, line, true, (WIDTH - self.width(skin, line, true) * squeeze) / 2.0, y, squeeze, fade);
         }
         for (word, shift, chosen, color) in [("Yes", -200.0, yes, RED), ("No", 200.0, !yes, WHITE)] {
+            let word = &phrase(word, word);
             let x = (WIDTH - self.width(skin, word, true)) / 2.0 + shift;
             self.write_in(skin, word, true, x, 420.0, 1.0, Color { a: if chosen { 1.0 } else { 0.6 }, ..color });
         }
@@ -963,8 +965,8 @@ impl Menus {
         }
         let best = save.week(&week.file, difficulty) as f64;
         self.shown.0 = if (best - self.shown.0).abs() < 10.0 { best } else { best + (self.shown.0 - best) * (-dt as f64 * 30.0).exp() };
-        label(skin, &format!("WEEK SCORE: {}", self.shown.0 as i64), 10.0, 10.0, 32, WHITE, false);
-        label(skin, &week.story_name.to_uppercase(), WIDTH - 10.0, 10.0, 32, white(0.7), true);
+        label(skin, &phrase_with("week_score", "WEEK SCORE: {1}", &[&(self.shown.0 as i64).to_string()]), 10.0, 10.0, 32, WHITE, false);
+        label(skin, &phrase(&format!("storyname_{}", week.file), &week.story_name).to_uppercase(), WIDTH - 10.0, 10.0, 32, white(0.7), true);
 
         match since {
             Some(t) if t >= 1.0 => playlist().map_or(Go::Stay, |list| Go::Play(list, Some(shown[self.week]))),
@@ -1049,7 +1051,11 @@ impl Menus {
         let wide = |text: &str, size: u16| measure_text(text, skin.font.as_ref(), size, 1.0).width;
         if let Some(song) = self.audio.as_ref().filter(|_| self.preview) {
             // the song player takes the place of the personal best
-            let title = format!("PLAYING: {}{}", entry.title, if self.player.paused { " (PAUSED)" } else { "" });
+            let title = if self.player.paused {
+                phrase_with("musicplayer_paused", "PLAYING: {1} (PAUSED)", &[&entry.title])
+            } else {
+                phrase_with("musicplayer_playing", "PLAYING: {1}", &[&entry.title])
+            };
             let left = WIDTH - 6.0 - wide(&title, 32).max(300.0);
             let dark = Color::new(0.0, 0.0, 0.0, 0.6);
             draw_rectangle(left - 6.0, 0.0, WIDTH - left + 6.0, 100.0, dark);
@@ -1069,21 +1075,22 @@ impl Menus {
         let best = save.song(&entry.title, &entry.difficulty);
         self.shown.0 = if (best.0 as f64 - self.shown.0).abs() <= 10.0 { best.0 as f64 } else { best.0 as f64 + (self.shown.0 - best.0 as f64) * (-dt as f64 * 24.0).exp() };
         self.shown.1 = if (best.1 - self.shown.1).abs() <= 0.0001 { best.1 } else { best.1 + (self.shown.1 - best.1) * (-dt as f64 * 12.0).exp() };
-        let score = format!("PERSONAL BEST: {} ({:.2}%)", self.shown.0 as i64, (self.shown.1 * 10000.0).floor() / 100.0);
+        let score = phrase_with("personal_best", "PERSONAL BEST: {1} ({2}%)", &[&(self.shown.0 as i64).to_string(), &format!("{:.2}", (self.shown.1 * 10000.0).floor() / 100.0)]);
         if !self.preview {
             let left = WIDTH - 6.0 - wide(&score, 32);
             draw_rectangle(left - 6.0, 0.0, WIDTH - left + 6.0, 66.0, Color::new(0.0, 0.0, 0.0, 0.6));
             label(skin, &score, left, 5.0, 32, WHITE, false);
-            let name = entry.difficulty.to_uppercase();
+            let name = phrase(&format!("difficulty_{}", entry.difficulty), &entry.difficulty).to_uppercase();
             let name = if row.entries.len() > 1 { format!("< {name} >") } else { name };
             label(skin, &name, (left - 6.0 + WIDTH) / 2.0 - wide(&name, 24) / 2.0, 41.0, 24, WHITE, false);
         }
         draw_rectangle(0.0, HEIGHT - 26.0, WIDTH, 26.0, Color::new(0.0, 0.0, 0.0, 0.6));
         let tip = if self.preview {
-            "Press SPACE to Pause / Press ESCAPE to Exit / Press R to Reset the Song / LEFT, RIGHT: wind / UP, DOWN: speed"
+            phrase("musicplayer_tip", "Press SPACE to Pause / Press ESCAPE to Exit / Press R to Reset the Song / LEFT, RIGHT: wind / UP, DOWN: speed")
         } else {
-            "Press SPACE to listen to the Song / Press CTRL to open the Gameplay Changers Menu / Press R to Reset your Score and Accuracy."
+            phrase("freeplay_tip", "Press SPACE to listen to the Song / Press CTRL to open the Gameplay Changers Menu / Press R to Reset your Score and Accuracy.")
         };
+        let tip = tip.as_str();
         label(skin, tip, (WIDTH - wide(tip, 16)) / 2.0, HEIGHT - 22.0, 16, WHITE, false);
 
         if self.preview {
@@ -1185,9 +1192,9 @@ impl Menus {
         if let Some(picture) = self.badge(id, true) {
             draw_texture_ex(&picture, x + 15.0, y + 15.0, WHITE, DrawTextureParams { dest_size: Some(vec2(100.0, 100.0)), ..Default::default() });
         }
-        label(skin, achievement.name, x + 130.0, y + 35.0, 16, WHITE, false);
+        label(skin, &phrase(&format!("achievement_{id}"), achievement.name), x + 130.0, y + 35.0, 16, WHITE, false);
         let measure = |text: &str| measure_text(text, skin.font.as_ref(), 16, 1.0).width;
-        for (row, line) in wrap(achievement.text, 270.0, measure).iter().enumerate() {
+        for (row, line) in wrap(&phrase(&format!("description_{id}"), achievement.text), 270.0, measure).iter().enumerate() {
             label(skin, line, x + 130.0, y + 65.0 + row as f32 * 18.0, 16, WHITE, false);
         }
     }
@@ -1224,10 +1231,11 @@ impl Menus {
         let centred = |text: &str, top: f32, size: u16| {
             label(skin, text, (WIDTH - measure_text(text, skin.font.as_ref(), size, 1.0).width) / 2.0, top, size, WHITE, false);
         };
-        centred(if save.unlocked(selected.id) { selected.name } else { "???" }, 580.0, 32);
+        let (name, text) = (phrase(&format!("achievement_{}", selected.id), selected.name), phrase(&format!("description_{}", selected.id), selected.text));
+        centred(if save.unlocked(selected.id) { &name } else { "???" }, 580.0, 32);
         // one that is counted up to says how far it is
         let counted = Some(save.counted(selected.id)).filter(|count| selected.id == ROADKILL.0 && *count < ROADKILL.1);
-        centred(&counted.map_or(selected.text.to_owned(), |count| format!("{} ({count} / {})", selected.text, ROADKILL.1)), 618.0, 24);
+        centred(&counted.map_or(text.clone(), |count| format!("{text} ({count} / {})", ROADKILL.1)), 618.0, 24);
         if save.unlocked(selected.id) {
             label(skin, "R: reset", WIDTH - 10.0, 690.0, 16, GRAY, true);
             if pressed(&Ui::Reset) {
@@ -1324,8 +1332,8 @@ impl Menus {
         if self.mods.is_empty() {
             self.backdrop(vec3(0.4, 0.353, 1.0), dt);
             draw_rectangle(40.0, 40.0, 340.0, 440.0, panel);
-            label(skin, "No Mods found.", 55.0, 55.0, 16, WHITE, false);
-            for (row, line) in ["NO MODS INSTALLED", "PRESS BACK TO EXIT OR INSTALL A MOD"].iter().enumerate() {
+            label(skin, &phrase("no_mods_found", "No Mods found."), 55.0, 55.0, 16, WHITE, false);
+            for (row, line) in phrase("no_mods_installed", "NO MODS INSTALLED\nPRESS BACK TO EXIT OR INSTALL A MOD").lines().enumerate() {
                 label(skin, line, 400.0 + (860.0 - measure_text(line, skin.font.as_ref(), 32, 1.0).width) / 2.0, 320.0 + row as f32 * 40.0, 32, WHITE, false);
             }
             return if pressed(&BACK) { Go::Page(Page::Main) } else { Go::Stay };

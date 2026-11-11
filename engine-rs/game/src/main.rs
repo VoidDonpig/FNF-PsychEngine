@@ -22,6 +22,7 @@ mod settings;
 use funkin_core::content::{songs as find_songs, weeks as find_weeks, Paths, SongEntry};
 use funkin_core::achievements::{earned, Run, ROADKILL};
 use funkin_core::save::Save;
+use funkin_core::lang::{phrase, phrase_with};
 use menu::{Go, Menus, Page};
 use funkin_core::chart::{Chart, NoteKind};
 use funkin_core::play::{Event, NoteState, Play, Rating};
@@ -776,12 +777,20 @@ impl Playing {
         }
 
         // "Sick! (95.12%) - FC", as the Haxe engine puts it
-        let rating = self.play.accuracy().map_or("?".to_owned(), |a| format!("{} ({}%) - {}", funkin_core::play::rating_name(a), (a * 10000.0).floor() / 100.0, self.play.full_combo()));
+        let rating = self.play.accuracy().map_or("?".to_owned(), |a| {
+            let (name, combo) = (funkin_core::play::rating_name(a), self.play.full_combo());
+            format!("{} ({}%) - {}", phrase(&format!("rating_{name}"), name), (a * 10000.0).floor() / 100.0, phrase(combo, combo))
+        });
         if hud {
             // the score swells a little on every hit and settles within a fifth of a second
             let swell = if settings.score_zoom { 1.0 + 0.075 * (1.0 - (position - self.last_hit) / 200.0).clamp(0.0, 1.0) } else { 1.0 };
             // the same letters drawn larger, not letters of another size: those would have to be made mid-song, which garbles the text for a frame
-            let line = if settings.instakill { format!("Score: {} | Rating: {rating}", self.play.score) } else { format!("Score: {} | Misses: {} | Rating: {rating}", self.play.score, self.play.misses) };
+            let (score, misses) = (self.play.score.to_string(), self.play.misses.to_string());
+            let line = if settings.instakill {
+                phrase_with("score_text_instakill", "Score: {1} | Rating: {2}", &[&score, &rating])
+            } else {
+                phrase_with("score_text", "Score: {1} | Misses: {2} | Rating: {3}", &[&score, &misses, &rating])
+            };
             let x = (WIDTH - measure_text(&line, skin.font.as_ref(), 20, 1.0).width * swell as f32) / 2.0;
             for (shift, color) in [(2.0, BLACK), (0.0, WHITE)] {
                 draw_text_ex(&line, x + shift, bar_y + 52.0 + shift, TextParams { font: skin.font.as_ref(), font_size: 20, font_scale: swell as f32, color, ..Default::default() });
@@ -795,9 +804,9 @@ impl Playing {
             }
         }
         if self.play.botplay {
-            skin.centered("BOTPLAY", if settings.downscroll { HEIGHT - 190.0 } else { 190.0 }, 32, WHITE);
+            skin.centered(&phrase("Botplay", "Botplay").to_uppercase(), if settings.downscroll { HEIGHT - 190.0 } else { 190.0 }, 32, WHITE);
         }
-        skin.text(&format!("{} [{}]", self.entry.title, self.entry.difficulty), 12.0, if settings.downscroll { 24.0 } else { HEIGHT - 12.0 }, 16, WHITE);
+        skin.text(&format!("{} [{}]", self.entry.title, difficulty_name(&self.entry.difficulty)), 12.0, if settings.downscroll { 24.0 } else { HEIGHT - 12.0 }, 16, WHITE);
 
         if let Some(talk) = &self.cutscene {
             talk.draw();
@@ -806,15 +815,32 @@ impl Playing {
             set_camera(&Camera2D { target: vec2(WIDTH / 2.0, HEIGHT / 2.0), zoom: vec2(2.0 / WIDTH, 2.0 / HEIGHT), ..Default::default() });
             draw_rectangle(0.0, 0.0, WIDTH, HEIGHT, Color::new(0.0, 0.0, 0.0, 0.6));
             skin.centered("PAUSED", 220.0, 48, WHITE);
-            let (items, row): (Vec<&str>, usize) = match self.choosing {
-                Some(pick) => (self.difficulties.iter().map(String::as_str).chain(["BACK"]).collect(), pick),
-                None => (self.pause_items(), row),
+            let (items, row): (Vec<String>, usize) = match self.choosing {
+                Some(pick) => (self.difficulties.iter().map(|name| difficulty_name(name)).chain([phrase("pause_back", "BACK")]).collect(), pick),
+                None => (self.pause_items().iter().map(|item| phrase(&format!("pause_{item}"), item)).collect(), row),
             };
             for (index, label) in items.iter().enumerate() {
                 skin.centered(label, 320.0 + index as f32 * 50.0, 32, if index == row { YELLOW } else { WHITE });
             }
         }
     }
+}
+
+/// A difficulty as the player's language calls it.
+fn difficulty_name(name: &str) -> String {
+    phrase(&format!("difficulty_{name}"), name)
+}
+
+/// Where the menus look for files: in the first mod switched on, then where every song looks.
+fn menu_paths(base: &Path) -> Paths {
+    let top = funkin_core::content::mods(base).into_iter().find(|(_, on)| *on).map_or(String::new(), |(name, _)| name);
+    Paths::new(base, &top, "")
+}
+
+/// The words of the language chosen in the options, from its files in the game and the mods.
+fn speak(base: &Path, language: &str) {
+    let files: Vec<String> = menu_paths(base).find_all(&format!("data/{language}.lang")).iter().filter_map(|file| std::fs::read_to_string(file).ok()).collect();
+    funkin_core::lang::choose(funkin_core::lang::Phrases::parse(files.iter().map(String::as_str)));
 }
 
 /// What the play screen wants next.
@@ -929,6 +955,10 @@ fn main() {
     let mut weeks = find_weeks(&base);
     let mut songs = find_songs(&weeks);
     let mut save = Save::load(&base);
+    // the words of the language chosen, before anything is written or any picture found
+    let found_languages = |base: &Path| funkin_core::content::languages(menu_paths(base).roots());
+    let (mut languages, mut spoken) = (found_languages(&base), settings.language.clone());
+    speak(&base, &spoken);
     let mut menus = Menus::new(&base);
     // story mode: the week being played, the songs still to come, and the score and the misses so far
     let mut story: Option<(usize, Vec<usize>, i64, u32)> = None;
@@ -1055,7 +1085,7 @@ fn main() {
                         skin.note(lane, x, y);
                     }
                 };
-                let left = menu.run(&mut settings, &plain, &note, keyboard.raw, &bindable);
+                let left = menu.run(&mut settings, &plain, &note, keyboard.raw, &bindable, &languages);
                 skin.iter().for_each(|skin| skin.recolor(&settings.note_colors));
                 pixel_skin.iter().for_each(|skin| skin.recolor(&settings.pixel_note_colors));
                 if left {
@@ -1158,7 +1188,7 @@ fn main() {
             Screen::Results(playing, survived) => {
                 let play = &playing.play;
                 plain(if survived { "Song cleared" } else { "Game over" }, 40.0, 120.0, 48, if survived { GREEN } else { RED });
-                plain(&format!("{} [{}]", playing.entry.title, playing.entry.difficulty), 40.0, 170.0, 28, WHITE);
+                plain(&format!("{} [{}]", playing.entry.title, difficulty_name(&playing.entry.difficulty)), 40.0, 170.0, 28, WHITE);
                 let accuracy = play.accuracy().map_or("-".to_owned(), |a| format!("{:.2}%", a * 100.0));
                 plain(&format!("Score {}    Misses {}    Accuracy {}", play.score, play.misses, accuracy), 40.0, 220.0, 28, WHITE);
                 plain("Enter: back to freeplay", 40.0, 280.0, 20, GRAY);
@@ -1170,7 +1200,7 @@ fn main() {
                     let size = picture.size() * (HEIGHT / picture.height());
                     draw_texture_ex(&picture, (WIDTH - size.x) / 2.0, 0.0, WHITE, DrawTextureParams { dest_size: Some(size), ..Default::default() });
                 }
-                plain("Now Loading...", 12.0, HEIGHT - 16.0, 30, WHITE);
+                plain(&phrase_with("now_loading", "Now Loading{1}", &["..."]), 12.0, HEIGHT - 16.0, 30, WHITE);
                 // the reading itself holds this frame up: the picture was put on screen by the one before
                 match shown {
                     true => Playing::open(&base, &songs[entry], &songs, &settings, 0.0, talk).map_or_else(Screen::Failed, |p| Screen::Playing(Box::new(p))),
@@ -1298,9 +1328,17 @@ fn main() {
                 Err(error) => eprintln!("Note skin: {error}"),
             }
         }
-        if std::mem::take(&mut menus.reload) {
+        let reload = std::mem::take(&mut menus.reload);
+        if reload {
             weeks = find_weeks(&base);
             songs = find_songs(&weeks);
+            languages = found_languages(&base);
+        }
+        if reload || spoken != settings.language {
+            // another language (or other mods, which may bring words of their own): its words, and its pictures where it has any
+            spoken = settings.language.clone();
+            speak(&base, &spoken);
+            menus.forget();
         }
 
         frames += 1;
