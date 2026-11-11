@@ -40,6 +40,8 @@ pub enum Go {
     Egg(&'static str),
     /// Something in the menus earned an achievement.
     Unlock(&'static str),
+    /// A mod's own settings, by its folder.
+    ModSettings(String, Vec<funkin_core::mod_settings::ModOption>),
 }
 
 const UP: Ui = Ui::Up;
@@ -370,6 +372,8 @@ struct ModRow {
     color: Vec3,
     /// Frames a second of its picture.
     fps: f32,
+    /// Its own settings (`data/settings.json`).
+    settings: Vec<funkin_core::mod_settings::ModOption>,
 }
 
 pub struct Menus {
@@ -1428,7 +1432,8 @@ impl Menus {
                     None => vec3(0.4, 0.353, 1.0),
                 };
                 let fps = pack["iconFramerate"].as_f64().unwrap_or(10.0) as f32;
-                self.mods.push(ModRow { name: text("name", &folder), text: text("description", "No description provided."), color, restart: pack["restart"] == true, fps, folder, on });
+                let settings = std::fs::read_to_string(base.join("mods").join(&folder).join("data/settings.json")).map_or(Vec::new(), |text| funkin_core::mod_settings::parse(&text));
+                self.mods.push(ModRow { name: text("name", &folder), text: text("description", "No description provided."), color, restart: pack["restart"] == true, fps, settings, folder, on });
             }
             self.mod_row = self.mod_row.min(self.mods.len().saturating_sub(1));
             self.mod_center = self.mod_center.clamp(self.mod_row.saturating_sub(2), self.mod_row + 2);
@@ -1440,10 +1445,10 @@ impl Menus {
         let shift = is_key_down(KeyCode::LeftShift) || is_key_down(KeyCode::RightShift);
         // the buttons: reload, all on or all off, and the selected mod's: to the top, up, down, its settings, on/off
         let all_on = self.mods.iter().all(|row| row.on);
+        let has_settings = self.mods.get(self.mod_row).is_some_and(|row| !row.settings.is_empty());
         let enabled = |button: i32| match button {
             0..=2 => count > 1,
-            // shortcut: no mod settings page yet (they are read by Lua scripts, which do not run here either)
-            3 => false,
+            3 => has_settings,
             4 => count > 0,
             _ => true,
         };
@@ -1588,6 +1593,11 @@ impl Menus {
                 let to = [0, self.mod_row as i64 - 1, self.mod_row as i64 + 1][button as usize];
                 // past either end, round to the other
                 self.move_mod(if to < 0 { count - 1 } else if to >= count as i64 { 0 } else { to as usize });
+            }
+            Some(3) => {
+                let row = &self.mods[self.mod_row];
+                self.sound("scrollMenu", 0.6);
+                return Go::ModSettings(row.folder.clone(), row.settings.clone());
             }
             Some(4) => {
                 self.mods[self.mod_row].on ^= true;

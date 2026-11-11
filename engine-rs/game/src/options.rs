@@ -4,6 +4,8 @@ use crate::settings::{Kind, Settings, LANE_COLORS, OPTIONS, PAGES, PIXEL_LANE_CO
 use crate::{DIRECTIONS, HEIGHT};
 use crate::gfx::*;
 use funkin_core::lang::phrase;
+use funkin_core::mod_settings::{Kind as ModKind, ModOption};
+use serde_json::{json, Value};
 
 #[derive(Default)]
 pub struct OptionsMenu {
@@ -36,6 +38,17 @@ pub struct OptionsMenu {
     /// Key binds: the second key of the row is chosen; how long Escape or Backspace has been held while binding.
     alt: bool,
     holding: f32,
+    /// How long Left or Right has been held on a page, and the value it has scrolled to (a mod's settings).
+    held: f32,
+    hold_value: f64,
+    /// A mod's own settings, while they are open: its folder and what it describes.
+    mod_page: Option<(String, Vec<ModOption>)>,
+}
+
+/// How an option shows beside its name: a tick box, or its value.
+enum Shown {
+    Switch(bool),
+    Value(String),
 }
 
 /// The options' first list, in the Haxe engine's order.
@@ -177,6 +190,33 @@ fn from_hsv(hue: f32, saturation: f32, brightness: f32) -> u32 {
     [r, g, b].iter().fold(0, |code, channel| code << 8 | ((channel + brightness - chroma) * 255.0).round() as u32)
 }
 
+/// A key's name in the Haxe engine (Flixel's), which mods' settings keep keys by; none for a key it has no name for.
+fn flx_name(key: KeyCode) -> Option<String> {
+    use KeyCode::*;
+    const DIGITS: [&str; 10] = ["ZERO", "ONE", "TWO", "THREE", "FOUR", "FIVE", "SIX", "SEVEN", "EIGHT", "NINE"];
+    let name = format!("{key:?}");
+    Some(match key {
+        Key0 | Key1 | Key2 | Key3 | Key4 | Key5 | Key6 | Key7 | Key8 | Key9 => DIGITS[name[3..].parse::<usize>().ok()?].to_owned(),
+        Kp0 | Kp1 | Kp2 | Kp3 | Kp4 | Kp5 | Kp6 | Kp7 | Kp8 | Kp9 => format!("NUMPAD{}", DIGITS[name[2..].parse::<usize>().ok()?]),
+        KpAdd => "NUMPADPLUS".to_owned(),
+        KpSubtract => "NUMPADMINUS".to_owned(),
+        LeftShift | RightShift => "SHIFT".to_owned(),
+        LeftControl | RightControl => "CONTROL".to_owned(),
+        LeftAlt | RightAlt => "ALT".to_owned(),
+        Apostrophe => "QUOTE".to_owned(),
+        LeftBracket => "LBRACKET".to_owned(),
+        RightBracket => "RBRACKET".to_owned(),
+        Equal => "PLUS".to_owned(),
+        _ => name.to_uppercase(),
+    })
+}
+
+/// A key kept by its Flixel name, as the key binds' page names keys.
+fn flx_shown(name: &str) -> String {
+    let known = crate::settings::ui_bindable().into_iter().chain([KeyCode::LeftShift, KeyCode::LeftControl, KeyCode::LeftAlt]).find(|&key| flx_name(key).as_deref() == Some(name));
+    known.map_or_else(|| if name == "NONE" { key_name(None) } else { name.to_owned() }, |key| key_name(Some(key)))
+}
+
 /// Where a list of the Haxe engine's large letters puts a row `from` rows away from the chosen one, starting at `start`.
 fn listed(from: f32, start: Vec2) -> Vec2 {
     start + vec2(from * 20.0, from * 1.3 * 120.0)
@@ -245,6 +285,11 @@ fn next_language(languages: &[(String, String)], file: &str, steps: usize) -> us
 }
 
 impl OptionsMenu {
+    /// Opened at a mod's own settings.
+    pub fn for_mod(folder: &str, options: Vec<ModOption>) -> OptionsMenu {
+        OptionsMenu { mod_page: Some((folder.to_owned(), options)), direct: true, ..Default::default() }
+    }
+
     /// Opened at the page of that name, if there is one.
     pub fn at(page: &str) -> OptionsMenu {
         let page = PAGES.iter().position(|name| name.eq_ignore_ascii_case(page));
@@ -273,7 +318,7 @@ impl OptionsMenu {
         let step = |rows: usize| (pressed(Ui::Down) as usize + pressed(Ui::Up) as usize * (rows - 1)) % rows;
         let back = pressed(Ui::Back);
         // the Haxe engine's look: the pink background (the key binds' blue), lists in large letters
-        menus.backdrop(if self.page == Some(0) { BLUE } else { PINK }, dt);
+        menus.backdrop(if self.mod_page.is_some() { Vec3::ONE } else if self.page == Some(0) { BLUE } else { PINK }, dt);
         let colors = self.page == Some(PAGES.len() - 1);
         if self.binding {
         } else if back {
@@ -294,6 +339,9 @@ impl OptionsMenu {
             }
         };
 
+        if self.mod_page.is_some() {
+            return self.mod_settings(settings, menus, skin, back, dt);
+        }
         if let Some(row) = self.language {
             let row = (row + step(languages.len().max(1))) % languages.len().max(1);
             self.language = Some(row);
@@ -334,44 +382,32 @@ impl OptionsMenu {
         // a tick box before them, the others with their value after), what the chosen one does in a box at the bottom
         let options: Vec<_> = OPTIONS.iter().filter(|option| option.page == page).collect();
         self.row = (self.row + step(options.len())) % options.len();
-        self.scroll += (self.row as f32 - self.scroll) * (1.0 - (-dt * 9.6).exp());
         let title = match PAGES[page] {
             "Gameplay Changers" => phrase("gameplay_changers", "Gameplay Changers"),
             name => phrase(&format!("{}_menu", name.to_lowercase()), &format!("{name} Settings")),
         };
-        push_model_matrix(Mat4::from_translation(vec3(75.0, 45.0, 0.0)) * Mat4::from_scale(vec3(0.6, 0.6, 1.0)));
-        menus.write(skin, &title, true, 0.0, 0.0, 1.0, 0.4);
-        pop_model_matrix();
-        let since = (get_time() - self.flipped) as f32;
-        for (index, option) in options.iter().enumerate() {
-            let switch = matches!(option.kind, Kind::Flag(_));
-            let at = listed(index as f32 - self.scroll, vec2(if switch { 220.0 } else { 140.0 }, 260.0));
-            if !(-200.0..HEIGHT + 100.0).contains(&at.y) {
-                continue;
-            }
-            let (name, alpha) = (phrase(&format!("setting_{}", option.name), option.name), if index == self.row { 1.0 } else { 0.6 });
-            menus.write(skin, &name, false, at.x, at.y, 1.0, alpha);
-            if let Kind::Flag(get) = option.kind {
-                checkbox(menus, *get(settings), if index == self.row { since } else { 60.0 }, at, alpha);
-            } else {
-                let value = shown(&option.kind, settings);
+        let rows: Vec<(String, Shown)> = options.iter().map(|option| {
+            let name = phrase(&format!("setting_{}", option.name), option.name);
+            let shown = match option.kind {
+                Kind::Flag(get) => Shown::Switch(*get(settings)),
                 // a choice among names may have its names translated too
-                let value = if matches!(option.kind, Kind::Choice(..)) { phrase(&format!("setting_{}-{value}", option.name), &value) } else { value };
-                menus.write(skin, &value, false, at.x + menus.width(skin, &name, false) + 60.0, at.y, 1.0, alpha);
-            }
-        }
+                Kind::Choice(..) => {
+                    let value = shown(&option.kind, settings);
+                    Shown::Value(phrase(&format!("setting_{}-{value}", option.name), &value))
+                }
+                _ => Shown::Value(shown(&option.kind, settings)),
+            };
+            (name, shown)
+        }).collect();
         let selected = options[self.row];
-        let about = phrase(&format!("description_{}", selected.name), selected.about);
-        let about = crate::menu::wrap(&about, 1180.0, |words| measure_text(words, skin.font.as_ref(), 32, 1.0).width);
-        let top = (HEIGHT - about.len() as f32 * 32.0) / 2.0 + 270.0;
-        draw_rectangle(40.0, top - 10.0, 1200.0, about.len() as f32 * 32.0 + 25.0, Color::new(0.0, 0.0, 0.0, 0.6));
-        for (row, words) in about.iter().enumerate() {
-            let width = measure_text(words, skin.font.as_ref(), 32, 1.0).width;
-            skin.text(words, (crate::WIDTH - width) / 2.0, top + 26.0 + row as f32 * 32.0, 32, WHITE);
-        }
-        if steps != 0.0 {
-            change(&selected.kind, settings, steps * fast);
-            menus.sound("scrollMenu", 1.0);
+        self.draw_page(menus, skin, &title, &rows, &phrase(&format!("description_{}", selected.name), selected.about), dt);
+        // held, a number keeps going after half a second
+        let held = if matches!(selected.kind, Kind::Number(..)) { self.held_steps(dt) } else { 0.0 };
+        if steps != 0.0 || held != 0.0 {
+            change(&selected.kind, settings, if steps != 0.0 { steps * fast } else { held * fast });
+            if steps != 0.0 {
+                menus.sound("scrollMenu", 1.0);
+            }
         } else if pressed(Ui::Accept) {
             menus.sound("scrollMenu", 1.0);
             match (selected.key, &selected.kind) {
@@ -384,11 +420,165 @@ impl OptionsMenu {
                 }
                 _ => change(&selected.kind, settings, 1.0),
             }
+        } else if pressed(Ui::Reset) {
+            // back to how it was at first
+            let mut usual = Settings::default();
+            match selected.kind {
+                Kind::Flag(get) => *get(settings) = *get(&mut usual),
+                Kind::Number(get, ..) => *get(settings) = *get(&mut usual),
+                Kind::Choice(get, _) => *get(settings) = *get(&mut usual),
+            }
+            menus.sound("cancelMenu", 1.0);
         }
         if back {
             (self.page, self.row) = (None, main_row(page));
         }
         back && self.direct
+    }
+
+    /// Steps Left or Right held down has made this frame: none for half a second, then twenty-five a second.
+    // shortcut: one pace for every number; the Haxe engine gives each option its own (most scroll 50 a second). Give
+    // OPTIONS a pace of its own if one feels wrong.
+    fn held_steps(&mut self, dt: f32) -> f64 {
+        let (left, right) = (crate::controls::down(Ui::Left), crate::controls::down(Ui::Right));
+        if left == right {
+            self.held = 0.0;
+            return 0.0;
+        }
+        let ticks = |held: f32| ((held - 0.5) * 25.0).floor().max(0.0);
+        let before = self.held;
+        self.held += dt;
+        (ticks(self.held) - ticks(before)) as f64 * if right { 1.0 } else { -1.0 }
+    }
+
+    /// A page of options as the Haxe engine draws one: its name faint at the top, the options in a slanted list gliding to
+    /// the chosen one (switches with a tick box before them, the others with their value after), what the chosen one does
+    /// in a box at the bottom.
+    fn draw_page(&mut self, menus: &mut crate::menu::Menus, skin: &crate::Skin, title: &str, rows: &[(String, Shown)], about: &str, dt: f32) {
+        self.scroll += (self.row as f32 - self.scroll) * (1.0 - (-dt * 9.6).exp());
+        push_model_matrix(Mat4::from_translation(vec3(75.0, 45.0, 0.0)) * Mat4::from_scale(vec3(0.6, 0.6, 1.0)));
+        menus.write(skin, title, true, 0.0, 0.0, 1.0, 0.4);
+        pop_model_matrix();
+        let since = (get_time() - self.flipped) as f32;
+        for (index, (name, shown)) in rows.iter().enumerate() {
+            let at = listed(index as f32 - self.scroll, vec2(if matches!(shown, Shown::Switch(_)) { 220.0 } else { 140.0 }, 260.0));
+            if !(-200.0..HEIGHT + 100.0).contains(&at.y) {
+                continue;
+            }
+            let alpha = if index == self.row { 1.0 } else { 0.6 };
+            menus.write(skin, name, false, at.x, at.y, 1.0, alpha);
+            match shown {
+                Shown::Switch(on) => checkbox(menus, *on, if index == self.row { since } else { 60.0 }, at, alpha),
+                Shown::Value(value) => menus.write(skin, value, false, at.x + menus.width(skin, name, false) + 60.0, at.y, 1.0, alpha),
+            }
+        }
+        let about = crate::menu::wrap(about, 1180.0, |words| measure_text(words, skin.font.as_ref(), 32, 1.0).width);
+        let top = (HEIGHT - about.len() as f32 * 32.0) / 2.0 + 270.0;
+        draw_rectangle(40.0, top - 10.0, 1200.0, about.len() as f32 * 32.0 + 25.0, Color::new(0.0, 0.0, 0.0, 0.6));
+        for (row, words) in about.iter().enumerate() {
+            let width = measure_text(words, skin.font.as_ref(), 32, 1.0).width;
+            skin.text(words, (crate::WIDTH - width) / 2.0, top + 26.0 + row as f32 * 32.0, 32, WHITE);
+        }
+    }
+
+    /// Waits for a key for `what` over a whitened screen, as the Haxe engine does: Escape or Backspace held half a second
+    /// gives up or asks for none, a short press of either is taken once let go; only keys `allowed` count. The key (or none)
+    /// once there is one; nothing meanwhile, or when given up.
+    fn rebind(&mut self, menus: &mut crate::menu::Menus, skin: &crate::Skin, what: &str, dt: f32, allowed: impl Fn(&KeyCode) -> bool) -> Option<Option<KeyCode>> {
+        let since = (get_time() - self.flipped) as f32;
+        draw_rectangle(0.0, 0.0, crate::WIDTH, HEIGHT, Color::new(1.0, 1.0, 1.0, 0.6 * (since / 0.35).min(1.0)));
+        let rebinding = funkin_core::lang::phrase_with("controls_rebinding", "Rebinding {1}", &[what]);
+        menus.write(skin, &rebinding, false, (crate::WIDTH - menus.width(skin, &rebinding, false)) / 2.0, 160.0, 1.0, 1.0);
+        for (line, words) in phrase("controls_rebinding2", "Hold ESC to Cancel\nHold Backspace to Delete").lines().enumerate() {
+            menus.write(skin, words, true, (crate::WIDTH - menus.width(skin, words, true)) / 2.0, 340.0 + line as f32 * 85.0, 1.0, 1.0);
+        }
+        let (escape, backspace) = (is_key_down(KeyCode::Escape), is_key_down(KeyCode::Backspace));
+        if escape || backspace {
+            self.holding += dt;
+            if self.holding > 0.5 {
+                menus.sound("cancelMenu", 1.0);
+                self.binding = false;
+                return backspace.then_some(None);
+            }
+            return None;
+        }
+        self.holding = 0.0;
+        let tapped = [KeyCode::Escape, KeyCode::Backspace].into_iter().find(|&key| is_key_released(key));
+        let key = get_last_key_pressed().filter(|key| !matches!(key, KeyCode::Escape | KeyCode::Backspace)).or(tapped).filter(allowed)?;
+        menus.sound("confirmMenu", 1.0);
+        self.binding = false;
+        Some(Some(key))
+    }
+
+    /// A mod's own settings, as the Haxe engine's page for them: like the other pages, a key among them bound as on the key
+    /// binds' page. Kept in the settings by the mod's folder. True when the player leaves.
+    fn mod_settings(&mut self, settings: &mut Settings, menus: &mut crate::menu::Menus, skin: &crate::Skin, back: bool, dt: f32) -> bool {
+        let Some((folder, options)) = self.mod_page.take() else { return true };
+        if options.is_empty() {
+            return true;
+        }
+        let saved = settings.mod_settings.entry(folder.clone()).or_insert_with(|| json!({}));
+        if !saved.is_object() {
+            *saved = json!({});
+        }
+        let Value::Object(saved) = saved else { return true };
+        if !self.binding {
+            let count = options.len();
+            self.row = (self.row + pressed(Ui::Down) as usize + pressed(Ui::Up) as usize * (count - 1)) % count;
+        }
+        let option = &options[self.row];
+        let rows: Vec<(String, Shown)> = options.iter().map(|option| {
+            let value = option.value(saved);
+            let shown = match option.kind {
+                ModKind::Bool => Shown::Switch(value.as_bool() == Some(true)),
+                ModKind::Key => Shown::Value(flx_shown(value.as_str().unwrap_or("NONE"))),
+                ModKind::Text(_) => {
+                    let value = option.shown(&value);
+                    Shown::Value(phrase(&format!("setting_{}-{value}", option.translation), &value))
+                }
+                _ => Shown::Value(option.shown(&value)),
+            };
+            (phrase(&format!("setting_{}", option.translation), &option.name), shown)
+        }).collect();
+        self.draw_page(menus, skin, "", &rows, &phrase(&format!("description_{}", option.translation), &option.about), dt);
+
+        let value = option.value(saved);
+        if self.binding {
+            if let Some(key) = self.rebind(menus, skin, &option.name, dt, |key| flx_name(*key).is_some()) {
+                option.store(saved, json!(key.and_then(flx_name).unwrap_or_else(|| "NONE".to_owned())));
+            }
+        } else if back {
+            self.binding = false;
+            return true;
+        } else if pressed(Ui::Accept) && matches!(option.kind, ModKind::Bool | ModKind::Key) {
+            menus.sound("scrollMenu", 1.0);
+            if option.kind == ModKind::Key {
+                (self.binding, self.holding, self.flipped) = (true, 0.0, get_time());
+            } else {
+                option.store(saved, option.stepped(&value, 0.0));
+                self.flipped = get_time();
+            }
+        } else if pressed(Ui::Reset) {
+            option.store(saved, option.default.clone());
+            menus.sound("cancelMenu", 1.0);
+        } else if !matches!(option.kind, ModKind::Bool | ModKind::Key) {
+            let steps = pressed(Ui::Right) as i32 - pressed(Ui::Left) as i32;
+            // (only how long it has been held counts here, not its steps)
+            self.held_steps(dt);
+            if steps != 0 {
+                let next = option.stepped(&value, steps as f64);
+                self.hold_value = next.as_f64().unwrap_or(0.0);
+                option.store(saved, next);
+                menus.sound("scrollMenu", 1.0);
+            } else if !matches!(option.kind, ModKind::Text(_)) && self.held > 0.5 {
+                // held, it runs on at the mod's own pace
+                let way = if crate::controls::down(Ui::Right) { 1.0 } else { -1.0 };
+                self.hold_value = (self.hold_value + option.scroll * dt as f64 * way).clamp(option.min.unwrap_or(f64::MIN), option.max.unwrap_or(f64::MAX));
+                option.store(saved, option.stepped(&json!(self.hold_value), 0.0));
+            }
+        }
+        self.mod_page = Some((folder, options));
+        false
     }
 
     /// The note colours' page, as the Haxe engine's: the three parts of a note above the four lanes' strums and the chosen
@@ -665,35 +855,9 @@ impl OptionsMenu {
             return false;
         }
 
-        // waiting for a key, over a whitened screen
-        let since = (get_time() - self.flipped) as f32;
-        draw_rectangle(0.0, 0.0, crate::WIDTH, HEIGHT, Color::new(1.0, 1.0, 1.0, 0.6 * (since / 0.35).min(1.0)));
-        let rebinding = funkin_core::lang::phrase_with("controls_rebinding", "Rebinding {1}", &[BINDS[chosen].2]);
-        menus.write(skin, &rebinding, false, (crate::WIDTH - menus.width(skin, &rebinding, false)) / 2.0, 160.0, 1.0, 1.0);
-        for (line, words) in phrase("controls_rebinding2", "Hold ESC to Cancel\nHold Backspace to Delete").lines().enumerate() {
-            menus.write(skin, words, true, (crate::WIDTH - menus.width(skin, words, true)) / 2.0, 340.0 + line as f32 * 85.0, 1.0, 1.0);
-        }
-        let (escape, backspace) = (is_key_down(KeyCode::Escape), is_key_down(KeyCode::Backspace));
-        let mut chosen_key = None;
-        if escape || backspace {
-            self.holding += dt;
-            if self.holding > 0.5 {
-                menus.sound("cancelMenu", 1.0);
-                self.binding = false;
-                // held Backspace leaves the slot empty
-                chosen_key = backspace.then_some(None);
-            }
-        } else {
-            // a short press of Escape or Backspace binds it, once let go
-            self.holding = 0.0;
-            let tapped = [KeyCode::Escape, KeyCode::Backspace].into_iter().find(|&key| is_key_released(key));
-            let key = get_last_key_pressed().filter(|key| !matches!(key, KeyCode::Escape | KeyCode::Backspace)).or(tapped);
-            let allowed = |key: &KeyCode| if matches!(bind, Bind::Lane(_)) { bindable.contains(key) } else { crate::settings::ui_bindable().contains(key) };
-            if let Some(key) = key.filter(allowed) {
-                menus.sound("confirmMenu", 1.0);
-                chosen_key = Some(Some(key));
-            }
-        }
+        // waiting for a key
+        let allowed = |key: &KeyCode| if matches!(bind, Bind::Lane(_)) { bindable.contains(key) } else { crate::settings::ui_bindable().contains(key) };
+        let chosen_key = self.rebind(menus, skin, BINDS[chosen].2, dt, allowed);
         if let Some(key) = chosen_key {
             let slot = self.alt as usize;
             match bind {
@@ -709,7 +873,6 @@ impl OptionsMenu {
                 }
                 _ => {}
             }
-            self.binding = false;
         }
         false
     }
@@ -760,6 +923,13 @@ mod tests {
             let (hue, saturation, brightness) = to_hsv(color);
             assert_eq!(from_hsv(hue, saturation, brightness), color, "{color:06X}");
         }
+    }
+
+    #[test]
+    fn mods_keep_keys_by_their_flixel_names() {
+        use KeyCode::*;
+        assert_eq!([Key3, Kp0, Space, LeftShift, Equal, Left].map(|key| flx_name(key).unwrap()), ["THREE", "NUMPADZERO", "SPACE", "SHIFT", "PLUS", "LEFT"]);
+        assert_eq!((flx_shown("SPACE"), flx_shown("NONE"), flx_shown("THREE")), ("Space".to_owned(), "---".to_owned(), "3".to_owned()));
     }
 
     #[test]

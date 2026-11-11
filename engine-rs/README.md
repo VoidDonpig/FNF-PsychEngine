@@ -140,15 +140,17 @@ Done:
   smoke, the lightning of week 2 and of the Blazin stage; the key binds', note colours' and mods menu's pages
   as in the Haxe engine (rows in large letters with the two keys in boxes; the colour wheel, brightness,
   palette and typed code; the mods menu's buttons, mouse and dragging); weekend 1's scene with the can before
-  Darnell in story mode, and its game over (the RETRY sign over Pico, Nene's knife toss).
+  Darnell in story mode, and its game over (the RETRY sign over Pico, Nene's knife toss); a mod's own settings
+  (`data/settings.json`, from the mods menu's settings button; switches, numbers, percentages, lists and keys,
+  kept in the settings file by mod); Reset on the options pages puts an option back, and held Left/Right keeps a
+  number going.
 
 Not there yet:
 
 - **Play screen**: the events and note types that belong to scripts (Set Property beyond the camera, custom
   ones); the rain of weekend 1 (on the streets and in the fight; the Shaders switch turns it off with the title's
   colour shift) is drawn as falling streaks, growing heavier through the song, not with the Haxe engine's shader; the charting mode entries of the pause menu.
-- **Menus**: per-mod settings (the mods menu's settings button stays off);
-  achievements of mods; the note colours' copy and paste buttons (no clipboard here); the key binds' gamepad
+- **Menus**: achievements of mods; the note colours' copy and paste buttons (no clipboard here); the key binds' gamepad
   side (no gamepads yet) and debug keys (no editors yet); the GPU Caching switch (nothing to switch here); update check.
 - **Cutscenes**: videos (so weekend 1's video before Darnell and after 2hot; the scene with the can after the
   first is there); dialogue from a song's `dialogue.json` (the kind scripts start).

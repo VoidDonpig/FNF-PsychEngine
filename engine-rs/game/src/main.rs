@@ -1217,6 +1217,7 @@ fn main() {
                 Some(Go::Page(page)) => Screen::Menu(page),
                 Some(Go::Options) => Screen::Options(Default::default(), Page::Main),
                 Some(Go::Changers) => Screen::Options(options::OptionsMenu::at("Gameplay Changers"), page),
+                Some(Go::ModSettings(folder, list)) => Screen::Options(options::OptionsMenu::for_mod(&folder, list), page),
                 Some(Go::Play(mut list, week)) => {
                     menus.quiet();
                     let first = list.remove(0);
