@@ -15,7 +15,7 @@ cargo run --release --manifest-path engine-rs/Cargo.toml
 
 `--base <folder>` points it at another folder, `--bot` plays by itself, `--play <text>` starts the first
 song whose name contains the text, `--story <week file>` a whole week,
-`--menu <main|story|freeplay|mods|credits>` opens at that menu. Keys: A S W D or the arrows, Enter or Space, Esc or Backspace. The options are kept in
+`--menu <main|story|freeplay|mods|credits>` opens at that menu, `--options [page]` at the options. Keys: A S W D or the arrows, Enter or Space, Esc or Backspace. The options are kept in
 `funkin-rs-settings.json` in that folder, scores and finished weeks in `funkin-rs-save.json`.
 
 Without ALSA headers (Linux): add `--no-default-features` to build without sound.
@@ -52,7 +52,11 @@ Done:
   keeps it. Mods switched off bring no weeks; mods that run globally lend their files to every song.
 - **Saved data**: best score and accuracy of every song and difficulty, best week scores, finished weeks
   (which unlock the weeks after them). Runs on botplay are not kept.
-- **Options**: key binds (two per lane), downscroll, middlescroll, ghost tapping, note offset, botplay.
+- **Options**: key binds (two per lane); gameplay: downscroll, middlescroll, opponent notes, ghost
+  tapping, reset button (R), hitsound volume, rating offset, the sick/good/bad hit windows, safe frames,
+  note offset, botplay; visuals: note splash opacity, hide HUD, time bar (left, elapsed, song name, off),
+  flashing lights, camera zooms, score text growing on a hit, health bar opacity, FPS counter, pause
+  music, combo stacking, hit timing in ms.
 - **Input**: on Windows key presses are timed by the raw input thread of `native/psych_input`.
 
 Not there yet:
@@ -63,8 +67,9 @@ Not there yet:
   running soldiers of Stress, crowd reactions to events, the speaker and lighting of weekend 1), the weekend 1
   fight stage, the pixel look of notes and HUD on pixel stages, characters made of several sheets or of
   Animate atlases, other note and splash skins.
-- **Menus**: the mods menu's mouse buttons, per-mod settings and restart flag, achievements, the rest of the options (graphics,
-  visuals, note colours, gamepad, languages), in freeplay the song preview, score reset and gameplay
+- **Menus**: the mods menu's mouse buttons, per-mod settings and restart flag, achievements, the rest of the options (graphics, note
+  colours and skins, delay and combo placement, auto pause, gamepad, languages; the options menu is a plain
+  list, not the Haxe engine's look), in freeplay the song preview, score reset and gameplay
   changers, transitions between screens, loading screen, a mod's own title screen (`gfDanceTitle.json`).
 - **Saved data**: achievements, translations. Scores of the Haxe engine are
   not read (it keeps them in its own binary save).

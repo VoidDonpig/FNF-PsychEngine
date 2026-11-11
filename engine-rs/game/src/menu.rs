@@ -323,6 +323,8 @@ pub struct Menus {
     mods_changed: bool,
     /// The mods were switched or moved: the weeks and songs have to be found again.
     pub reload: bool,
+    /// The player's choice on flashing lights: without them nothing flashes or blinks.
+    flashing: bool,
 }
 
 /// The lines of the title screen's opening at a beat, how far down they are shifted, and whether the Newgrounds logo shows.
@@ -371,7 +373,7 @@ impl Menus {
             art: Art { base: base.to_path_buf(), images: HashMap::new(), sheets: HashMap::new(), characters: HashMap::new() },
             alphabet: Alphabet::load(&paths), paths, audio: None, music_at: 0.0, intro: true, wacky: [wacky.0.to_owned(), wacky.1.to_owned()], flash: (f64::MIN, 1.0), chosen: None,
             main_row: 0, main_side: false, main_slide: 0.0, week: 0, week_scroll: 0.0, difficulty: "Normal".to_owned(), rows: Vec::new(), song: 0, song_scroll: 0.0, tint: Vec3::ONE, shown: (0.0, 0.0),
-            credits: Vec::new(), credit: 0, credit_scroll: 0.0, mods: Vec::new(), mod_row: 0, mods_changed: false, reload: false,
+            credits: Vec::new(), credit: 0, credit_scroll: 0.0, mods: Vec::new(), mod_row: 0, mods_changed: false, reload: false, flashing: true,
         }
     }
 
@@ -418,7 +420,8 @@ impl Menus {
     }
 
     /// Runs and draws one frame of a menu.
-    pub fn run(&mut self, page: Page, skin: &Skin, weeks: &[Week], songs: &[SongEntry], save: &Save) -> Go {
+    pub fn run(&mut self, page: Page, skin: &Skin, weeks: &[Week], songs: &[SongEntry], save: &Save, flashing: bool) -> Go {
+        self.flashing = flashing;
         if self.audio.is_none() {
             let audio = Song::load(&[]);
             if let Some(path) = self.paths.find("music/freakyMenu.ogg") {
@@ -436,7 +439,7 @@ impl Menus {
             Page::Credits => self.credits_roll(skin),
         };
         let flash = 1.0 - (get_time() - self.flash.0) / self.flash.1;
-        if flash > 0.0 {
+        if flash > 0.0 && self.flashing {
             draw_rectangle(0.0, 0.0, WIDTH, HEIGHT, white(flash as f32));
         }
         if !matches!(go, Go::Stay) {
@@ -485,7 +488,7 @@ impl Menus {
             let wave = (now % 2.0 - 1.0).abs() as f32;
             let eased = if wave < 0.5 { 2.0 * wave * wave } else { 1.0 - 2.0 * (1.0 - wave) * (1.0 - wave) };
             let (name, color) = match self.chosen {
-                Some(_) => ("ENTER PRESSED", WHITE),
+                Some(_) => (if self.flashing { "ENTER PRESSED" } else { "ENTER FREEZE" }, WHITE),
                 None => ("ENTER IDLE", Color::new(0.2, 0.2 + 0.8 * eased, 0.8 + 0.2 * eased, 0.64 + 0.36 * eased)),
             };
             if let Some(frame) = looped(&sheet.animation(name, &[])) {
@@ -545,7 +548,7 @@ impl Menus {
         }
 
         // once chosen, the background blinks pink and the chosen item flickers while the others fade away
-        let pink = since.is_some_and(|t| t < 1.1 && (t / 0.15) as u32 % 2 == 0);
+        let pink = self.flashing && since.is_some_and(|t| t < 1.1 && (t / 0.15) as u32 % 2 == 0);
         if let Some(picture) = self.art.image("", if pink { "menuDesat" } else { "menuBG" }) {
             let size = picture.size() * 1.175;
             let color = if pink { Color::from_hex(0xFD719B) } else { WHITE };

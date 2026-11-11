@@ -9,6 +9,7 @@ mod atlas;
 mod audio;
 mod input;
 mod menu;
+mod options;
 mod scene;
 mod settings;
 
@@ -180,6 +181,8 @@ struct Playing {
     flash_until: [[f64; 4]; 2],
     /// Last judgement to show, and when it happened.
     judgement: Option<(String, Color, f64)>,
+    /// When the player last hit a note: the score text swells for a moment.
+    last_hit: f64,
     /// Where sounds and other shared files are found for this song.
     paths: Paths,
     /// Ms between opening the play screen and the song's first beat: the countdown.
@@ -211,7 +214,10 @@ impl Playing {
         tracks.extend(entry.voices_player.as_deref());
         let player_voice = entry.voices_player.as_ref().map(|_| 1);
         tracks.extend(entry.voices_opponent.as_deref());
-        let scene = scene::Scene::load(base, &entry.source, &chart).map_err(|e| eprintln!("Stage: {e}")).ok();
+        let mut scene = scene::Scene::load(base, &entry.source, &chart).map_err(|e| eprintln!("Stage: {e}")).ok();
+        if let Some(scene) = &mut scene {
+            (scene.cam_zooms, scene.flashing) = (settings.cam_zooms, settings.flashing);
+        }
         // shortcut: --at only moves the silent clock (it exists for screenshots); seek the audio too to make it a practice feature.
         let song = audio::Song::load(if start_at > 0.0 { &[] } else { &tracks });
         // five beats of countdown, as the Haxe engine does
@@ -219,8 +225,9 @@ impl Playing {
         let speed = chart.speed as f32;
         let mut play = Play::new(chart, settings.botplay);
         play.ghost_tapping = settings.ghost_tapping;
+        play.timing = settings.timing();
         play.skip_to(start_at);
-        Ok(Playing { entry: entry.clone(), play, song, player_voice, scene, waited: 0.0, started: false, paused: None, start_at, position: -lead_in, settings: settings.clone(), held_keys: Vec::new(), flash_until: [[f64::MIN; 4]; 2], judgement: None,
+        Ok(Playing { entry: entry.clone(), play, song, player_voice, scene, waited: 0.0, started: false, paused: None, start_at, position: -lead_in, settings: settings.clone(), held_keys: Vec::new(), flash_until: [[f64::MIN; 4]; 2], judgement: None, last_hit: f64::MIN,
             paths: Paths::new(base, &entry.source, ""), lead_in, counted: i64::MIN, popups: Vec::new(), splashes: Vec::new(), dead: None, next_event: 0, speed, speed_change: None })
     }
 
@@ -273,6 +280,7 @@ impl Playing {
             return match chosen {
                 Some(0) => {
                     self.paused = None;
+                    self.song.stop_sounds();
                     if self.started {
                         self.song.start();
                     }
@@ -286,6 +294,9 @@ impl Playing {
         if is_key_pressed(KeyCode::Enter) || is_key_pressed(KeyCode::Escape) {
             self.song.pause();
             self.paused = Some(0);
+            if self.settings.pause_music > 0 {
+                self.sound(&funkin_core::content::song_path(settings::PAUSE_MUSIC[self.settings.pause_music]), 0.5, true);
+            }
             return Flow::Continue;
         }
 
@@ -355,10 +366,22 @@ impl Playing {
                 Event::Hit { lane, rating, diff_ms, .. } => {
                     self.flash_until[1][lane] = judged + 120.0;
                     let color = if diff_ms < 0.0 { Color::from_hex(0x7FC8FF) } else { Color::from_hex(0xFF9F7F) };
-                    self.judgement = Some((format!("{:+.1} ms", diff_ms), color, judged));
+                    if self.settings.show_ms {
+                        self.judgement = Some((format!("{:+.1} ms", diff_ms), color, judged));
+                    }
+                    self.last_hit = judged;
                     self.player_voice.iter().for_each(|&track| self.song.set_volume(track, 1.0));
+                    if self.settings.hitsound_volume > 0.0 && !self.play.botplay {
+                        self.sound("hitsound", self.settings.hitsound_volume as f32, false);
+                    }
                     if rating == Rating::Sick {
                         self.splashes.push((lane, judged));
+                    }
+                    if self.settings.hide_hud {
+                        continue;
+                    }
+                    if !self.settings.combo_stacking {
+                        self.popups.clear(); // one rating at a time
                     }
                     // the rating jumps up left of the player's lanes, the combo count under it
                     let left = if self.settings.middlescroll { 60.0 } else { WIDTH * 0.35 - 40.0 };
@@ -375,7 +398,9 @@ impl Playing {
                     }
                 }
                 Event::Miss { .. } => {
-                    self.judgement = Some(("Miss".to_owned(), Color::from_hex(0xFF4040), judged));
+                    if self.settings.show_ms {
+                        self.judgement = Some(("Miss".to_owned(), Color::from_hex(0xFF4040), judged));
+                    }
                     self.player_voice.iter().for_each(|&track| self.song.set_volume(track, 0.0));
                     self.sound(["missnote1", "missnote2", "missnote3"][self.play.misses as usize % 3], 0.15, false);
                 }
@@ -397,7 +422,9 @@ impl Playing {
         self.splashes.retain(|&(_, at)| judged - at < 300.0);
         self.popups.retain(|popup| self.position.max(judged) - popup.born < popup.stays + 200.0);
 
-        if self.play.health <= 0.0 {
+        // the reset key gives up the run, unless a lane uses that key
+        let reset = is_key_pressed(KeyCode::R) && !self.settings.no_reset && self.settings.lane_of(KeyCode::R).is_none() && !self.play.botplay && self.started;
+        if self.play.health <= 0.0 || reset {
             self.dead = Some((0.0, None));
             self.song.pause();
             self.sound("fnf_loss_sfx", 1.0, false);
@@ -434,8 +461,8 @@ impl Playing {
         // notes come up from below, or with downscroll down from above
         let direction = if settings.downscroll { -1.0 } else { 1.0 };
         let y_at = |time: f64| strum_y + direction * (time - position) as f32 * PIXELS_PER_MS * speed;
-        // with middlescroll the opponent still plays, but is not shown
-        let shown = |player: bool| player || !settings.middlescroll;
+        // with middlescroll, or when the player wants them gone, the opponent still plays but is not shown
+        let shown = |player: bool| player || (!settings.middlescroll && settings.opponent_strums);
 
         for side in (0..2).filter(|&side| shown(side == 1)) {
             for lane in 0..4 {
@@ -486,7 +513,7 @@ impl Playing {
                 let frames = sheet.animation(&format!("note splash {} 1", NOTE_NAMES[lane]), &[]);
                 if let Some(&frame) = frames.get(((position - at) * 0.024) as usize) {
                     gl_use_material(&skin.lanes[lane]);
-                    sheet.draw(frame, lane_x(settings, true, lane) - frame.size.x / 2.0, strum_y - frame.size.y / 2.0, 1.0, false, Color::new(1.0, 1.0, 1.0, 0.6));
+                    sheet.draw(frame, lane_x(settings, true, lane) - frame.size.x / 2.0, strum_y - frame.size.y / 2.0, 1.0, false, Color::new(1.0, 1.0, 1.0, settings.splash_alpha as f32));
                     gl_use_default_material();
                 }
             }
@@ -500,21 +527,30 @@ impl Playing {
 
         // time left, over a bar that fills as the song goes
         let (length, time_y) = (self.length(), if settings.downscroll { HEIGHT - 44.0 } else { 19.0 });
-        let left_s = ((length - self.position.clamp(0.0, length)) / 1000.0) as u32;
-        draw_rectangle(WIDTH / 2.0 - 204.0, time_y - 4.0, 408.0, 27.0, BLACK);
-        draw_rectangle(WIDTH / 2.0 - 200.0, time_y, 400.0 * (self.position / length).clamp(0.0, 1.0) as f32, 19.0, WHITE);
-        skin.centered(&format!("{}:{:02}", left_s / 60, left_s % 60), time_y + 17.0, 22, WHITE);
+        let hud = !settings.hide_hud;
+        if hud && settings.time_bar < 3 {
+            let played = self.position.clamp(0.0, length);
+            let clock = |ms: f64| format!("{}:{:02}", ms as u32 / 60000, ms as u32 / 1000 % 60);
+            let words = [clock(length - played), clock(played), self.entry.title.clone()];
+            // the song's name stands alone; the times sit on a bar that fills as the song goes
+            if settings.time_bar < 2 {
+                draw_rectangle(WIDTH / 2.0 - 204.0, time_y - 4.0, 408.0, 27.0, BLACK);
+                draw_rectangle(WIDTH / 2.0 - 200.0, time_y, 400.0 * (played / length) as f32, 19.0, WHITE);
+            }
+            skin.centered(&words[settings.time_bar], time_y + 17.0, 22, WHITE);
+        }
 
         // health: the player's share grows from the right
         let (bar_x, bar_y, bar_w) = (WIDTH / 2.0 - 300.0, HEIGHT * if settings.downscroll { 0.11 } else { 0.89 }, 600.0);
         // judgements sit left of the player's lanes
         let side_x = if settings.middlescroll { 60.0 } else { WIDTH * 0.35 - 80.0 };
         let player_share = (self.play.health / 2.0) as f32;
-        draw_rectangle(bar_x - 4.0, bar_y - 4.0, bar_w + 8.0, 26.0, BLACK);
+        let faded = |color: Color| Color { a: if hud { settings.health_bar_alpha as f32 } else { 0.0 }, ..color };
+        draw_rectangle(bar_x - 4.0, bar_y - 4.0, bar_w + 8.0, 26.0, faded(BLACK));
         let singers = self.scene.as_ref().map(|scene| [scene.opponent.as_ref(), scene.player.as_ref()]).unwrap_or([None, None]);
         let middle = bar_x + bar_w * (1.0 - player_share);
-        draw_rectangle(bar_x, bar_y, middle - bar_x, 18.0, singers[0].map_or(Color::from_hex(0xFF0000), |c| c.color));
-        draw_rectangle(middle, bar_y, bar_w * player_share, 18.0, singers[1].map_or(Color::from_hex(0x66FF33), |c| c.color));
+        draw_rectangle(bar_x, bar_y, middle - bar_x, 18.0, faded(singers[0].map_or(Color::from_hex(0xFF0000), |c| c.color)));
+        draw_rectangle(middle, bar_y, bar_w * player_share, 18.0, faded(singers[1].map_or(Color::from_hex(0x66FF33), |c| c.color)));
         // the two singers' icons meet where the bar's colours meet; the losing one shows its second picture
         let icon_size = 150.0 * self.scene.as_ref().map_or(1.0, |scene| scene.icon_scale);
         for (side, singer) in singers.iter().enumerate() {
@@ -524,11 +560,15 @@ impl Playing {
             let picture = if losing && pictures > 1.0 { 1.0 } else { 0.0 };
             let source = Rect::new(icon.width() / pictures * picture, 0.0, icon.width() / pictures, icon.height());
             let x = if side == 1 { middle - 26.0 } else { middle + 26.0 - icon_size };
-            draw_texture_ex(icon, x, bar_y + 9.0 - icon_size / 2.0, WHITE, DrawTextureParams { dest_size: Some(vec2(icon_size, icon_size)), source: Some(source), flip_x: side == 1, ..Default::default() });
+            draw_texture_ex(icon, x, bar_y + 9.0 - icon_size / 2.0, faded(WHITE), DrawTextureParams { dest_size: Some(vec2(icon_size, icon_size)), source: Some(source), flip_x: side == 1, ..Default::default() });
         }
 
         let rating = self.play.accuracy().map_or("?".to_owned(), |a| format!("{:.2}%", a * 100.0));
-        skin.centered(&format!("Score: {} | Misses: {} | Rating: {}", self.play.score, self.play.misses, rating), bar_y + 52.0, 20, WHITE);
+        if hud {
+            // the score swells a little on every hit and settles within a fifth of a second
+            let swell = if settings.score_zoom { 1.0 + 0.075 * (1.0 - (position - self.last_hit) / 200.0).clamp(0.0, 1.0) } else { 1.0 };
+            skin.centered(&format!("Score: {} | Misses: {} | Rating: {}", self.play.score, self.play.misses, rating), bar_y + 52.0, (20.0 * swell).round() as u16, WHITE);
+        }
         if let Some((text, color, at)) = &self.judgement {
             let age = (position - at) as f32;
             if age < 700.0 {
@@ -562,8 +602,7 @@ enum Flow {
 
 enum Screen {
     Menu(Page),
-    /// The options: the selected row, and whether it waits for a key to bind.
-    Options(usize, bool),
+    Options(options::OptionsMenu),
     Playing(Box<Playing>),
     /// The finished run, and whether the player survived it.
     Results(Box<Playing>, bool),
@@ -615,7 +654,7 @@ async fn main() {
         Err(error) => (None, Screen::Failed(format!("Could not load the note skin.\n{error}\nRun the game from the folder that holds \"assets\", or pass --base <folder>."))),
     };
     if flag("--options") && matches!(screen, Screen::Menu(_)) {
-        screen = Screen::Options(0, false);
+        screen = Screen::Options(options::OptionsMenu::at(&value("--options").unwrap_or_default()));
     }
     if let (Some(wanted), Screen::Menu(_)) = (value("--play"), &screen) {
         // compared as file names are, so that spaces, hyphens and capitals do not matter
@@ -650,10 +689,10 @@ async fn main() {
         };
 
         screen = match screen {
-            Screen::Menu(page) => match skin.as_ref().map(|skin| menus.run(page, skin, &weeks, &songs, &save)) {
+            Screen::Menu(page) => match skin.as_ref().map(|skin| menus.run(page, skin, &weeks, &songs, &save, settings.flashing)) {
                 Some(Go::Stay) => Screen::Menu(page),
                 Some(Go::Page(page)) => Screen::Menu(page),
-                Some(Go::Options) => Screen::Options(0, false),
+                Some(Go::Options) => Screen::Options(Default::default()),
                 Some(Go::Play(mut list, week)) => {
                     menus.quiet();
                     let entry = &songs[list.remove(0)];
@@ -662,71 +701,12 @@ async fn main() {
                 }
                 Some(Go::Quit) | None => break,
             },
-            Screen::Options(mut row, mut binding) => {
-                const SWITCHES: [&str; 4] = ["Downscroll", "Middlescroll", "Ghost tapping", "Botplay"];
-                const ROWS: usize = 13; // 4 switches, the offset, 2 keys for each of 4 lanes
-                plain("Options", 40.0, 60.0, 36, WHITE);
-                plain("Up/Down: choose   Enter: change   Left/Right: offset (Shift: x10)   Backspace: unbind   Esc: save and back", 40.0, 96.0, 18, GRAY);
-                let key_slot = |row: usize| ((row - 5) / 2, (row - 5) % 2);
-                for index in 0..ROWS {
-                    let text = match index {
-                        0..=3 => {
-                            let on = [settings.downscroll, settings.middlescroll, settings.ghost_tapping, settings.botplay][index];
-                            format!("{}: {}", SWITCHES[index], if on { "ON" } else { "off" })
-                        }
-                        4 => format!("Note offset: {:+.0} ms", settings.offset_ms),
-                        _ => {
-                            let (lane, slot) = key_slot(index);
-                            let key = if binding && index == row { "press a key...".to_owned() } else { settings.keys[lane][slot].map_or("-".to_owned(), |k| format!("{k:?}")) };
-                            format!("{} key {}: {key}", DIRECTIONS[lane], slot + 1)
-                        }
-                    };
-                    let y = 150.0 + index as f32 * 30.0 + if index > 4 { 20.0 } else { 0.0 } + if index > 3 { 10.0 } else { 0.0 };
-                    plain(&format!("{}{text}", if index == row { "> " } else { "  " }), 40.0, y, 24, if index == row { YELLOW } else { WHITE });
-                }
-                let timing = if keyboard.raw { "raw input: each press is timed when it happens" } else { "per frame (raw input is not available on this system)" };
-                plain(&format!("Keyboard timing: {timing}"), 40.0, HEIGHT - 40.0, 18, GRAY);
-
-                if binding {
-                    // every key belongs to the binding now, the arrows included
-                    match get_last_key_pressed() {
-                        Some(KeyCode::Escape) => binding = false,
-                        Some(key) if bindable.contains(&key) => {
-                            let (lane, slot) = key_slot(row);
-                            settings.bind(lane, slot, Some(key));
-                            binding = false;
-                        }
-                        _ => {}
-                    }
-                    Screen::Options(row, binding)
+            Screen::Options(mut menu) => {
+                if menu.run(&mut settings, &plain, keyboard.raw, &bindable) {
+                    settings.save(&base);
+                    Screen::Menu(Page::Main)
                 } else {
-                    if is_key_pressed(KeyCode::Down) && row + 1 < ROWS { row += 1; }
-                    if is_key_pressed(KeyCode::Up) { row = row.saturating_sub(1); }
-                    let step = if is_key_down(KeyCode::LeftShift) || is_key_down(KeyCode::RightShift) { 10.0 } else { 1.0 };
-                    if row == 4 {
-                        let change = is_key_pressed(KeyCode::Right) as i32 - is_key_pressed(KeyCode::Left) as i32;
-                        settings.offset_ms = (settings.offset_ms + change as f64 * step).clamp(-500.0, 500.0);
-                    }
-                    if is_key_pressed(KeyCode::Enter) {
-                        match row {
-                            0 => settings.downscroll = !settings.downscroll,
-                            1 => settings.middlescroll = !settings.middlescroll,
-                            2 => settings.ghost_tapping = !settings.ghost_tapping,
-                            3 => settings.botplay = !settings.botplay,
-                            4 => {}
-                            _ => binding = true,
-                        }
-                    }
-                    if row > 4 && is_key_pressed(KeyCode::Backspace) {
-                        let (lane, slot) = key_slot(row);
-                        settings.bind(lane, slot, None);
-                    }
-                    if is_key_pressed(KeyCode::Escape) {
-                        settings.save(&base);
-                        Screen::Menu(Page::Main)
-                    } else {
-                        Screen::Options(row, binding)
-                    }
+                    Screen::Options(menu)
                 }
             }
             Screen::Playing(mut playing) => {
@@ -792,6 +772,10 @@ async fn main() {
             }
         };
 
+        if settings.show_fps {
+            set_camera(&Camera2D { target: vec2(WIDTH / 2.0, HEIGHT / 2.0), zoom: vec2(2.0 / WIDTH, 2.0 / HEIGHT), ..Default::default() });
+            plain(&format!("FPS: {}", get_fps()), 10.0, 17.0, 14, WHITE);
+        }
         if std::mem::take(&mut menus.reload) {
             weeks = find_weeks(&base);
             songs = find_songs(&weeks);

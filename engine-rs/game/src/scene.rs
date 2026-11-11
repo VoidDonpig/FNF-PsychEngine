@@ -507,6 +507,9 @@ pub struct Scene {
     /// Characters a chart event will swap in, loaded ahead so that the swap does not stall the song.
     spares: HashMap<String, Character>,
     own: Own,
+    /// The player's choices: whether the camera bumps on the beat, and whether anything may flash.
+    pub cam_zooms: bool,
+    pub flashing: bool,
     /// Sounds the stage wants played (file and volume); the play screen takes them.
     pub sounds: Vec<(std::path::PathBuf, f32)>,
 }
@@ -562,6 +565,8 @@ impl Scene {
                 "tank" => Own::Tank { angle: rand::gen_range(-90.0, 45.0), speed: rand::gen_range(5.0, 7.0) },
                 _ => Own::Nothing,
             },
+            cam_zooms: true,
+            flashing: true,
             sounds: Vec::new(),
         };
         if let Some(window) = find(&mut scene.backdrop, "philly/window") {
@@ -615,7 +620,7 @@ impl Scene {
             }
             "Set GF Speed" => self.gf_speed = number(&event.value1).map_or(1, |n| (n.round() as i64).max(1)),
             "Add Camera Zoom" => {
-                if self.bumping && self.zoom < 1.35 {
+                if self.bumping && self.cam_zooms && self.zoom < 1.35 {
                     self.zoom += number(&event.value1).unwrap_or(0.015);
                     self.hud_zoom += number(&event.value2).unwrap_or(0.03);
                 }
@@ -726,7 +731,7 @@ impl Scene {
             self.beat = beat;
             self.icon_scale = 1.2;
             self.backdrop.iter_mut().for_each(Layer::beat);
-            if self.bumping && beat % 4 == 0 {
+            if self.bumping && self.cam_zooms && beat % 4 == 0 {
                 self.zoom += 0.015;
                 self.hud_zoom += 0.03;
             }
@@ -763,8 +768,10 @@ impl Scene {
                     for character in [&mut self.opponent, &mut self.gf, &mut self.player].into_iter().flatten() {
                         character.play("scared");
                     }
-                    self.zoom += 0.015;
-                    self.hud_zoom += 0.03;
+                    if self.cam_zooms {
+                        self.zoom += 0.015;
+                        self.hud_zoom += 0.03;
+                    }
                 }
             }
             Own::Philly { light, train } => {
@@ -871,7 +878,7 @@ impl Scene {
                 t if t < 0.15 => 0.5,
                 t => 0.5 * (1.0 - (t - 0.15) / 0.25),
             };
-            if alpha > 0.0 {
+            if alpha > 0.0 && self.flashing {
                 let view = SCREEN / self.zoom;
                 draw_rectangle(self.camera.x - view.x, self.camera.y - view.y, view.x * 2.0, view.y * 2.0, Color::new(1.0, 1.0, 1.0, alpha));
             }

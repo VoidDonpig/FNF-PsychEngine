@@ -1,12 +1,24 @@
 //! One run of a song: which notes were hit, how well, and what that did to score and health.
 use crate::chart::{Chart, NoteKind};
 
-/// Timing windows in milliseconds (the engine's defaults).
-pub const SICK_MS: f64 = 45.0;
-pub const GOOD_MS: f64 = 90.0;
-pub const BAD_MS: f64 = 135.0;
-/// A note can be hit this long before or after its time (10 frames at 60 FPS).
-pub const SAFE_MS: f64 = 10.0 / 60.0 * 1000.0;
+/// How strictly hits are judged, in milliseconds. The defaults are the engine's.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct Timing {
+    /// A hit is this rating up to so far from its note.
+    pub sick: f64,
+    pub good: f64,
+    pub bad: f64,
+    /// A note can be hit this long before or after its time (10 frames at 60 FPS).
+    pub safe: f64,
+    /// Hits are rated as if they came this much earlier (for players who press late throughout).
+    pub rating_offset: f64,
+}
+
+impl Default for Timing {
+    fn default() -> Timing {
+        Timing { sick: 45.0, good: 90.0, bad: 135.0, safe: 10.0 / 60.0 * 1000.0, rating_offset: 0.0 }
+    }
+}
 // shortcut: one fixed release tolerance; the Haxe engine frees the tail one step (tempo dependent) early.
 const HOLD_RELEASE_MS: f64 = 100.0;
 const HIT_HEALTH: f64 = 0.02;
@@ -16,11 +28,11 @@ const MISS_HEALTH: f64 = 0.1;
 pub enum Rating { Sick, Good, Bad, Shit }
 
 impl Rating {
-    pub fn of(diff_ms: f64) -> Rating {
-        match diff_ms.abs() {
-            d if d <= SICK_MS => Rating::Sick,
-            d if d <= GOOD_MS => Rating::Good,
-            d if d <= BAD_MS => Rating::Bad,
+    pub fn of(diff_ms: f64, timing: &Timing) -> Rating {
+        match (diff_ms - timing.rating_offset).abs() {
+            d if d <= timing.sick => Rating::Sick,
+            d if d <= timing.good => Rating::Good,
+            d if d <= timing.bad => Rating::Bad,
             _ => Rating::Shit,
         }
     }
@@ -50,6 +62,7 @@ pub struct Play {
     pub botplay: bool,
     /// Off: a press with nothing to hit counts as a miss.
     pub ghost_tapping: bool,
+    pub timing: Timing,
     pub score: i64,
     pub misses: u32,
     pub combo: u32,
@@ -64,7 +77,7 @@ pub struct Play {
 impl Play {
     pub fn new(chart: Chart, botplay: bool) -> Play {
         let state = vec![NoteState::Pending; chart.notes.len()];
-        Play { chart, state, held: [false; 4], botplay, ghost_tapping: true, score: 0, misses: 0, combo: 0, health: 1.0, rated: 0, weight: 0.0, first_open: 0 }
+        Play { chart, state, held: [false; 4], botplay, ghost_tapping: true, timing: Timing::default(), score: 0, misses: 0, combo: 0, health: 1.0, rated: 0, weight: 0.0, first_open: 0 }
     }
 
     /// Accuracy from 0 to 1, once anything was rated.
@@ -90,10 +103,10 @@ impl Play {
     pub fn press(&mut self, lane: usize, pos: f64) -> Option<Event> {
         self.held[lane] = true;
         let found = (self.first_open..self.chart.notes.len())
-            .take_while(|&i| self.chart.notes[i].time <= pos + SAFE_MS)
+            .take_while(|&i| self.chart.notes[i].time <= pos + self.timing.safe)
             .find(|&i| {
                 let note = &self.chart.notes[i];
-                note.player && note.lane == lane && self.state[i] == NoteState::Pending && (note.time - pos).abs() <= SAFE_MS
+                note.player && note.lane == lane && self.state[i] == NoteState::Pending && (note.time - pos).abs() <= self.timing.safe
             });
         let Some(index) = found else {
             if self.ghost_tapping || self.botplay {
@@ -121,7 +134,7 @@ impl Play {
         let mut events = Vec::new();
         for i in self.first_open..self.chart.notes.len() {
             let note = self.chart.notes[i].clone();
-            if note.time > pos + SAFE_MS {
+            if note.time > pos + self.timing.safe {
                 break;
             }
             let auto = !note.player || self.botplay;
@@ -136,7 +149,7 @@ impl Play {
                     // Botplay is rated at the note's own time, not at the frame that noticed it.
                     events.push(if note.player { self.hit(note.lane, 0.0, i) } else { Event::OpponentHit { lane: note.lane, note: i } });
                 }
-                NoteState::Pending if !auto && pos > note.time + SAFE_MS => {
+                NoteState::Pending if !auto && pos > note.time + self.timing.safe => {
                     self.state[i] = if hurt { NoteState::Done } else { NoteState::Missed };
                     if !hurt {
                         events.push(self.miss(note.lane, Some(i)));
@@ -162,7 +175,7 @@ impl Play {
     }
 
     fn hit(&mut self, lane: usize, diff_ms: f64, note: usize) -> Event {
-        let rating = Rating::of(diff_ms);
+        let rating = Rating::of(diff_ms, &self.timing);
         self.score += rating.score();
         self.combo += 1;
         self.rated += 1;
@@ -195,8 +208,11 @@ mod tests {
 
     #[test]
     fn windows() {
-        assert_eq!([Rating::of(-45.0), Rating::of(45.1), Rating::of(90.0), Rating::of(135.0), Rating::of(-140.0)],
-                   [Rating::Sick, Rating::Good, Rating::Good, Rating::Bad, Rating::Shit]);
+        let of = |diff| Rating::of(diff, &Timing::default());
+        assert_eq!([of(-45.0), of(45.1), of(90.0), of(135.0), of(-140.0)], [Rating::Sick, Rating::Good, Rating::Good, Rating::Bad, Rating::Shit]);
+        // narrower windows, and a player who always presses 20 ms late
+        let strict = Timing { sick: 20.0, rating_offset: 20.0, ..Timing::default() };
+        assert_eq!([Rating::of(40.0, &strict), Rating::of(0.0, &strict), Rating::of(41.0, &strict)], [Rating::Sick, Rating::Sick, Rating::Good]);
     }
 
     #[test]
@@ -212,6 +228,7 @@ mod tests {
     #[test]
     fn out_of_reach_is_a_ghost_tap_then_a_miss() {
         let mut p = play(&[(1000.0, 2, true, 0.0)], false);
+        const SAFE_MS: f64 = 10.0 / 60.0 * 1000.0;
         assert_eq!(p.press(2, 1000.0 - SAFE_MS - 1.0), None);
         assert_eq!(p.update(1000.0 + SAFE_MS), vec![]);
         assert_eq!(p.update(1000.0 + SAFE_MS + 1.0), vec![Event::Miss { lane: 2, note: Some(0) }]);
