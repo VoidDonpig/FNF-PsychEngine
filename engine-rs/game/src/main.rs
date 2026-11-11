@@ -201,7 +201,7 @@ impl Skin {
 
     fn text(&self, text: &str, x: f32, y: f32, size: u16, color: Color) {
         // a dark copy underneath keeps it readable over notes
-        for (dx, dy, color) in [(2.0, 2.0, BLACK), (0.0, 0.0, color)] {
+        for (dx, dy, color) in [(2.0, 2.0, Color { a: color.a, ..BLACK }), (0.0, 0.0, color)] {
             draw_text_ex(text, x + dx, y + dy, TextParams { font: self.font.as_ref(), font_size: size, color, ..Default::default() });
         }
     }
@@ -330,7 +330,7 @@ impl Playing {
         // sounds may sit in the stage's own folder
         let directory = scene.as_ref().map_or(String::new(), |scene| scene.directory.clone());
         let paths = Paths::new(base, &entry.source, &directory);
-        let cutscene = if story && start_at <= 0.0 && !seen { dialogue::Dialogue::load(base, &paths, &funkin_core::content::song_path(&entry.title), &chart.stage) } else { None };
+        let cutscene = if story && start_at <= 0.0 && !seen { dialogue::Dialogue::load(base, &paths, &funkin_core::content::song_path(&entry.title), &chart.stage, &settings.language) } else { None };
         // --bot plays every song by itself without becoming the saved setting
         let settings = &Settings { botplay: settings.botplay || std::env::args().any(|arg| arg == "--bot"), ..settings.clone() };
         let mut play = Play::new(chart, settings.botplay);
@@ -852,11 +852,17 @@ impl Playing {
             let clock = |ms: f64| format!("{}:{:02}", ms as u32 / 60000, ms as u32 / 1000 % 60);
             let words = [clock(length - played), clock(played), self.entry.title.clone()];
             // the song's name stands alone; the times sit on a bar that fills as the song goes
+            // hidden until the song starts, then in over half a second (the Haxe engine's circOut)
+            let shown = ((self.position - self.start_at) / 500.0).clamp(0.0, 1.0) as f32;
+            let shown = (1.0 - (shown - 1.0).powi(2)).sqrt();
+            let seen = |color: Color| Color { a: color.a * shown, ..color };
             if settings.time_bar < 2 {
-                draw_rectangle(WIDTH / 2.0 - 204.0, time_y - 4.0, 408.0, 27.0, BLACK);
-                draw_rectangle(WIDTH / 2.0 - 200.0, time_y, 400.0 * (played / length) as f32, 19.0, WHITE);
+                draw_rectangle(WIDTH / 2.0 - 204.0, time_y - 4.0, 408.0, 27.0, seen(BLACK));
+                draw_rectangle(WIDTH / 2.0 - 200.0, time_y, 400.0 * (played / length) as f32, 19.0, seen(WHITE));
             }
-            skin.centered(&words[settings.time_bar], time_y + 17.0, 22, WHITE);
+            if shown > 0.0 {
+                skin.centered(&words[settings.time_bar], time_y + 17.0, 22, seen(WHITE));
+            }
         }
 
         // health: the player's share grows from the right

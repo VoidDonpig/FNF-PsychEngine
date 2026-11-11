@@ -71,7 +71,8 @@ fn parse(text: &str) -> Vec<(bool, String)> {
 
 impl Dialogue {
     /// The dialogue of a song, if it is one of the three that have one and its file is there.
-    pub fn load(base: &Path, paths: &Paths, song: &str, stage: &str) -> Option<Dialogue> {
+    /// `language`: the one chosen, whose own file of the lines is taken when the song has one.
+    pub fn load(base: &Path, paths: &Paths, song: &str, stage: &str, language: &str) -> Option<Dialogue> {
         let style = match song {
             "senpai" => Style::Senpai,
             "roses" => Style::Roses,
@@ -81,8 +82,8 @@ impl Dialogue {
         if !stage.starts_with("school") {
             return None;
         }
-        // shortcut: the English file; the Haxe engine prefers "<song>Dialogue_<language>.txt" once there are languages.
-        let lines = parse(&std::fs::read_to_string(paths.find(&format!("data/{song}/{song}Dialogue.txt"))?).ok()?);
+        let file = paths.find(&format!("data/{song}/{song}Dialogue_{language}.txt")).or_else(|| paths.find(&format!("data/{song}/{song}Dialogue.txt")))?;
+        let lines = parse(&std::fs::read_to_string(file).ok()?);
         let sheet = |name: &str| {
             let sheet = Sheet::load(&paths.find(&format!("images/weeb/{name}.png"))?).ok()?;
             sheet.texture.set_filter(FilterMode::Nearest);
