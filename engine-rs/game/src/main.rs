@@ -957,6 +957,8 @@ fn main() {
 
     // when the screen last changed: the new one is uncovered by a dark edge sliding down. MAX: changed this very frame.
     let mut wiped = f64::MIN;
+    // before that the old screen, as it last looked, is covered the same way: its picture and since when. The new screen waits.
+    let mut closing: Option<(Texture2D, f64)> = None;
     loop {
         // the change itself may have taken long (a song loading): the wipe starts when the new screen first shows
         if wiped == f64::MAX {
@@ -977,8 +979,9 @@ fn main() {
             Screen::Menu(page) => *page as usize,
             _ => 0,
         });
-        let was = which(&screen);
+        let (was, was_loading) = (which(&screen), matches!(screen, Screen::Loading(..)));
         screen = match screen {
+            waiting if closing.is_some() => waiting,
             Screen::Menu(page) => match skin.as_ref().map(|skin| menus.run(page, skin, &weeks, &songs, &save, settings.flashing)) {
                 Some(Go::Stay) => Screen::Menu(page),
                 Some(Go::Page(page)) => Screen::Menu(page),
@@ -1167,20 +1170,37 @@ fn main() {
             }
         };
 
-        // (the loading picture is there at once: the song behind it is what gets uncovered)
-        if which(&screen) != was && !matches!(screen, Screen::Loading(..)) {
-            wiped = f64::MAX;
-        }
-        // shortcut: the new screen is cut to black and uncovered; the Haxe engine first covers the old one the same way.
-        let uncovered = if wiped == f64::MAX { 0.0 } else { (get_time() - wiped) as f32 / 0.5 };
-        let edge = -(HEIGHT + 400.0) + (2.0 * HEIGHT + 50.0) * uncovered;
-        if edge < HEIGHT {
+        // a dark edge slides down over the screen: black with a screen's height of fading edge, `fading` below it or above
+        let cover = |edge: f32, fading: f32| {
             set_camera(&Camera2D { target: vec2(WIDTH / 2.0, HEIGHT / 2.0), zoom: vec2(2.0 / WIDTH, 2.0 / HEIGHT), ..Default::default() });
-            // a screen's height of fading edge, and black below it
             for strip in 0..36 {
-                draw_rectangle(0.0, edge + strip as f32 * 20.0, WIDTH, 20.0, Color::new(0.0, 0.0, 0.0, (strip as f32 + 0.5) / 36.0));
+                draw_rectangle(0.0, edge + fading * (strip as f32 * 20.0 + if fading < 0.0 { 20.0 } else { 0.0 }), WIDTH, 20.0, Color::new(0.0, 0.0, 0.0, 1.0 - (strip as f32 + 0.5) / 36.0));
             }
-            draw_rectangle(0.0, edge + HEIGHT, WIDTH, 2.0 * HEIGHT + 400.0, BLACK);
+            draw_rectangle(0.0, if fading < 0.0 { edge } else { edge - 2.0 * HEIGHT - 400.0 }, WIDTH, 2.0 * HEIGHT + 400.0, BLACK);
+        };
+        if which(&screen) != was {
+            if was_loading {
+                // (the loading picture went at once: the song behind it is what gets uncovered)
+                wiped = f64::MAX;
+            } else {
+                closing = Some((Texture2D::from_image(&get_screen_data()), get_time()));
+            }
+        }
+        if let Some((picture, since)) = &closing {
+            let covered = (get_time() - since) as f32 / 0.5;
+            draw_texture_ex(picture, 0.0, 0.0, WHITE, DrawTextureParams { dest_size: Some(vec2(WIDTH, HEIGHT)), ..Default::default() });
+            cover(-HEIGHT + (2.0 * HEIGHT + 50.0) * covered, 1.0);
+            if covered >= 1.0 {
+                closing = None;
+                // (the loading picture is there at once)
+                wiped = if matches!(screen, Screen::Loading(..)) { f64::MIN } else { f64::MAX };
+            }
+        }
+        let uncovered = if wiped == f64::MAX { 0.0 } else { (get_time() - wiped) as f32 / 0.5 };
+        // (until the fading edge above the black has left the screen too)
+        let edge = -400.0 + (2.0 * HEIGHT + 50.0) * uncovered;
+        if edge < 2.0 * HEIGHT {
+            cover(edge, -1.0);
         }
         // the main menu greets whoever plays on a Friday night
         if matches!(screen, Screen::Menu(Page::Main)) && !std::mem::replace(&mut greeted, true) {

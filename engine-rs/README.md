@@ -109,7 +109,8 @@ Done:
   achievement; a loading picture while a song is read; a crash log (`funkin-rs-crash.log`); a mod's own
   title screen (`images/gfDanceTitle.json`: places, tempo, the dancer's frames, a background), the menus
   looking in the first mod switched on before the game's files; the title screen's four hidden dancers
-  (their words typed on it, the jingles, Pessy's achievement).
+  (their words typed on it, the jingles, Pessy's achievement); a dark edge closing over the old screen
+  before every change of screen, as one uncovers the new.
 
 Not there yet:
 
@@ -120,8 +121,7 @@ Not there yet:
   fork's Display Lag Correction; the charting mode entries of the pause menu.
 - **Stages**: objects of a stage file listed between two characters are drawn behind all three; `flipY`,
   colour names and the story-mode/freeplay filters of stage objects.
-- **Menus**: the title screen's colours turning with Left and Right; the screen
-  that closes over the old screen before a change (the new one is uncovered by a wipe); the mods menu's
+- **Menus**: the title screen's colours turning with Left and Right; the mods menu's
   mouse buttons and per-mod settings; achievements of mods; the options menu's look (it is a plain list)
   and its Shaders and GPU Caching switches (nothing to switch here); the screen for adjusting delay and
   placing the rating by dragging; Discord presence; update check; languages; the mouse anywhere.
