@@ -205,10 +205,14 @@ mod output {
 
     impl Output {
         pub fn open(tracks: &[&Path], speed: f64) -> Result<Output, String> {
-            let (first, rate) = decode(tracks.first().ok_or("no track")?)?;
+            // no tracks: an output that only plays sounds, as the menus use it
+            let (first, rate) = match tracks.first() {
+                Some(track) => decode(track)?,
+                None => (Vec::new(), 44100),
+            };
             let first = Arc::new(first);
             let mut loaded = vec![first.clone()];
-            for track in &tracks[1..] {
+            for track in tracks.iter().skip(1) {
                 let (samples, track_rate) = decode(track)?;
                 if track_rate != rate {
                     // shortcut: tracks of one song share a sample rate in every song seen so far; resample here if one does not.

@@ -1029,4 +1029,5 @@ fn main() {
             break;
         }
     }
+    close();
 }

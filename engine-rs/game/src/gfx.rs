@@ -451,10 +451,8 @@ impl winit::application::ApplicationHandler for App {
     }
 }
 
+// Fields are let go of in this order when the game closes: what draws first, the window and its event loop last.
 struct Context {
-    event_loop: Option<winit::event_loop::EventLoop<()>>,
-    app: App,
-    window: Arc<winit::window::Window>,
     instance: wgpu::Instance,
     /// None when it was lost and could not be made again yet.
     surface: Option<wgpu::Surface<'static>>,
@@ -487,6 +485,9 @@ struct Context {
     frame_time: f32,
     due: Instant,
     open: bool,
+    window: Arc<winit::window::Window>,
+    app: App,
+    event_loop: Option<winit::event_loop::EventLoop<()>>,
 }
 
 thread_local! {
@@ -892,6 +893,12 @@ pub fn next_frame(fps: f64) -> bool {
         context.listen();
         context.open
     })
+}
+
+/// Closes the window and lets go of the graphics card. Called before the program ends: left to the system's own
+/// clean-up of a thread, which Windows runs after it has stopped every other thread, the graphics driver can wait for ever.
+pub fn close() {
+    CONTEXT.with(|slot| drop(slot.borrow_mut().take()));
 }
 
 /// Forgets what was drawn this frame and starts over on that colour.
