@@ -65,13 +65,15 @@ Done:
 - **Menus**: the title screen with its opening lines, the main menu, story mode (week list, locked weeks,
   difficulties, the three characters, track list, week score; a week plays through song after song) and
   freeplay (bold song names, icons, song colours, difficulties, personal best), with the menu music and
-  sounds. Week order follows `weekList.txt`. In freeplay Space plays the selected song, R asks whether
-  to reset its score (in story mode: the week's), and holding Up or Down runs through the list. Credits (those of the mods first; Enter opens a link) and the
-  mods menu: switch mods on and off and move them up and down, kept in `modsList.txt` as the Haxe engine
-  keeps it. Mods switched off bring no weeks; mods that run globally lend their files to every song.
+  sounds. Week order follows `weekList.txt`. In freeplay Space opens the song player (pause, wind with
+  Left and Right, speed with Up and Down, R to start over), R asks whether to reset the song's score (in
+  story mode: the week's), and holding Up or Down runs through the list. Credits (those of the mods first; Enter opens a link) and the
+  mods menu: switch mods on and off (one or all), move them up, down or to the top, kept in
+  `modsList.txt` as the Haxe engine keeps it; a mod whose `pack.json` asks for a restart sends the game
+  back to its title screen. Mods switched off bring no weeks; mods that run globally lend their files to every song.
 - **Achievements**: the Haxe engine's list and rules (a week on Hard without a miss, a rating of 100% or
   under 20%, no idling, two keys only, ten seconds of singing, Friday night, the lowest graphics), a
-  notice when one is unlocked, and the achievements menu.
+  notice when one is unlocked, and the achievements menu (R locks one again).
 - **Saved data**: best score and accuracy of every song and difficulty, best week scores, finished weeks
   (which unlock the weeks after them). Runs on botplay are not kept.
 - **Options**: key binds (two per lane); gameplay: downscroll, middlescroll, opponent notes, ghost
@@ -92,11 +94,10 @@ Not there yet:
   camera, the weekend 1 fight notes, custom ones), what is left of weekend 1 (Nene's knife and
   cheers, the shell flying off the gun, the stage going dark at the shot, rain, light maps, the two rare
   turns of the fight when the player is nearly out), coarse note splashes on pixel stages, other note and splash skins.
-- **Menus**: the mods menu's mouse buttons, per-mod settings and restart flag; the achievements that
-  need features not here yet (the henchmen count, the title easter egg), those of mods,
-  and resetting one; the rest of the options (frame rate, note skins, placing the rating and combo by
+- **Menus**: the mods menu's mouse buttons and per-mod settings; the achievements that
+  need features not here yet (the henchmen count, the title easter egg) and those of mods; the rest of the options (frame rate, note skins, placing the rating and combo by
   dragging them, auto pause, gamepad, languages; the options menu is a plain list, not the Haxe engine's
-  look, and its Shaders and GPU Caching switches have nothing to switch here); winding and speed in the freeplay song player; covering the old screen before a change (the new
+  look, and its Shaders and GPU Caching switches have nothing to switch here); covering the old screen before a change (the new
   one is uncovered by a wipe); the loading screen; a mod's own title screen (`gfDanceTitle.json`).
 - **Saved data**: translations. Scores of the Haxe engine are
   not read (it keeps them in its own binary save).

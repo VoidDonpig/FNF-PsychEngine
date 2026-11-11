@@ -32,7 +32,7 @@ pub enum Go {
     /// Songs to play in a row (indices into the song list), and the week they are played for in story mode.
     Play(Vec<usize>, Option<usize>),
     /// The player wants a best score forgotten: of a week (true) or a song, by its name and difficulty.
-    Reset(bool, String, String),
+    Reset(Reset, String, String),
 }
 
 const UP: [KeyCode; 2] = [KeyCode::Up, KeyCode::W];
@@ -283,9 +283,39 @@ fn credit(fields: &[&str], source: &str) -> Credit {
 }
 
 /// A mod in the mods menu.
+/// What the player may ask to have forgotten.
+#[derive(Clone, Copy, PartialEq)]
+pub enum Reset {
+    Song,
+    Week,
+    Achievement,
+}
+
+/// The song player of freeplay: how fast it plays, whether it is paused, and for how long it has been wound (Left or Right held) and its speed changed (Up or Down held).
+#[derive(Default)]
+struct Player {
+    rate: f64,
+    paused: bool,
+    wound: Option<f32>,
+    pitched: f32,
+}
+
+/// Where winding leaves a song: a second a press, and once the key has been held for half a second forty seconds a second.
+fn wound(at: f64, length: f64, tap: i32, held: i32, held_for: f32, dt: f32) -> f64 {
+    let run = if held_for > 0.5 { 40000.0 * dt as f64 * held as f64 } else { 0.0 };
+    (at + tap as f64 * 1000.0 + run).clamp(0.0, length)
+}
+
+/// The playing speed some steps of 0.05 up or down, from a quarter to three times.
+fn rate_after(rate: f64, steps: i32) -> f64 {
+    ((rate * 100.0).round() / 100.0 + 0.05 * steps as f64).clamp(0.25, 3.0)
+}
+
 struct ModRow {
     folder: String,
     on: bool,
+    /// Moving or switching it starts the game over.
+    restart: bool,
     /// From its pack.json, when it has one.
     name: String,
     text: String,
@@ -341,7 +371,10 @@ pub struct Menus {
     /// The selected song of freeplay is being played instead of the menu music.
     preview: bool,
     /// The question whether to forget a score: what would be reset (as `Go::Reset` names it), what it is called, whether "Yes" is selected, and for how long it has been asked.
-    asking: Option<(bool, String, String, String, bool, f32)>,
+    asking: Option<(Reset, String, String, String, bool, f32)>,
+    player: Player,
+    /// A mod that asks for it was moved or switched: leaving the mods menu starts the game over.
+    restart: bool,
 }
 
 /// Where a step of (dx, dy) leads from `selected` in a grid of `count` things, four to a row. Rows wrap around, and so does the list.
@@ -430,7 +463,7 @@ impl Menus {
             art: Art { base: base.to_path_buf(), images: HashMap::new(), sheets: HashMap::new(), characters: HashMap::new() },
             alphabet: Alphabet::load(&paths), paths, audio: None, music_at: 0.0, intro: true, wacky: [wacky.0.to_owned(), wacky.1.to_owned()], flash: (f64::MIN, 1.0), chosen: None,
             main_row: 0, main_side: 0, main_slide: 0.0, week: 0, week_scroll: 0.0, difficulty: "Normal".to_owned(), rows: Vec::new(), song: 0, song_scroll: 0.0, tint: Vec3::ONE, shown: (0.0, 0.0),
-            credits: Vec::new(), credit: 0, credit_scroll: 0.0, mods: Vec::new(), mod_row: 0, mods_changed: false, reload: false, flashing: true, achievement: 0, achievement_scroll: 0.0, chime: false, held: 0.0, preview: false, asking: None,
+            credits: Vec::new(), credit: 0, credit_scroll: 0.0, mods: Vec::new(), mod_row: 0, mods_changed: false, reload: false, flashing: true, achievement: 0, achievement_scroll: 0.0, chime: false, held: 0.0, preview: false, asking: None, player: Player::default(), restart: false,
         }
     }
 
@@ -515,7 +548,8 @@ impl Menus {
         let fade = (since * 2.5).min(1.0);
         // long names are squeezed to fit
         let squeeze = if shown.chars().count() > 18 { 0.8 } else { 1.0 };
-        for (line, y, squeeze) in [("Reset the score of", 180.0, 1.0), (shown.as_str(), 270.0, squeeze)] {
+        let what = if week == Reset::Achievement { "Reset Achievement:" } else { "Reset the score of" };
+        for (line, y, squeeze) in [(what, 180.0, 1.0), (shown.as_str(), 270.0, squeeze)] {
             self.write(skin, line, true, (WIDTH - self.width(skin, line, true) * squeeze) / 2.0, y, squeeze, fade);
         }
         for (word, shift, chosen, color) in [("Yes", -200.0, yes, RED), ("No", 200.0, !yes, WHITE)] {
@@ -828,7 +862,7 @@ impl Menus {
             None if is_key_pressed(KeyCode::LeftControl) || is_key_pressed(KeyCode::RightControl) => Go::Changers,
             None if is_key_pressed(KeyCode::R) => {
                 let called = if week.name.is_empty() { &week.file } else { &week.name };
-                self.asking = Some((true, week.file.clone(), difficulty.to_owned(), format!("{called} ({difficulty})?"), false, 0.0));
+                self.asking = Some((Reset::Week, week.file.clone(), difficulty.to_owned(), format!("{called} ({difficulty})?"), false, 0.0));
                 Go::Stay
             }
             None if pressed(&ACCEPT) => {
@@ -901,25 +935,100 @@ impl Menus {
             }
         }
 
+        let clock = |ms: f64| format!("{}:{:02}", ms as u32 / 60000, ms as u32 / 1000 % 60);
+        let wide = |text: &str, size: u16| measure_text(text, skin.font.as_ref(), size, 1.0).width;
+        if let Some(song) = self.audio.as_ref().filter(|_| self.preview) {
+            // the song player takes the place of the personal best
+            let title = format!("PLAYING: {}{}", entry.title, if self.player.paused { " (PAUSED)" } else { "" });
+            let left = WIDTH - 6.0 - wide(&title, 32).max(300.0);
+            let dark = Color::new(0.0, 0.0, 0.0, 0.6);
+            draw_rectangle(left - 6.0, 0.0, WIDTH - left + 6.0, 100.0, dark);
+            label(skin, &title, WIDTH - 6.0, 5.0, 32, WHITE, true);
+            let (at, length) = (song.position_ms(), song.length_ms());
+            draw_rectangle(left, 47.0, WIDTH - 6.0 - left, 5.0, BLACK);
+            draw_rectangle(left, 47.0, (WIDTH - 6.0 - left) * length.map_or(0.0, |length| (at / length).clamp(0.0, 1.0) as f32), 5.0, WHITE);
+            let time = format!("< {} / {} >", clock(at), length.map_or("-:--".to_owned(), clock));
+            label(skin, &time, (left + WIDTH - 6.0 - wide(&time, 32)) / 2.0, 62.0, 32, WHITE, false);
+            let rate = format!("{:.2}x", self.player.rate);
+            let box_width = wide(&rate, 32) + 30.0;
+            draw_rectangle(left - 6.0 - box_width, 0.0, box_width, 100.0, dark);
+            for (line, top) in [("^", 6.0), (rate.as_str(), 34.0), ("v", 64.0)] {
+                label(skin, line, left - 6.0 - (box_width + wide(line, 32)) / 2.0, top, 32, WHITE, false);
+            }
+        }
         let best = save.song(&entry.title, &entry.difficulty);
         self.shown.0 = if (best.0 as f64 - self.shown.0).abs() <= 10.0 { best.0 as f64 } else { best.0 as f64 + (self.shown.0 - best.0 as f64) * (-dt as f64 * 24.0).exp() };
         self.shown.1 = if (best.1 - self.shown.1).abs() <= 0.0001 { best.1 } else { best.1 + (self.shown.1 - best.1) * (-dt as f64 * 12.0).exp() };
         let score = format!("PERSONAL BEST: {} ({:.2}%)", self.shown.0 as i64, (self.shown.1 * 10000.0).floor() / 100.0);
-        let left = WIDTH - 6.0 - measure_text(&score, skin.font.as_ref(), 32, 1.0).width;
-        draw_rectangle(left - 6.0, 0.0, WIDTH - left + 6.0, 66.0, Color::new(0.0, 0.0, 0.0, 0.6));
-        label(skin, &score, left, 5.0, 32, WHITE, false);
-        let name = entry.difficulty.to_uppercase();
-        let name = if row.entries.len() > 1 { format!("< {name} >") } else { name };
-        label(skin, &name, (left - 6.0 + WIDTH) / 2.0 - measure_text(&name, skin.font.as_ref(), 24, 1.0).width / 2.0, 41.0, 24, WHITE, false);
+        if !self.preview {
+            let left = WIDTH - 6.0 - wide(&score, 32);
+            draw_rectangle(left - 6.0, 0.0, WIDTH - left + 6.0, 66.0, Color::new(0.0, 0.0, 0.0, 0.6));
+            label(skin, &score, left, 5.0, 32, WHITE, false);
+            let name = entry.difficulty.to_uppercase();
+            let name = if row.entries.len() > 1 { format!("< {name} >") } else { name };
+            label(skin, &name, (left - 6.0 + WIDTH) / 2.0 - wide(&name, 24) / 2.0, 41.0, 24, WHITE, false);
+        }
         draw_rectangle(0.0, HEIGHT - 26.0, WIDTH, 26.0, Color::new(0.0, 0.0, 0.0, 0.6));
-        // shortcut: listening plays the song from its start, with its time shown; the Haxe engine's player can also wind and change its speed.
-        let clock = |ms: f64| format!("{}:{:02}", ms as u32 / 60000, ms as u32 / 1000 % 60);
-        let playing = self.audio.as_ref().filter(|_| self.preview).map(|song| format!("PLAYING: {} - {} / Space or Esc: stop", entry.title.to_uppercase(), clock(song.position_ms())));
-        let tip = playing.as_deref().unwrap_or("Press SPACE to listen to the Song / Press CTRL to open the Gameplay Changers Menu / Press R to Reset your Score and Accuracy.");
-        label(skin, tip, (WIDTH - measure_text(tip, skin.font.as_ref(), 16, 1.0).width) / 2.0, HEIGHT - 22.0, 16, WHITE, false);
+        let tip = if self.preview {
+            "Press SPACE to Pause / Press ESCAPE to Exit / Press R to Reset the Song / LEFT, RIGHT: wind / UP, DOWN: speed"
+        } else {
+            "Press SPACE to listen to the Song / Press CTRL to open the Gameplay Changers Menu / Press R to Reset your Score and Accuracy."
+        };
+        label(skin, tip, (WIDTH - wide(tip, 16)) / 2.0, HEIGHT - 22.0, 16, WHITE, false);
 
         if self.preview {
-            if is_key_pressed(KeyCode::Space) || pressed(&BACK) {
+            let down = |keys: &[KeyCode]| keys.iter().any(|key| is_key_down(*key));
+            if let Some(song) = &mut self.audio {
+                let (player, length) = (&mut self.player, song.length_ms());
+                let (tap, held) = (pressed(&RIGHT) as i32 - pressed(&LEFT) as i32, down(&RIGHT) as i32 - down(&LEFT) as i32);
+                match (held, player.wound) {
+                    (0, None) => {}
+                    (0, Some(_)) => {
+                        player.wound = None;
+                        if !player.paused {
+                            song.start();
+                        }
+                    }
+                    (_, was) => {
+                        // it is quiet while it winds
+                        if was.is_none() && !player.paused {
+                            song.pause();
+                        }
+                        let held_for = if tap != 0 { 0.0 } else { was.unwrap_or(0.0) + dt };
+                        player.wound = Some(held_for);
+                        song.seek(wound(song.position_ms(), length.unwrap_or(f64::MAX), tap, held, held_for, dt));
+                    }
+                }
+                let (tap, held) = (pressed(&UP) as i32 - pressed(&DOWN) as i32, down(&UP) as i32 - down(&DOWN) as i32);
+                player.pitched = if held == 0 || tap != 0 { 0.0 } else { player.pitched + dt };
+                let mut steps = tap;
+                if player.pitched > 0.6 {
+                    // held: twenty steps a second
+                    (steps, player.pitched) = (steps + held, 0.55);
+                }
+                if steps != 0 {
+                    player.rate = rate_after(player.rate, steps);
+                    song.set_speed(player.rate);
+                }
+                if is_key_pressed(KeyCode::R) {
+                    player.rate = 1.0;
+                    song.set_speed(1.0);
+                    song.seek(0.0);
+                }
+                if is_key_pressed(KeyCode::Space) {
+                    player.paused ^= true;
+                    match (player.wound, player.paused) {
+                        (Some(_), _) => {}
+                        (None, true) => song.pause(),
+                        (None, false) => song.start(),
+                    }
+                }
+                // it plays round and round
+                if length.is_some_and(|length| song.position_ms() >= length) {
+                    song.seek(0.0);
+                }
+            }
+            if pressed(&BACK) {
                 // the menu music comes back by itself once there is no sound
                 (self.audio, self.preview) = (None, false);
             }
@@ -928,10 +1037,10 @@ impl Menus {
             let tracks: Vec<&Path> = [Some(&entry.inst), entry.voices_player.as_ref(), entry.voices_opponent.as_ref()].into_iter().flatten().map(PathBuf::as_path).collect();
             let mut song = Song::load(&tracks);
             song.start();
-            (self.audio, self.preview) = (Some(song), true);
+            (self.audio, self.preview, self.player) = (Some(song), true, Player { rate: 1.0, ..Default::default() });
             Go::Stay
         } else if is_key_pressed(KeyCode::R) {
-            self.asking = Some((false, entry.title.clone(), entry.difficulty.clone(), format!("{} ({})?", entry.title, entry.difficulty), false, 0.0));
+            self.asking = Some((Reset::Song, entry.title.clone(), entry.difficulty.clone(), format!("{} ({})?", entry.title, entry.difficulty), false, 0.0));
             Go::Stay
         } else if is_key_pressed(KeyCode::LeftControl) || is_key_pressed(KeyCode::RightControl) {
             Go::Changers
@@ -1006,6 +1115,12 @@ impl Menus {
         let centred = |text: &str, top: f32, size: u16| drop(label(skin, text, (WIDTH - measure_text(text, skin.font.as_ref(), size, 1.0).width) / 2.0, top, size, WHITE, false));
         centred(if save.unlocked(selected.id) { selected.name } else { "???" }, 580.0, 32);
         centred(selected.text, 618.0, 24);
+        if save.unlocked(selected.id) {
+            label(skin, "R: reset", WIDTH - 10.0, 690.0, 16, GRAY, true);
+            if is_key_pressed(KeyCode::R) {
+                self.asking = Some((Reset::Achievement, selected.id.to_owned(), String::new(), format!("{}?", selected.name), false, 0.0));
+            }
+        }
         if pressed(&BACK) {
             self.sound("cancelMenu", 1.0);
             return Go::Page(Page::Main);
@@ -1088,7 +1203,7 @@ impl Menus {
                 let text = |key: &str, or: &str| pack[key].as_str().filter(|text| !text.trim().is_empty()).unwrap_or(or).to_owned();
                 let color = [0, 1, 2].map(|i| pack["color"][i].as_f64().map(|c| c as f32 / 255.0));
                 let color = if color.contains(&None) { vec3(0.4, 0.353, 1.0) } else { Vec3::from(color.map(Option::unwrap_or_default)) };
-                self.mods.push(ModRow { name: text("name", &folder), text: text("description", "No description provided."), color, folder, on });
+                self.mods.push(ModRow { name: text("name", &folder), text: text("description", "No description provided."), color, restart: pack["restart"] == true, folder, on });
             }
             self.mod_row = self.mod_row.min(self.mods.len().saturating_sub(1));
         }
@@ -1110,14 +1225,31 @@ impl Menus {
             // with Shift the selected mod moves through the list: mods higher up are looked in first
             if is_key_down(KeyCode::LeftShift) || is_key_down(KeyCode::RightShift) {
                 let moved = self.mods.remove(self.mod_row);
+                self.restart |= moved.restart;
                 self.mods.insert(next, moved);
                 self.mods_changed = true;
             }
             self.mod_row = next;
             self.sound("scrollMenu", 0.6);
         }
-        if pressed(&ACCEPT) {
+        let (shift, control) = (is_key_down(KeyCode::LeftShift) || is_key_down(KeyCode::RightShift), is_key_down(KeyCode::LeftControl) || is_key_down(KeyCode::RightControl));
+        if shift && is_key_pressed(KeyCode::Home) {
+            // to the top of the list: looked in before all others
+            let moved = self.mods.remove(self.mod_row);
+            self.restart |= moved.restart;
+            self.mods.insert(0, moved);
+            (self.mod_row, self.mods_changed) = (0, true);
+            self.sound("scrollMenu", 0.6);
+        } else if control && pressed(&ACCEPT) {
+            // all on; or, when they all are, all off
+            let on = !self.mods.iter().all(|row| row.on);
+            self.restart |= self.mods.iter().any(|row| row.restart && row.on != on);
+            self.mods.iter_mut().for_each(|row| row.on = on);
+            self.mods_changed = true;
+            self.sound("scrollMenu", 0.6);
+        } else if pressed(&ACCEPT) {
             self.mods[self.mod_row].on ^= true;
+            self.restart |= self.mods[self.mod_row].restart;
             self.mods_changed = true;
             self.sound("scrollMenu", 0.6);
         }
@@ -1146,9 +1278,9 @@ impl Menus {
             label(skin, &name, 140.0, y + 22.0, 16, white(alpha), false);
             label(skin, if row.on { "ON" } else { "OFF" }, 140.0, y + 46.0, 16, if row.on { GREEN } else { GRAY }, false);
         }
-        label(skin, "Enter: on/off", 55.0, 500.0, 16, WHITE, false);
-        label(skin, "Shift+Up/Down: move up or down", 55.0, 524.0, 16, WHITE, false);
-        label(skin, "Esc: save and go back", 55.0, 548.0, 16, WHITE, false);
+        for (line, text) in ["Enter: on/off", "Ctrl+Enter: all on, or all off", "Shift+Up/Down: move up or down", "Shift+Home: move to the top", "Esc: save and go back"].iter().enumerate() {
+            label(skin, text, 55.0, 500.0 + line as f32 * 24.0, 16, WHITE, false);
+        }
 
         let row = &self.mods[self.mod_row];
         draw_rectangle(400.0, 40.0, 840.0, 180.0, panel);
@@ -1160,7 +1292,11 @@ impl Menus {
         for (line, text) in wrap(&row.text, 810.0, measure).iter().take(14).enumerate() {
             label(skin, text, 415.0, 255.0 + line as f32 * 28.0, 24, WHITE, false);
         }
-        label(skin, "Mods higher in the list are looked in first. Changes take effect when you go back.", 415.0, 660.0, 16, GRAY, false);
+        if row.restart {
+            label(skin, "* Moving or Toggling On/Off this Mod will restart the game.", 415.0, 660.0, 16, WHITE, false);
+        } else {
+            label(skin, "Mods higher in the list are looked in first. Changes take effect when you go back.", 415.0, 660.0, 16, GRAY, false);
+        }
 
         if pressed(&BACK) {
             self.sound("cancelMenu", 1.0);
@@ -1177,6 +1313,11 @@ impl Menus {
                 (self.week, self.song) = (0, 0);
             }
             self.mods.clear();
+            if std::mem::take(&mut self.restart) {
+                // from the top: the title screen and its music again
+                (self.audio, self.intro) = (None, true);
+                return Go::Page(Page::Title);
+            }
             return Go::Page(Page::Main);
         }
         Go::Stay
@@ -1186,6 +1327,17 @@ impl Menus {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn the_song_player_winds_within_the_song_and_keeps_its_speed_in_range() {
+        // a press is a second; held for more than half a second it runs, forty seconds a second
+        assert_eq!((wound(5000.0, 60000.0, 1, 1, 0.0, 0.016), wound(500.0, 60000.0, -1, -1, 0.0, 0.016)), (6000.0, 0.0));
+        assert_eq!((wound(5000.0, 60000.0, 0, 1, 0.4, 0.125), wound(5000.0, 60000.0, 0, 1, 0.6, 0.125), wound(59000.0, 60000.0, 0, 1, 0.6, 0.125)), (5000.0, 10000.0, 60000.0));
+        assert_eq!((rate_after(1.0, 1), rate_after(0.3, -3), rate_after(2.95, 2)), (1.05, 0.25, 3.0));
+        // ten steps up and ten down end where they began
+        let up = (0..10).fold(1.0, |rate, _| rate_after(rate, 1));
+        assert_eq!((up, (0..10).fold(up, |rate, _| rate_after(rate, -1))), (1.5, 1.0));
+    }
 
     #[test]
     fn bold_letters_stand_on_one_line_with_gaps_for_spaces() {

@@ -872,7 +872,11 @@ async fn main() {
                     Playing::open(&base, entry, &settings, 0.0, story.is_some()).map_or_else(Screen::Failed, |p| Screen::Playing(Box::new(p)))
                 }
                 Some(Go::Reset(week, name, difficulty)) => {
-                    if week { save.reset_week(&name, &difficulty) } else { save.reset_song(&name, &difficulty) }
+                    match week {
+                        menu::Reset::Song => save.reset_song(&name, &difficulty),
+                        menu::Reset::Week => save.reset_week(&name, &difficulty),
+                        menu::Reset::Achievement => save.forget(&name),
+                    }
                     save.save(&base);
                     Screen::Menu(page)
                 }

@@ -63,6 +63,11 @@ impl Save {
         self.achievements.insert(achievement.to_owned())
     }
 
+    /// Locks an achievement again.
+    pub fn forget(&mut self, achievement: &str) {
+        self.achievements.remove(achievement);
+    }
+
     pub fn unlocked(&self, achievement: &str) -> bool {
         self.achievements.contains(achievement)
     }
@@ -129,6 +134,9 @@ mod tests {
         assert_eq!((save.song("Dad Battle", "Hard"), save.song("Dad Battle", "Normal"), save.week("week1", "Hard")), ((0, 0.0), (500, 0.5), 0));
         assert!(!save.locked(&next), "resetting a score does not lock anything again");
         assert!(save.unlock("ur_good") && !save.unlock("ur_good") && save.unlocked("ur_good") && !save.unlocked("hype"));
+        save.unlock("hype");
+        save.forget("hype");
+        assert!(save.unlocked("ur_good") && !save.unlocked("hype"));
         assert_eq!(Save::from_json(&save.to_json()), save);
         assert_eq!(Save::from_json("not json"), Save::default());
     }

@@ -69,6 +69,28 @@ impl Song {
         }
     }
 
+    /// Jumps to `ms` into the song, playing or paused.
+    pub fn seek(&mut self, ms: f64) {
+        self.played = ms;
+        self.started = self.started.map(|_| Instant::now());
+        #[cfg(feature = "audio")]
+        if let Some(output) = &self.output {
+            output.seek(ms);
+        }
+    }
+
+    /// Plays `speed` times as fast from here on (the pitch follows).
+    pub fn set_speed(&mut self, speed: f64) {
+        // what was played so far was played at the old speed
+        self.played = self.position_ms();
+        self.started = self.started.map(|_| Instant::now());
+        self.speed = speed;
+        #[cfg(feature = "audio")]
+        if let Some(output) = &self.output {
+            output.shared.speed.store(speed.to_bits(), std::sync::atomic::Ordering::Relaxed);
+        }
+    }
+
     /// Volume of one of the loaded tracks, 0 to 1.
     pub fn set_volume(&self, track: usize, volume: f32) {
         #[cfg(feature = "audio")]
@@ -127,12 +149,16 @@ impl Song {
 mod output {
     use cpal::traits::{DeviceTrait, HostTrait, StreamTrait};
     use std::path::Path;
-    use std::sync::atomic::{AtomicBool, AtomicU32, Ordering};
+    use std::sync::atomic::{AtomicBool, AtomicU32, AtomicU64, Ordering};
     use std::sync::{Arc, Mutex};
     use std::time::{Duration, Instant};
 
-    struct Shared {
+    pub struct Shared {
         playing: AtomicBool,
+        /// How fast the song plays, an f64 as bits.
+        pub speed: AtomicU64,
+        /// A song frame to jump to when the next buffer is filled. Locked only while `anchor` is.
+        seek: Mutex<Option<f64>>,
         /// A song frame and the moment it reaches (or reached) the speakers. None while not playing.
         anchor: Mutex<Option<(f64, Instant)>>,
         /// Position to report while paused, in ms.
@@ -151,13 +177,12 @@ mod output {
 
     pub struct Output {
         _stream: cpal::Stream,
-        shared: Arc<Shared>,
+        pub shared: Arc<Shared>,
         pub sounds: Arc<Mutex<Vec<Voice>>>,
         device_rate: f64,
         /// One per track, an f32 as bits.
         pub volumes: Arc<Vec<AtomicU32>>,
         rate: f64,
-        speed: f64,
         /// The instrumental's samples, for showing how it sounds.
         first: Arc<Vec<f32>>,
         pub length_ms: f64,
@@ -203,9 +228,9 @@ mod output {
                 return Err(format!("output device wants {:?} samples", config.sample_format()));
             }
             let channels = config.channels() as usize;
-            let step = rate as f64 / config.sample_rate().0 as f64 * speed;
+            let step = rate as f64 / config.sample_rate().0 as f64;
             let frames = loaded[0].len() / 2;
-            let shared = Arc::new(Shared { playing: AtomicBool::new(false), anchor: Mutex::new(None), frozen: Mutex::new(None) });
+            let shared = Arc::new(Shared { playing: AtomicBool::new(false), speed: AtomicU64::new(speed.to_bits()), seek: Mutex::new(None), anchor: Mutex::new(None), frozen: Mutex::new(None) });
             let for_callback = shared.clone();
             let sounds: Arc<Mutex<Vec<Voice>>> = Arc::new(Mutex::new(Vec::new()));
             let for_sounds = sounds.clone();
@@ -221,10 +246,14 @@ mod output {
                         {
                             // checked again under the lock: a pause that got in between must not be undone
                             let mut anchor = for_callback.anchor.lock().unwrap();
+                            if let Some(frame) = for_callback.seek.lock().unwrap().take() {
+                                cursor = frame;
+                            }
                             if for_callback.playing.load(Ordering::Relaxed) {
                                 *anchor = Some((cursor, Instant::now() + until_heard));
                             }
                         }
+                        let step = step * f64::from_bits(for_callback.speed.load(Ordering::Relaxed));
                         for frame in data.chunks_mut(channels) {
                             let (index, blend) = (cursor as usize, cursor.fract() as f32);
                             for (channel, out) in frame.iter_mut().take(2).enumerate() {
@@ -257,7 +286,7 @@ mod output {
                 None,
             ).map_err(|e| e.to_string())?;
             stream.play().map_err(|e| e.to_string())?;
-            Ok(Output { _stream: stream, shared, sounds, device_rate, volumes, rate: rate as f64, speed, first, length_ms: frames as f64 / rate as f64 * 1000.0 })
+            Ok(Output { _stream: stream, shared, sounds, device_rate, volumes, rate: rate as f64, first, length_ms: frames as f64 / rate as f64 * 1000.0 })
         }
 
         pub fn play(&self) {
@@ -279,6 +308,14 @@ mod output {
             *self.shared.anchor.lock().unwrap() = None;
         }
 
+        /// Jumps to `ms` into the song: that is the position until the next buffer plays from there.
+        pub fn seek(&self, ms: f64) {
+            let mut anchor = self.shared.anchor.lock().unwrap();
+            *self.shared.seek.lock().unwrap() = Some(ms / 1000.0 * self.rate);
+            *anchor = None;
+            *self.shared.frozen.lock().unwrap() = Some(ms);
+        }
+
         /// The bands of the instrumental around what is heard now.
         pub fn levels(&self) -> [f32; 7] {
             let Some(heard) = self.heard_ms() else { return [0.0; 7] };
@@ -292,13 +329,28 @@ mod output {
             let Some((frame, at)) = *self.shared.anchor.lock().unwrap() else { return *self.shared.frozen.lock().unwrap() };
             let now = Instant::now();
             let since = if now >= at { (now - at).as_secs_f64() } else { -(at - now).as_secs_f64() };
-            Some(((frame / self.rate + since * self.speed) * 1000.0).min(self.length_ms))
+            Some(((frame / self.rate + since * f64::from_bits(self.shared.speed.load(Ordering::Relaxed))) * 1000.0).min(self.length_ms))
         }
     }
 }
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn a_paused_song_stays_where_it_is_wound_to() {
+        let mut song = super::Song::load(&[]);
+        song.seek(5000.0);
+        song.set_speed(2.0);
+        assert_eq!(song.position_ms(), 5000.0);
+        song.start();
+        std::thread::sleep(std::time::Duration::from_millis(20));
+        // twice as fast: 20 ms are 40 ms of song at least
+        assert!(song.position_ms() >= 5040.0);
+        song.pause();
+        song.seek(100.0);
+        assert_eq!(song.position_ms(), 100.0);
+    }
+
     #[test]
     fn a_tone_shows_in_its_own_band() {
         let rate = 44100.0;

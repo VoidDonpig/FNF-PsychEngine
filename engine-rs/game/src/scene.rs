@@ -1432,7 +1432,7 @@ impl Scene {
                 let [Some(&here), Some(&there)] = [layers.first(), layers.get(1)] else { return };
                 let b = &mut self.backdrop;
                 // a car sets off in one of four looks, some drawn a little off its spot
-                let mut set_off = |car: &mut Car, layer: &mut Layer, kind: usize| {
+                let set_off = |car: &mut Car, layer: &mut Layer, kind: usize| {
                     let variant = rand::gen_range(1, 5);
                     layer.play(CARS[variant - 1], Motion::Still);
                     (car.drive, car.shift) = (Some(Drive::new(kind, variant)), [Vec2::ZERO, vec2(20.0, -15.0), vec2(30.0, 50.0), vec2(10.0, 60.0)][variant - 1]);

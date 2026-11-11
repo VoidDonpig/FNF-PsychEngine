@@ -34,7 +34,7 @@ impl Fight {
     /// `stray` for a press that hit nothing. `now` is the pose each is in.
     // shortcut: the two rare turns the Haxe engine adds when the player is nearly out (a badly timed hit answered by an uppercut, the punch that ends it) are left out.
     pub fn moves(&mut self, kind: &str, missed: bool, stray: bool, now: (&str, &str)) -> (Option<Move>, Option<Move>) {
-        let mut punch = |left: &mut bool, high: bool| {
+        let punch = |left: &mut bool, high: bool| {
             *left = !*left;
             act(&format!("punch{}{}", if high { "High" } else { "Low" }, if *left { 1 } else { 2 }), true, None)
         };
