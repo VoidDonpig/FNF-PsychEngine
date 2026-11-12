@@ -21,6 +21,16 @@ pub enum Go {
 /// The characters' entries in a stage's objects, and their places in its file (its keys for where they stand).
 const CHARACTERS: [(&str, &str); 3] = [("dad", "opponent"), ("boyfriend", "boyfriend"), ("gf", "girlfriend")];
 
+/// The stages there are (stages/*.json), by name.
+pub(crate) fn stage_names(paths: &Paths) -> Vec<String> {
+    let mut names: Vec<String> = paths.roots().iter().filter_map(|root| std::fs::read_dir(root.join("stages")).ok()).flatten().flatten()
+        .map(|file| file.path()).filter(|path| path.extension().is_some_and(|ending| ending == "json"))
+        .filter_map(|path| Some(path.file_stem()?.to_string_lossy().into_owned())).collect();
+    names.sort();
+    names.dedup();
+    names
+}
+
 /// The sprite list's rows shown at once.
 const ROWS: usize = 9;
 
@@ -68,11 +78,7 @@ impl StageEditor {
     /// Opens on a mod folder's first stage, else "stage", else the first there is.
     pub fn open(base: &Path, folder: &str) -> StageEditor {
         let paths = Paths::new(base, folder, "");
-        let mut names: Vec<String> = paths.roots().iter().filter_map(|root| std::fs::read_dir(root.join("stages")).ok()).flatten().flatten()
-            .map(|file| file.path()).filter(|path| path.extension().is_some_and(|ending| ending == "json"))
-            .filter_map(|path| Some(path.file_stem()?.to_string_lossy().into_owned())).collect();
-        names.sort();
-        names.dedup();
+        let names = stage_names(&paths);
         // in a mod folder, its own first stage
         let own = std::fs::read_dir(base.join("mods").join(folder).join("stages")).into_iter().flatten().flatten()
             .filter_map(|file| file.path().file_stem().map(|stem| stem.to_string_lossy().into_owned())).filter(|name| !folder.is_empty() && names.contains(name)).min();

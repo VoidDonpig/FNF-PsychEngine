@@ -82,6 +82,23 @@ fn dominant(image: &Image, width: u32) -> [u8; 3] {
     counts.into_iter().max_by_key(|&(color, count)| (count, color)).map_or([0, 0, 0], |(color, _)| color)
 }
 
+/// The characters there are: those the lists name (data/characterList.txt), then the files (characters/*.json).
+pub(crate) fn character_names(paths: &Paths) -> Vec<String> {
+    let mut characters: Vec<String> = paths.find_all("data/characterList.txt").iter().filter_map(|file| std::fs::read_to_string(file).ok())
+        .flat_map(|text| text.lines().map(|line| line.trim().to_owned()).collect::<Vec<_>>()).filter(|line| !line.is_empty()).collect();
+    for root in paths.roots() {
+        for file in std::fs::read_dir(root.join("characters")).into_iter().flatten().flatten() {
+            let path = file.path();
+            if let (Some("json"), Some(stem)) = (path.extension().and_then(|ending| ending.to_str()), path.file_stem()) {
+                characters.push(stem.to_string_lossy().into_owned());
+            }
+        }
+    }
+    let mut seen = std::collections::HashSet::new();
+    characters.retain(|name| seen.insert(name.clone()));
+    characters
+}
+
 /// Whether a character of that name is the opponent's kind (the Haxe editor's guess, for files that do not say).
 fn opponent_like(name: &str) -> bool {
     (name != "bf" && !name.starts_with("bf-") && !name.ends_with("-player") && !name.ends_with("-playable") && !name.ends_with("-dead"))
@@ -98,19 +115,7 @@ impl CharacterEditor {
         let paths = Paths::new(base, folder, "week1");
         let picture = |name: &str| paths.find(&format!("images/{name}.png")).and_then(|path| crate::atlas::picture(&path));
         let pictures = [picture("stageback"), picture("stagefront"), picture("editors/silhouetteDad"), picture("editors/silhouetteBF")];
-        // the characters there are: the lists of them, and the files
-        let mut characters: Vec<String> = paths.find_all("data/characterList.txt").iter().filter_map(|file| std::fs::read_to_string(file).ok())
-            .flat_map(|text| text.lines().map(|line| line.trim().to_owned()).collect::<Vec<_>>()).filter(|line| !line.is_empty()).collect();
-        for root in paths.roots() {
-            for file in std::fs::read_dir(root.join("characters")).into_iter().flatten().flatten() {
-                let path = file.path();
-                if let (Some("json"), Some(stem)) = (path.extension().and_then(|ending| ending.to_str()), path.file_stem()) {
-                    characters.push(stem.to_string_lossy().into_owned());
-                }
-            }
-        }
-        let mut seen = std::collections::HashSet::new();
-        characters.retain(|name| seen.insert(name.clone()));
+        let characters = character_names(&paths);
         let mut editor = CharacterEditor {
             paths, folder: folder.to_owned(), name: String::new(), json: Value::Null, character: None, player: false, animation: 0, time: 0.0, still: false,
             camera: Vec2::ZERO, zoom: 1.0, held: (0.0, 0.0), framing: 0.0, copied: Vec2::ZERO, undo_offset: None, ghost: None, ghost_alpha: 0.6, highlight: false, silhouettes: true,

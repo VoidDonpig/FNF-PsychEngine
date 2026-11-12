@@ -146,6 +146,9 @@ pub struct ChartEditor {
     /// How often (minutes; 0: never) and how many autosaves are kept (0: all); these and the Charting tab's switches as
     /// last kept in the editor's file (the Haxe editor's chartEditorSave).
     autosave_minutes: f64,
+    /// The characters and stages there are, for the Song tab's lists.
+    characters: Vec<String>,
+    stages: Vec<String>,
     backup_limit: usize,
     prefs: Value,
     /// The waveform drawn on the grid: of which track (0 none, 1 the instrumental, 2 and 3 the voices), its peaks.
@@ -176,12 +179,7 @@ impl ChartEditor {
         fill_sections(&mut json, length);
         let paths = Paths::new(base, &entry.source, "");
         let picture = |name: &str| paths.find(&format!("images/{name}.png")).and_then(|path| crate::atlas::picture(&path));
-        let icon = |character: &str| {
-            let file = paths.find(&format!("characters/{character}.json")).and_then(|file| std::fs::read_to_string(file).ok());
-            let name = file.and_then(|text| serde_json::from_str::<Value>(&text).ok()).and_then(|json| json["healthicon"].as_str().map(str::to_owned)).unwrap_or_else(|| "face".to_owned());
-            picture(&format!("icons/icon-{name}")).or_else(|| picture(&format!("icons/{name}"))).or_else(|| picture("icons/icon-face"))
-        };
-        let icons = [icon(json["player1"].as_str().unwrap_or("bf")), icon(json["player2"].as_str().unwrap_or("dad"))];
+        let icons = [icon_of(&paths, json["player1"].as_str().unwrap_or("bf")), icon_of(&paths, json["player2"].as_str().unwrap_or("dad"))];
         // the types and events the mods bring (custom_notetypes/, custom_events/), and those the chart already uses
         let named = |folder: &str, endings: &[&str]| {
             let mut names: Vec<String> = paths.roots().iter().filter_map(|root| std::fs::read_dir(root.join(folder)).ok()).flatten().flatten()
@@ -212,7 +210,7 @@ impl ChartEditor {
             sounds: [paths.find("sounds/hitsound.ogg"), paths.find("sounds/Metronome_Tick.ogg")],
             ui: Ui::default(), tab: 5, note_types, note_type: 0, events, abouts, event: 0, values: Default::default(), copied: None,
             base: base.to_path_buf(), autosaved: (std::time::Instant::now(), String::new()), waveform: (0, Peaks::default()),
-            autosave_minutes: 2.0, backup_limit: 10, prefs: Value::Null,
+            autosave_minutes: 2.0, backup_limit: 10, prefs: Value::Null, characters: crate::character_editor::character_names(&paths), stages: crate::stage_editor::stage_names(&paths),
         };
         let prefs = funkin_core::files::read(&base.join(PREFS));
         editor.autosave_minutes = prefs["autosave"].as_f64().unwrap_or(2.0).clamp(0.0, 60.0);
@@ -1062,11 +1060,22 @@ impl ChartEditor {
         if let Some(speed) = self.ui.stepper("speed", x + 150.0, y + 66.0, 70.0, speed, 0.1, 0.1, 10.0) {
             self.set("speed", json!((speed * 100.0).round() / 100.0));
         }
+        // lists of the characters and stages there are (one the chart names that is not there among them); the upper row
+        // first, its lists dropping down over the lower one
         for (index, (field, words)) in [("player1", "Player:"), ("player2", "Opponent:"), ("gfVersion", "Girlfriend:"), ("stage", "Stage:")].into_iter().enumerate() {
             let (x, y) = (x + 150.0 * (index % 2) as f32, y + 96.0 + 44.0 * (index / 2) as f32);
             self.ui.label(x, y, words);
-            if let Some(value) = self.ui.input(field, x, y + 18.0, 130.0, &text(&self.json, field)) {
-                self.set(field, json!(value));
+            let now = text(&self.json, field);
+            let mut names = if field == "stage" { self.stages.clone() } else { self.characters.clone() };
+            if !names.contains(&now) {
+                names.insert(0, now.clone());
+            }
+            let chosen = names.iter().position(|name| *name == now).unwrap_or(0);
+            if let Some(picked) = self.ui.dropdown(["song player", "song opponent", "song gf", "song stage"][index], x, y + 18.0, 130.0, &names, chosen) {
+                self.set(field, json!(names[picked]));
+                if index < 2 {
+                    self.icons[index] = icon_of(&Paths::new(&self.base, &self.entry.source, ""), &names[picked]);
+                }
             }
         }
         let autosaves = self.autosaves();
@@ -1306,6 +1315,14 @@ fn vortex(notes: &mut Vec<Value>, at: f64, column: usize, kind: Option<&str>) {
             None => json!([at, column, 0]),
         }),
     }
+}
+
+/// A character's health icon (its file's healthicon; the face when there is none).
+fn icon_of(paths: &Paths, character: &str) -> Option<Texture2D> {
+    let picture = |name: &str| paths.find(&format!("images/{name}.png")).and_then(|path| crate::atlas::picture(&path));
+    let file = paths.find(&format!("characters/{character}.json")).and_then(|file| std::fs::read_to_string(file).ok());
+    let name = file.and_then(|text| serde_json::from_str::<Value>(&text).ok()).and_then(|json| json["healthicon"].as_str().map(str::to_owned)).unwrap_or_else(|| "face".to_owned());
+    picture(&format!("icons/icon-{name}")).or_else(|| picture(&format!("icons/{name}"))).or_else(|| picture("icons/icon-face"))
 }
 
 /// The editor's own settings, in the game's folder.
