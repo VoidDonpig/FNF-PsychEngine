@@ -62,10 +62,12 @@ struct LayerDef {
     stretch: Vec2,
     /// The frames of its animation to play, when not all of them.
     indices: &'static [u32],
+    /// Its place in the stage file's objects (the stage editor's), when it comes from one.
+    source: Option<usize>,
 }
 
 fn layer(image: &'static str, x: f32, y: f32, scroll_x: f32, scroll_y: f32) -> LayerDef {
-    LayerDef { image, at: vec2(x, y), scroll: vec2(scroll_x, scroll_y), size: Size::Times(1.0), flip: false, flip_y: false, anim: None, fps: 24.0, front: false, after: 0, pixel: false, add: false, centered: false, detail: false, tint: WHITE, angle: 0.0, stretch: Vec2::ONE, indices: &[] }
+    LayerDef { image, at: vec2(x, y), scroll: vec2(scroll_x, scroll_y), size: Size::Times(1.0), flip: false, flip_y: false, anim: None, fps: 24.0, front: false, after: 0, pixel: false, add: false, centered: false, detail: false, tint: WHITE, angle: 0.0, stretch: Vec2::ONE, indices: &[], source: None }
 }
 
 /// The backdrop of a stage, back to front. The numbers are those of source/states/stages.
@@ -244,7 +246,7 @@ fn objects(stage: &Value, low: bool, story: bool) -> (Vec<LayerDef>, Vec<usize>)
     let mut cast = Vec::new();
     let number = |value: &Value, or: f32| value.as_f64().map_or(or, |n| n as f32);
     let pair = |value: &Value, or: f32| vec2(number(&value[0], or), number(&value[1], or));
-    let layers = list.iter().filter_map(|object| {
+    let layers = list.iter().enumerate().filter_map(|(place, object)| {
         if let Some(character) = who(object) {
             if !cast.contains(&character) {
                 cast.push(character);
@@ -263,6 +265,7 @@ fn objects(stage: &Value, low: bool, story: bool) -> (Vec<LayerDef>, Vec<usize>)
         (def.flip, def.flip_y, def.pixel, def.after) = (object["flipX"] == true, object["flipY"] == true, object["antialiasing"] == false, cast.len());
         def.tint = Color { a: number(&object["alpha"], 1.0), ..object["color"].as_str().map_or(WHITE, color_named) };
         def.angle = number(&object["angle"], 0.0).to_radians();
+        def.source = Some(place);
         if kind == "animatedSprite" {
             // the animation it starts on: the one named first, else the first of the list
             let animations = object["animations"].as_array().map_or(&[][..], Vec::as_slice);
@@ -762,6 +765,18 @@ impl Layer {
             }
             _ => {}
         }
+    }
+
+    /// Where it is drawn (unturned, on its first frame), `scroll` as for drawing.
+    fn bounds(&self, scroll: Vec2) -> Rect {
+        let size = self.frames.first().map_or(self.texture.size(), |frame| frame.size);
+        let scale = match self.def.size {
+            Size::Times(times) => times,
+            Size::Wide(width) => width / size.x,
+        };
+        let at = self.def.at + scroll * (Vec2::ONE - self.def.scroll);
+        let size = size * scale * self.def.stretch;
+        Rect::new(at.x, at.y, size.x, size.y)
     }
 
     /// `scroll`: the camera's top left corner in stage coordinates.
@@ -1384,6 +1399,51 @@ impl Scene {
         scene.look(chart, 0.0);
         scene.camera = scene.target;
         Ok(scene)
+    }
+
+    /// The stage editor's: the pictures and the places built again from the stage file as edited (its objects as on high
+    /// quality out of story mode; the stage's own backdrop is not used, as the Haxe editor shows only the file's), the
+    /// characters moved to their new places.
+    pub(crate) fn restage(&mut self, stage: &Value) {
+        let (defs, cast) = objects(stage, false, false);
+        let mut loaded = Pictures::new();
+        self.backdrop = defs.into_iter().filter_map(|def| Layer::load(&self.paths, def, &mut loaded)).collect();
+        self.cast = if cast.is_empty() { vec![0, 1, 2] } else { cast };
+        if stage["hide_girlfriend"] == true {
+            self.cast.retain(|who| *who != 0);
+        }
+        let spots = [pair(&stage["opponent"]), pair(&stage["boyfriend"]), pair(&stage["girlfriend"])];
+        for (who, character) in [&mut self.opponent, &mut self.player, &mut self.gf].into_iter().enumerate() {
+            if let Some(character) = character {
+                character.position += spots[who] - self.spots[who];
+            }
+        }
+        self.spots = spots;
+        self.camera_offsets = [pair(&stage["camera_opponent"]), pair(&stage["camera_boyfriend"]), pair(&stage["camera_girlfriend"])];
+        self.default_zoom = stage["defaultZoom"].as_f64().unwrap_or(1.05) as f32;
+    }
+
+    /// The stage editor's: the view's middle and zoom; animations played on by `dt`.
+    pub(crate) fn view(&mut self, camera: Vec2, zoom: f32, dt: f32) {
+        (self.camera, self.zoom) = (camera, zoom);
+        for character in [&mut self.opponent, &mut self.gf, &mut self.player].into_iter().flatten() {
+            character.time += dt;
+        }
+        self.backdrop.iter_mut().for_each(|layer| layer.time += dt);
+    }
+
+    /// The stage editor's: where the stage file's objects are drawn, by their place in its list, with the view as it is.
+    pub(crate) fn object_bounds(&self) -> Vec<(usize, Rect)> {
+        let scroll = self.camera - SCREEN / 2.0;
+        self.backdrop.iter().filter_map(|layer| Some((layer.def.source?, layer.bounds(scroll)))).collect()
+    }
+
+    /// The stage editor's: where the opponent, the player and the girlfriend stand (their boxes), and where the camera looks
+    /// at each of them in a song.
+    pub(crate) fn character_bounds(&self) -> [Option<(Rect, Vec2)>; 3] {
+        [&self.opponent, &self.player, &self.gf].map(|character| character.as_ref().map(|character| {
+            (Rect::new(character.position.x, character.position.y, character.size.x, character.size.y), character.middle() + character.camera_offset)
+        }))
     }
 
     /// For "Change Character": which role (0 opponent, 1 player, 2 girlfriend) a value names, and where it stands.

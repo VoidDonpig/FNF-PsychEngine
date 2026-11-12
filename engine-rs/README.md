@@ -239,6 +239,15 @@ Done:
   add/update, remove), their two frames drawn see-through over each other (H: one alone), WASD and the arrow keys
   moving their offsets (Shift: ten times); J/K/L/I move the view, Q/E zoom it out and in, R puts it back; saved over
   its file (the one before kept as `.bak`).
+- **Stage editor**: from the editors' list: a stage file (`stages/`; in a mod folder its own first) shown as the game
+  builds it from its objects, the three characters (the file's `_editorMeta` ones) where it puts them, the point the
+  camera looks at each; the Sprite List (pick, order up and down, new sprite or square, delete), a click picks what is
+  drawn on top there, the arrow keys and the right mouse button move it (Shift: four times, Ctrl: a pixel); Meta (the
+  characters shown, UI style), Data (asset folder, hide girlfriend, camera offsets, zoom, camera speed) and Object (place,
+  name, image, scroll, scale, opacity, angle, colour, flips, antialiasing, low/high quality) tabs; J/K/L/I move the view,
+  E/Q zoom, R back to the stage's zoom, F12 hides the boxes, F1 the help; saved over its file or under a new name (the
+  one before kept as `.bak`). The game's own stages draw theirs in code, so only their characters show, as in the Haxe
+  editor.
 - **Note splash editor**: from the editors' list: a splash skin's file (`images/noteSplashes/`) edited, its animations
   played over four strums where Psych's splashes go (Space, or a click on a strum): name, prefix, note data, indices,
   frame rate range (add/update, remove); scale, allow RGB, allow pixel; the arrow keys move an animation's offset
@@ -261,6 +270,6 @@ Not there yet:
 - **Editors**: the chart editor's File/Edit/View menus, the vortex editor, lists to choose characters and stages from, pasted notes following the mouse before they are put down, the autosave's time and count settings, a song
   chosen to chart from the editors' list;
   the week editor's Copy/Paste Color (no system clipboard here); the
-  note splash editor's Shader tab; the stage editor.
+  note splash editor's Shader tab; the stage editor's animated sprites (its animation box) and image file picker.
 - **Other**: gamepads on Linux and macOS (gilrs needs libudev there); binding a gamepad's buttons on the key binds
   page (Psych's buttons are used as they are).
