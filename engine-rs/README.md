@@ -186,7 +186,7 @@ Not there yet:
   colour shift) is drawn as falling streaks, growing heavier through the song, not with the Haxe engine's shader; the charting mode entries of the pause menu.
 - **Menus**: achievements of mods; the note colours' copy and paste buttons (no clipboard here); the key binds' gamepad
   side and debug keys (no editors yet); the GPU Caching switch (nothing to switch here); update check.
-- **Cutscenes**: a video during the song does not stop for the pause menu, and its playOnLoad is not kept waiting.
+- **Cutscenes**: a video's playOnLoad is not kept waiting.
 - **Scripts**: the rest of Lua's functions (notes' own textures and health, shaders, groups, and getProperty/setProperty
   beyond the camera, health, score, the characters' place and the scripts' sprites); custom events and note types run by scripts. HScript is Haxe code run against the Haxe
   engine's own classes, so mods that use it cannot run here as they are. Custom shaders.

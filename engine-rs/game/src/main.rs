@@ -562,7 +562,9 @@ impl Playing {
             }
         }
         if let Some(video) = &mut self.video {
-            if video.update(&self.song, get_frame_time().min(0.1), controls::down(Ui::Accept)) {
+            // (one over the song stops with it for the pause menu)
+            video.stop(&self.song, self.paused.is_some());
+            if video.update(&self.song, get_frame_time().min(0.1), controls::down(Ui::Accept) && self.paused.is_none()) {
                 let (cover, ending) = (video.cover, video.ending);
                 self.video = None;
                 if ending {

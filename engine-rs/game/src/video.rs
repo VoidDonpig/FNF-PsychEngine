@@ -4,7 +4,6 @@
 //! Holding Accept for a second skips one that may be skipped, while a ring fills at the bottom right.
 // shortcut: one picture every frame time of the file (constant frame rate, as the game's videos are); add the samples'
 // own times if a mod's video has a varying rate.
-// shortcut: a video over the song goes on under the pause menu; pause its sound and clock if a mod's mid-song video needs it.
 use crate::audio::Song;
 use crate::gfx::*;
 use std::io::BufReader;
@@ -28,8 +27,9 @@ pub struct Video {
     frame_seconds: f64,
     picture: Option<Texture2D>,
     shown: u64,
-    /// When the sound began (and so the pictures); None while it is decoded.
+    /// When the sound began (and so the pictures); None while it is decoded. Since when it is stopped (the pause menu).
     started: Option<Instant>,
+    stopped: Option<Instant>,
     held: f32,
     over: bool,
     looped: bool,
@@ -59,7 +59,7 @@ impl Video {
                 eprintln!("{}: {error}", path.display());
             }
         });
-        Ok(Video { frames, spare, sound, frame_seconds, playing: None, picture: None, shown: 0, started: None, held: 0.0, over: false, looped, skippable, cover, ending })
+        Ok(Video { frames, spare, sound, frame_seconds, playing: None, picture: None, shown: 0, started: None, stopped: None, held: 0.0, over: false, looped, skippable, cover, ending })
     }
 
     /// Goes on; `accept` is whether Accept is down. True once it is over or skipped (its sound stopped).
@@ -73,7 +73,25 @@ impl Video {
         over
     }
 
+    /// Stops it where it is (the pause menu over the song), or lets it go on.
+    pub fn stop(&mut self, song: &Song, stop: bool) {
+        if stop == self.stopped.is_some() {
+            return;
+        }
+        match (self.stopped.take(), &mut self.started) {
+            (Some(since), Some(started)) => *started += since.elapsed(),
+            (Some(_), None) => {}
+            (None, _) => self.stopped = Some(Instant::now()),
+        }
+        if let Some(id) = self.playing {
+            song.tune_sound(id, None, Some(stop), None, None);
+        }
+    }
+
     fn advance(&mut self, song: &Song, dt: f32, accept: bool) -> bool {
+        if self.stopped.is_some() {
+            return false;
+        }
         if self.started.is_none() {
             let Ok((samples, rate)) = self.sound.try_recv() else { return false };
             self.playing = song.play_samples(samples, rate, self.looped);
