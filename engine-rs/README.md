@@ -207,7 +207,8 @@ Done:
   waveform of the instrumental or either voice down the grid; Vortex: keys 1 to 8 put down or take off a note of their
   column at the line on the beat snap, also while the music plays, a line on each beat), Data (the
   game over character, sound and music, Disable Note RGB, the note and splash textures, typed), Song (name, vocals, BPM, scroll speed,
-  the characters and stage chosen from lists of those there are; save), Section (must hit, GF, alt animation, change BPM, beats; copy, paste, clear,
+  the characters and stage chosen from lists of those there are; save; Open Chart: another song or difficulty of the
+  folder, in the editor), Section (must hit, GF, alt animation, change BPM, beats; copy, paste, clear,
   swap), Note (the picked note's hold and time, the note type for it and new notes, the mods' types too) and Events
   (the event, its description and values for the picked event and new ones, the mods' events too; the entries of
   one moment: before, after, taken off, added). Undo covers all of it. Every two minutes (the Charting tab's Autosave; 0: never) a changed
@@ -276,8 +277,7 @@ Not there yet:
 - **Scripts**: the rest of Lua's functions (notes' own textures and health, shaders, groups, and getProperty/setProperty
   beyond the camera, health, score, the characters' place and the scripts' sprites); custom events and note types run by scripts. HScript is Haxe code run against the Haxe
   engine's own classes, so mods that use it cannot run here as they are. Custom shaders.
-- **Editors**: the chart editor's File/Edit/View menus, the vortex editor's strums lighting up, pasted notes following the mouse before they are put down, a song
-  chosen to chart from the editors' list;
+- **Editors**: the chart editor's File/Edit/View menus, the vortex editor's strums lighting up, pasted notes following the mouse before they are put down;
   the system clipboard off Windows (the game keeps its own there); the
   note splash editor's Shader tab; the stage editor's image file picker.
 - **Other**: gamepads on Linux and macOS (gilrs needs libudev there).

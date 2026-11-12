@@ -149,6 +149,8 @@ pub struct ChartEditor {
     /// The characters and stages there are, for the Song tab's lists.
     characters: Vec<String>,
     stages: Vec<String>,
+    /// The charts of the song's folder (each song at each difficulty), for the Song tab's Open Chart.
+    charts: Vec<SongEntry>,
     backup_limit: usize,
     prefs: Value,
     /// The waveform drawn on the grid: of which track (0 none, 1 the instrumental, 2 and 3 the voices), its peaks.
@@ -211,6 +213,7 @@ impl ChartEditor {
             ui: Ui::default(), tab: 5, note_types, note_type: 0, events, abouts, event: 0, values: Default::default(), copied: None,
             base: base.to_path_buf(), autosaved: (std::time::Instant::now(), String::new()), waveform: (0, Peaks::default()),
             autosave_minutes: 2.0, backup_limit: 10, prefs: Value::Null, characters: crate::character_editor::character_names(&paths), stages: crate::stage_editor::stage_names(&paths),
+            charts: funkin_core::content::songs(&funkin_core::content::weeks(base)).into_iter().filter(|song| song.source == entry.source).collect(),
         };
         let prefs = funkin_core::files::read(&base.join(PREFS));
         editor.autosave_minutes = prefs["autosave"].as_f64().unwrap_or(2.0).clamp(0.0, 60.0);
@@ -1084,6 +1087,24 @@ impl ChartEditor {
         self.ui.label(x + 130.0, y + 184.0, "Load Autosave:");
         if let Some(index) = self.ui.dropdown("autosaves", x + 130.0, y + 200.0, 150.0, &dates, usize::MAX) {
             if self.ui.sure("autosaves", index, self.unsaved) { self.load_autosave(&autosaves[index]) } else { self.say(crate::ui::UNSAVED) }
+        }
+        // another chart of the folder, in this editor (the Haxe editor's File > Open Chart)
+        let charts: Vec<String> = self.charts.iter().map(|song| format!("{} ({})", song.title, song.difficulty)).collect();
+        let open = self.charts.iter().position(|song| song.chart == self.entry.chart).unwrap_or(usize::MAX);
+        self.ui.label(x, y + 228.0, "Open Chart:");
+        if let Some(index) = self.ui.dropdown("open chart", x + 90.0, y + 228.0, 190.0, &charts, open) {
+            if !self.ui.sure("open chart", index, self.unsaved) {
+                self.say(crate::ui::UNSAVED);
+            } else {
+                let base = self.base.clone();
+                match ChartEditor::open(&base, &self.charts[index], None) {
+                    Ok(editor) => {
+                        self.stop();
+                        *self = editor;
+                    }
+                    Err(error) => self.say(error),
+                }
+            }
         }
         if self.ui.button(x, y + 200.0, 120.0, "Save (Ctrl+S)") {
             self.save();
