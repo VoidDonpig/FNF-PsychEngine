@@ -143,6 +143,11 @@ pub struct ChartEditor {
     /// held (none is made when nothing changed since).
     base: PathBuf,
     autosaved: (std::time::Instant, String),
+    /// How often (minutes; 0: never) and how many autosaves are kept (0: all); these and the Charting tab's switches as
+    /// last kept in the editor's file (the Haxe editor's chartEditorSave).
+    autosave_minutes: f64,
+    backup_limit: usize,
+    prefs: Value,
     /// The waveform drawn on the grid: of which track (0 none, 1 the instrumental, 2 and 3 the voices), its peaks.
     waveform: (usize, Peaks),
 }
@@ -207,7 +212,17 @@ impl ChartEditor {
             sounds: [paths.find("sounds/hitsound.ogg"), paths.find("sounds/Metronome_Tick.ogg")],
             ui: Ui::default(), tab: 5, note_types, note_type: 0, events, abouts, event: 0, values: Default::default(), copied: None,
             base: base.to_path_buf(), autosaved: (std::time::Instant::now(), String::new()), waveform: (0, Peaks::default()),
+            autosave_minutes: 2.0, backup_limit: 10, prefs: Value::Null,
         };
+        let prefs = funkin_core::files::read(&base.join(PREFS));
+        editor.autosave_minutes = prefs["autosave"].as_f64().unwrap_or(2.0).clamp(0.0, 60.0);
+        editor.backup_limit = prefs["backups"].as_u64().unwrap_or(10).min(50) as usize;
+        editor.vortex = prefs["vortex"].as_bool().unwrap_or(false);
+        editor.wheel_snaps = prefs["mouseScrollSnap"].as_bool().unwrap_or(true);
+        for (index, volume) in editor.hitsounds.iter_mut().enumerate() {
+            *volume = prefs["hitsounds"][index].as_f64().unwrap_or(0.0).clamp(0.0, 1.0) as f32;
+        }
+        editor.prefs = editor.prefs_json();
         editor.autosaved.1 = editor.text();
         editor.measure();
         editor.set_volumes();
@@ -293,8 +308,15 @@ impl ChartEditor {
         let typing = self.ui.typing();
         self.ui.begin();
         self.panel();
+        let prefs = self.prefs_json();
+        if prefs != self.prefs {
+            if let Err(error) = funkin_core::files::write(&self.base.join(PREFS), &prefs.to_string()) {
+                self.say(format!("Could not keep the editor's settings: {error}"));
+            }
+            self.prefs = prefs;
+        }
         let dt = get_frame_time().min(0.1) as f64;
-        if self.autosaved.0.elapsed().as_secs() >= AUTOSAVE_SECONDS {
+        if self.autosave_minutes > 0.0 && self.autosaved.0.elapsed().as_secs_f64() >= self.autosave_minutes * 60.0 {
             self.autosave();
         }
         let (ctrl, shift) = (held(KeyCode::LeftControl) || held(KeyCode::RightControl), held(KeyCode::LeftShift) || held(KeyCode::RightShift));
@@ -703,6 +725,10 @@ impl ChartEditor {
         }
     }
 
+    fn prefs_json(&self) -> Value {
+        json!({"autosave": self.autosave_minutes, "backups": self.backup_limit, "vortex": self.vortex, "mouseScrollSnap": self.wheel_snaps, "hitsounds": self.hitsounds})
+    }
+
     fn backups(&self) -> PathBuf {
         self.base.join("backups")
     }
@@ -729,7 +755,7 @@ impl ChartEditor {
             Ok(()) => {
                 self.autosaved.1 = text;
                 let names: Vec<String> = std::fs::read_dir(&folder).into_iter().flatten().flatten().map(|file| file.file_name().to_string_lossy().into_owned()).collect();
-                for old in past_limit(&names, BACKUP_LIMIT) {
+                for old in past_limit(&names, self.backup_limit).into_iter().filter(|_| self.backup_limit > 0) {
                     let _ = std::fs::remove_file(folder.join(old));
                 }
                 self.say(format!("Autosaved {name}"));
@@ -927,6 +953,14 @@ impl ChartEditor {
         if let Some(on) = self.ui.check(x + 258.0, y + 228.0, "Vortex", self.vortex) {
             self.vortex = on;
         }
+        self.ui.label(x, y + 258.0, "Autosave (min):");
+        if let Some(minutes) = self.ui.stepper("autosave minutes", x + 125.0, y + 256.0, 36.0, self.autosave_minutes, 1.0, 0.0, 60.0) {
+            self.autosave_minutes = minutes.round();
+        }
+        self.ui.label(x + 212.0, y + 258.0, "Backups:");
+        if let Some(count) = self.ui.stepper("backup limit", x + 274.0, y + 256.0, 30.0, self.backup_limit as f64, 1.0, 0.0, 50.0) {
+            self.backup_limit = count.round() as usize;
+        }
         if let Some(snaps) = self.ui.check(x, y + 66.0, "Mouse Scroll Snap", self.wheel_snaps) {
             self.wheel_snaps = snaps;
         }
@@ -965,7 +999,7 @@ impl ChartEditor {
 
     /// The box at the right with the Haxe editor's tabs.
     fn panel(&mut self) {
-        let area = Rect::new(900.0, 60.0, 360.0, 260.0);
+        let area = Rect::new(900.0, 60.0, 360.0, 290.0);
         self.tab = self.ui.tabs(area, &["Charting", "Data", "Events", "Note", "Section", "Song"], self.tab);
         let (x, y) = (area.x + 10.0, area.y + 10.0);
         match self.tab {
@@ -1211,7 +1245,7 @@ impl ChartEditor {
             format!("Section: {}", self.section_at(self.position)), format!("Beat: {}", (step / 4.0).floor()), format!("Step: {step}"), String::new(),
             format!("Beat Snap: {} / 16", QUANTS[self.quant]), format!("Selected: {}", self.selected.len()),
         ];
-        let (x, y) = (1000.0, 360.0);
+        let (x, y) = (1000.0, 390.0);
         draw_rectangle(x, y - 26.0, 110.0, 26.0, Color { a: 0.8, ..BLACK });
         draw_text_ex("Information", x + 8.0, y - 8.0, TextParams { font: skin.font.as_ref(), font_size: 16, color: WHITE, ..Default::default() });
         draw_rectangle(x, y, 220.0, 220.0, Color { a: 0.6, ..BLACK });
@@ -1274,9 +1308,8 @@ fn vortex(notes: &mut Vec<Value>, at: f64, column: usize, kind: Option<&str>) {
     }
 }
 
-/// The Haxe editor's autosave defaults: every two minutes, the ten newest kept.
-const AUTOSAVE_SECONDS: u64 = 120;
-const BACKUP_LIMIT: usize = 10;
+/// The editor's own settings, in the game's folder.
+const PREFS: &str = "funkin-rs-chart-editor.json";
 
 /// The autosaves (`<chart>_<date>_<time>.bkp`) past the `limit` newest, by the date in their names; files named
 /// otherwise are left alone.
