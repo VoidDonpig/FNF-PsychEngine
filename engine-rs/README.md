@@ -179,7 +179,8 @@ Done:
   loadGraphic (whole, or cut in a grid of frames for addAnimation), loadFrames, setBlendMode ("add") and
   objectsOverlap for the scripts' sprites.
 - **Chart editor** (first part): 7 (Debug Key #1, on the key binds page with Debug Key #2) during a song opens it on
-  that song's chart: the Haxe editor's grid (the events' column, the player's four, the opponent's four; the
+  that song's chart, and 7 on the main menu opens the editors' list (MasterEditorMenu: the mod folder chosen with
+  Left/Right; its Chart Editor opens the folder's first song, and the editor's Escape comes back to it): the Haxe editor's grid (the events' column, the player's four, the opponent's four; the
   section playing light, the others dark), the notes and holds, events shown, the icons, the information box;
   Space plays and stops the music, W/S and the wheel move (the wheel by the beat snap), A/D go a section back or on
   (Shift: four), Home/End, R; a click puts a note down or takes one off (Shift picks it), Q/E make the picked note's
@@ -208,8 +209,8 @@ Not there yet:
   beyond the camera, health, score, the characters' place and the scripts' sprites); custom events and note types run by scripts. HScript is Haxe code run against the Haxe
   engine's own classes, so mods that use it cannot run here as they are. Custom shaders.
 - **Editors**: the chart editor's File/Edit/View menus and its Charting and Data tabs (the waveform, the vortex
-  editor, hitsounds, metronome), lists to choose characters and stages from, selecting many notes, autosave, and the
-  main menu's list of editors (7);
+  editor, hitsounds, metronome), lists to choose characters and stages from, selecting many notes, autosave, a song
+  chosen to chart from the editors' list;
   the character, stage, week, menu character, dialogue, dialogue character and note splash editors.
 - **Other**: gamepads on Linux and macOS (gilrs needs libudev there); binding a gamepad's buttons on the key binds
   page (Psych's buttons are used as they are).

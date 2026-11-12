@@ -22,6 +22,8 @@ pub enum Page {
     Mods,
     Credits,
     Achievements,
+    /// The editors' list (states/editors/MasterEditorMenu.hx), from the main menu with Debug Key #1.
+    Editors,
 }
 
 /// What a menu wants next.
@@ -42,6 +44,8 @@ pub enum Go {
     Unlock(&'static str),
     /// A mod's own settings, by its folder.
     ModSettings(String, Vec<funkin_core::mod_settings::ModOption>),
+    /// The chart editor, on the first song of a mod's folder ("": the game's).
+    ChartEditor(String),
 }
 
 const UP: Ui = Ui::Up;
@@ -425,6 +429,12 @@ pub struct Menus {
     rows: Vec<Row>,
     song: usize,
     song_scroll: f32,
+    /// The editors' list: the one chosen, how far it has glided, the mod folder chosen (0: none).
+    editor: usize,
+    editor_scroll: f32,
+    editor_folder: usize,
+    /// What the editors' list last said, and when.
+    said: Option<(String, f64)>,
     tint: Vec3,
     /// Score and accuracy as shown: they count up to the real ones.
     shown: (f64, f64),
@@ -548,7 +558,7 @@ impl Menus {
         Menus {
             art, look: None, letters: String::new(), secret: None, jingle: None, fade: None, hue: 0.0,
             alphabet: Alphabet::load(&paths), paths, audio: None, music_at: 0.0, intro: true, wacky: [wacky.0.to_owned(), wacky.1.to_owned()], flash: (f64::MIN, 1.0), chosen: None,
-            main_row: 0, main_side: 0, main_slide: 0.0, main_spots: Vec::new(), main_pointed: false, week: 0, week_scroll: 0.0, difficulty: "Normal".to_owned(), rows: Vec::new(), song: 0, song_scroll: 0.0, tint: Vec3::ONE, shown: (0.0, 0.0),
+            main_row: 0, main_side: 0, main_slide: 0.0, main_spots: Vec::new(), main_pointed: false, week: 0, week_scroll: 0.0, difficulty: "Normal".to_owned(), rows: Vec::new(), song: 0, song_scroll: 0.0, editor: 0, editor_scroll: 0.0, editor_folder: 0, said: None, tint: Vec3::ONE, shown: (0.0, 0.0),
             credits: Vec::new(), credit: 0, credit_scroll: 0.0, mods: Vec::new(), mod_row: 0, mods_changed: false, mod_center: 2, mod_focus: None, mod_hover: None, mod_dragging: false, mods_scan: 0.0, reload: false, flashing: true, shaders: true, achievement: 0, achievement_scroll: 0.0, chime: false, held: 0.0, preview: false, asking: None, player: Player::default(), restart: false,
         }
     }
@@ -711,6 +721,7 @@ impl Menus {
             Page::Mods => self.mods_menu(skin),
             Page::Credits => self.credits_roll(skin),
             Page::Achievements => self.achievements(skin, save),
+            Page::Editors => self.editors(skin),
         };
         let flash = 1.0 - (get_time() - self.flash.0) / self.flash.1;
         if flash > 0.0 && self.flashing {
@@ -958,6 +969,7 @@ impl Menus {
                 self.sound("cancelMenu", 1.0);
                 Go::Page(Page::Title)
             }
+            None if pressed(&Ui::Debug1) => Go::Page(Page::Editors),
             None => Go::Stay,
         }
     }
@@ -1296,6 +1308,55 @@ impl Menus {
         for (row, line) in wrap(&phrase(&format!("description_{id}"), achievement.text), 270.0, measure).iter().enumerate() {
             label(skin, line, x + 130.0, y + 65.0 + row as f32 * 18.0, 16, WHITE, false);
         }
+    }
+
+    /// The editors in large letters, gliding as the Haxe engine's menu items do, and the mod folder they work in.
+    // shortcut: only the chart editor is here; the others say so.
+    fn editors(&mut self, skin: &Skin) -> Go {
+        const EDITORS: [&str; 8] = ["Chart Editor", "Character Editor", "Stage Editor", "Week Editor", "Menu Character Editor", "Dialogue Editor", "Dialogue Portrait Editor", "Note Splash Editor"];
+        let dt = get_frame_time().min(0.1);
+        let folders: Vec<String> = std::iter::once(String::new()).chain(funkin_core::content::mods(&self.art.base).into_iter().filter(|(_, on)| *on).map(|(name, _)| name)).collect();
+        let step = pressed(&DOWN) as i32 - pressed(&UP) as i32;
+        if step != 0 {
+            self.editor = (self.editor as i32 + step).rem_euclid(EDITORS.len() as i32) as usize;
+            self.sound("scrollMenu", 0.4);
+        }
+        let side = pressed(&RIGHT) as i32 - pressed(&LEFT) as i32;
+        if side != 0 {
+            self.editor_folder = (self.editor_folder as i32 + side).rem_euclid(folders.len() as i32) as usize;
+            self.sound("scrollMenu", 0.4);
+        }
+        self.editor_folder %= folders.len();
+        if let Some(picture) = self.art.own("menuDesat") {
+            draw_texture_ex(&picture, 0.0, 0.0, Color::from_hex(0x353535), DrawTextureParams { dest_size: Some(vec2(WIDTH, HEIGHT)), ..Default::default() });
+        }
+        self.editor_scroll += (self.editor as f32 - self.editor_scroll) * (1.0 - (-dt * 9.6).exp());
+        for (index, name) in EDITORS.iter().enumerate() {
+            let away = index as f32 - self.editor_scroll;
+            let squeeze = (1100.0 / self.width(skin, name, true)).min(1.0);
+            self.write(skin, name, true, away * 20.0 + 90.0, away * 156.0 + 320.0, squeeze, if index == self.editor { 1.0 } else { 0.6 });
+        }
+        draw_rectangle(0.0, HEIGHT - 42.0, WIDTH, 42.0, Color::new(0.0, 0.0, 0.0, 0.6));
+        let folder = &folders[self.editor_folder];
+        let words = if folder.is_empty() { "< No Mod Directory Loaded >".to_owned() } else { format!("< Loaded Mod Directory: {folder} >") }.to_uppercase();
+        label(skin, &words, (WIDTH - measure_text(&words, skin.font.as_ref(), 32, 1.0).width) / 2.0, HEIGHT - 38.0, 32, WHITE, false);
+        if pressed(&BACK) {
+            self.sound("cancelMenu", 1.0);
+            return Go::Page(Page::Main);
+        }
+        if pressed(&ACCEPT) {
+            if self.editor == 0 {
+                return Go::ChartEditor(folder.clone());
+            }
+            self.sound("cancelMenu", 1.0);
+            self.said = Some((format!("The {} is not here yet", EDITORS[self.editor]), get_time()));
+        }
+        if let Some((words, when)) = &self.said {
+            if get_time() - when < 2.0 {
+                label(skin, words, 20.0, 50.0, 24, WHITE, false);
+            }
+        }
+        Go::Stay
     }
 
     fn achievements(&mut self, skin: &Skin, save: &Save) -> Go {

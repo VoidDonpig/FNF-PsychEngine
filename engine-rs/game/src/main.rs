@@ -1614,6 +1614,8 @@ fn haxe_save(base: &Path) -> Option<(PathBuf, serde_json::Value)> {
 fn presence(screen: &Screen, weeks: &[funkin_core::content::Week]) -> discord::Presence {
     let details = match screen {
         Screen::Menu(Page::Achievements) => "Achievements Menu",
+        Screen::Menu(Page::Editors) => "Editors Main Menu",
+        Screen::Editor(_) => "Chart Editor",
         Screen::Options(..) => "Options Menu",
         Screen::Playing(_) => "",
         _ => "In the Menus",
@@ -1805,6 +1807,7 @@ fn main() {
         Some("mods") => Page::Mods,
         Some("credits") => Page::Credits,
         Some("achievements") => Page::Achievements,
+        Some("editors") => Page::Editors,
         _ => Page::Title,
     };
     let pixel_skin = Skin::load_pixel(&base, None).map_err(|error| eprintln!("No pixel note skin: {error}")).ok();
@@ -1900,6 +1903,11 @@ fn main() {
                     save.save(&base);
                     Screen::Menu(page)
                 }
+                // the chart editor from the editors' list: the folder's first song (of the game's, the first one)
+                Some(Go::ChartEditor(folder)) => match songs.iter().find(|entry| entry.source == folder) {
+                    Some(entry) => chart_editor::ChartEditor::open(&base, entry, None).inspect(|_| menus.quiet()).map_or_else(Screen::Failed, |editor| Screen::Editor(Box::new(editor))),
+                    None => Screen::Menu(page),
+                },
                 Some(Go::Unlock(id)) => {
                     if save.unlock(id) {
                         save.save(&base);
@@ -2045,7 +2053,8 @@ fn main() {
                     match go {
                         chart_editor::Go::Stay => Screen::Editor(editor),
                         chart_editor::Go::Play(text) => Playing::open(&base, &editor.entry, &songs, &settings, 0.0, false, true, Some(text)).map_or_else(Screen::Failed, |p| Screen::Playing(Box::new(p))),
-                        chart_editor::Go::Leave => Screen::Menu(Page::Freeplay),
+                        // (as the Haxe editor's File > Exit, back to the editors' list)
+                        chart_editor::Go::Leave => Screen::Menu(Page::Editors),
                     }
                 }
                 None => Screen::Menu(Page::Freeplay),
