@@ -22,6 +22,7 @@ mod pad;
 mod props;
 mod scene;
 mod settings;
+mod speech;
 mod video;
 
 use funkin_core::content::{songs as find_songs, weeks as find_weeks, Paths, SongEntry};
@@ -285,6 +286,8 @@ struct Playing {
     /// A video playing, and the one the song ends with (Weekend 1's in story mode).
     video: Option<video::Video>,
     end_video: Option<PathBuf>,
+    /// The Haxe engine's own dialogue, as a script started it, and whether the song ends after it (else the countdown starts).
+    speech: Option<(speech::Speech, bool)>,
     /// Whether the scripts were asked about the countdown (onStartCountdown), and hold it back.
     countdown_asked: bool,
     countdown_held: bool,
@@ -406,7 +409,7 @@ impl Playing {
         };
         let video = opening.and_then(|name| paths.video(name)).and_then(|path| video::Video::open(&path, true, true, false, false).map_err(|error| eprintln!("{error}")).ok());
         let end_video = closing.and_then(|name| paths.video(name));
-        Ok(Playing { video, end_video, countdown_asked: false, countdown_held: false, entry: entry.clone(), play, song, player_voice, own_skin: None, music_fade: None, lua, looks: Default::default(), renamed: Default::default(), strums: strums(settings), flash: None, lua_step: i64::MIN, lua_section: usize::MAX, lua_created: false, end_asked: false, end_held: false, base: base.to_path_buf(), staged, bowing: false, tune: false, paused_at: 0.0, pause_scroll: 0.0, deaths: 0, scene, waited: 0.0, clock: Default::default(), ticked: std::time::Instant::now(), started: false, paused: None, choosing: None, difficulties, story, taunt_until: None, start_at, position: -lead_in, settings: settings.clone(), held_keys: Vec::new(), flash_until: [[f64::MIN; 4]; 2], judgement: None, last_hit: f64::MIN, lanes_used: [false; 4], idled: false, idle_for: 0.0, sang_for: 0.0,
+        Ok(Playing { video, end_video, speech: None, countdown_asked: false, countdown_held: false, entry: entry.clone(), play, song, player_voice, own_skin: None, music_fade: None, lua, looks: Default::default(), renamed: Default::default(), strums: strums(settings), flash: None, lua_step: i64::MIN, lua_section: usize::MAX, lua_created: false, end_asked: false, end_held: false, base: base.to_path_buf(), staged, bowing: false, tune: false, paused_at: 0.0, pause_scroll: 0.0, deaths: 0, scene, waited: 0.0, clock: Default::default(), ticked: std::time::Instant::now(), started: false, paused: None, choosing: None, difficulties, story, taunt_until: None, start_at, position: -lead_in, settings: settings.clone(), held_keys: Vec::new(), flash_until: [[f64::MIN; 4]; 2], judgement: None, last_hit: f64::MIN, lanes_used: [false; 4], idled: false, idle_for: 0.0, sang_for: 0.0,
             paths, cutscene, lead_in, counted: i64::MIN, popups: Vec::new(), splashes: Vec::new(), dead: None, next_event: 0, speed, speed_change: None }.with(settings))
     }
 
@@ -560,6 +563,32 @@ impl Playing {
                 self.countdown_asked &= !cover;
             } else if video.cover {
                 return Flow::Continue;
+            }
+        }
+        if let Some((speech, ending)) = &mut self.speech {
+            let over = speech.update(get_frame_time().min(0.1), controls::pressed(Ui::Accept), controls::pressed(Ui::Back));
+            if let Some(volume) = speech.music_volume() {
+                self.song.set_music_volume(volume);
+            }
+            let (cues, ending) = (std::mem::take(&mut speech.cues), *ending);
+            for cue in cues {
+                match cue {
+                    speech::Cue::Sound(name) => self.sound(&name, 1.0, false),
+                    speech::Cue::Music(name) => self.sound(&name, 0.0, true),
+                    speech::Cue::Quiet => self.music_fade = Some(1.5),
+                    speech::Cue::Next(count) => drop(self.lua.call("onNextDialogue", count)),
+                    speech::Cue::Skip(count) => drop(self.lua.call("onSkipDialogue", count)),
+                }
+            }
+            if over {
+                self.speech = None;
+                if ending {
+                    return Flow::Finished;
+                }
+                // its end starts the countdown, asking the scripts again
+                self.countdown_asked = false;
+            } else {
+                return self.apply_lua().unwrap_or(Flow::Continue);
             }
         }
         if let Some(talk) = &mut self.cutscene {
@@ -1043,6 +1072,11 @@ impl Playing {
                     Ok(video) => self.video = Some(video),
                     Err(error) => eprintln!("{error}"),
                 },
+                lua::Request::Dialogue { path, music } if self.speech.is_none() => match speech::Speech::load(&self.paths, &path, music.as_deref()) {
+                    Ok(speech) => self.speech = Some((speech, self.end_asked)),
+                    Err(error) => eprintln!("startDialogue: {error}"),
+                },
+                lua::Request::Dialogue { .. } => {}
                 lua::Request::StartCountdown => (self.countdown_asked, self.countdown_held) = (false, false),
                 lua::Request::EndSong => return Some(Flow::Finished),
                 lua::Request::RestartSong => return Some(Flow::Restart),
@@ -1361,6 +1395,13 @@ impl Playing {
         if let Some(talk) = &self.cutscene {
             talk.draw();
         }
+        if let Some((speech, _)) = &self.speech {
+            speech.draw();
+            if speech.skippable() {
+                let words = phrase("dialogue_skip", "Press BACK to Skip");
+                skin.text(&words, WIDTH - 20.0 - measure_text(&words, skin.font.as_ref(), 16, 1.0).width, HEIGHT - 14.0, 16, WHITE);
+            }
+        }
         if let Some(row) = self.paused {
             // the Haxe engine's pause menu: the screen darkens, the song's name, difficulty and game overs slide in at the
             // top right one after another, and the choices stand in a slanted list in large letters
@@ -1436,7 +1477,7 @@ fn start_scripts(base: &Path, paths: &Paths, entry: &SongEntry, chart: &Chart, s
     }).collect();
     let globals: Vec<(&str, serde_json::Value)> = globals.into_iter().chain(defaults.iter().map(|(name, value)| (name.as_str(), value.clone()))).collect();
     let mut shared = lua::Shared::new(settings.mod_settings.clone(), &entry.source, paths.clone());
-    (shared.note_keys, shared.save_dir) = (settings.keys, base.join("funkin-rs-lua-saves"));
+    (shared.note_keys, shared.save_dir, shared.song, shared.language) = (settings.keys, base.join("funkin-rs-lua-saves"), song, settings.language.clone());
     lua::Scripts::start(&files, &globals, shared)
 }
 

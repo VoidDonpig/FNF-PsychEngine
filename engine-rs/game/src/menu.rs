@@ -89,23 +89,32 @@ fn label(skin: &Skin, text: &str, x: f32, top: f32, size: u16, color: Color, rig
     x
 }
 
-/// Where the letters of a line of menu text go (each with its left and top), and the line's width.
+/// Where the letters of menu text go (each with its left and top), and the last row's width.
 /// Bold text is all capitals standing on a line 70 px down; plain text keeps its case on a line 110 px down.
+/// A new line starts a row 85 px lower, as does a space reached past `wrap` (plain text only, as the Haxe Alphabet).
 /// `size` gives a letter's frame size and its nudge from alphabet.json; letters it does not know are left out.
-// shortcut: one line only; plain text does not wrap at 65% of the screen as dialogue will need.
-fn place(text: &str, bold: bool, size: impl Fn(char) -> Option<(Vec2, Vec2)>) -> (Vec<(char, Vec2)>, f32) {
-    let (mut placed, mut x, mut spaces) = (Vec::new(), 0.0, 0.0);
+pub(crate) fn place(text: &str, bold: bool, wrap: f32, size: impl Fn(char) -> Option<(Vec2, Vec2)>) -> (Vec<(char, Vec2)>, f32) {
+    let (mut placed, mut x, mut spaces, mut top) = (Vec::new(), 0.0, 0.0, 0.0);
     let (line, gap) = if bold { (70.0, 0.0) } else { (110.0, 2.0) };
     let letters: Vec<char> = if bold { text.chars().flat_map(char::to_lowercase).collect() } else { text.chars().collect() };
     for letter in letters {
+        if letter == '\n' {
+            (x, spaces, top) = (0.0, 0.0, top + 85.0);
+            continue;
+        }
         if letter == ' ' || (bold && letter == '_') {
             spaces += 1.0;
             continue;
         }
         let Some((frame, nudge)) = size(letter) else { continue };
-        x += 28.0 * spaces;
+        if spaces > 0.0 {
+            x += 28.0 * spaces;
+            if !bold && x >= wrap {
+                (x, top) = (0.0, top + 85.0);
+            }
+        }
         spaces = 0.0;
-        placed.push((letter, vec2(x - nudge.x, line - frame.y - nudge.y)));
+        placed.push((letter, vec2(x - nudge.x, top + line - frame.y - nudge.y)));
         x += frame.x + nudge.x + gap;
     }
     (placed, x)
@@ -146,14 +155,14 @@ fn open_link(link: &str) {
 }
 
 /// The wiggling menu letters, bold and plain.
-struct Alphabet {
-    texture: Texture2D,
+pub(crate) struct Alphabet {
+    pub texture: Texture2D,
     /// The frames and the nudge of a letter, bold (true) or plain.
-    letters: HashMap<(char, bool), (Vec<Frame>, Vec2)>,
+    pub letters: HashMap<(char, bool), (Vec<Frame>, Vec2)>,
 }
 
 impl Alphabet {
-    fn load(paths: &Paths) -> Option<Alphabet> {
+    pub fn load(paths: &Paths) -> Option<Alphabet> {
         let sheet = Sheet::load(&paths.find("images/alphabet.png")?).ok()?;
         let json: serde_json::Value = serde_json::from_str(&std::fs::read_to_string(paths.find("images/alphabet.json")?).ok()?).ok()?;
         let mut letters = HashMap::new();
@@ -182,7 +191,7 @@ impl Alphabet {
         Some(Alphabet { texture: sheet.texture, letters })
     }
 
-    fn size(&self, letter: char, bold: bool) -> Option<(Vec2, Vec2)> {
+    pub fn size(&self, letter: char, bold: bool) -> Option<(Vec2, Vec2)> {
         self.letters.get(&(letter, bold)).map(|(frames, nudge)| (frames[0].size, *nudge))
     }
 }
@@ -567,7 +576,7 @@ impl Menus {
     /// Width of a line of menu letters.
     pub fn width(&self, skin: &Skin, text: &str, bold: bool) -> f32 {
         match &self.alphabet {
-            Some(alphabet) => place(text, bold, |letter| alphabet.size(letter, bold)).1,
+            Some(alphabet) => place(text, bold, f32::INFINITY, |letter| alphabet.size(letter, bold)).1,
             None => measure_text(text, skin.font.as_ref(), 48, 1.0).width,
         }
     }
@@ -582,7 +591,7 @@ impl Menus {
         // without the letter sheet the plain font has to do
         let Some(alphabet) = &self.alphabet else { return skin.text(text, x, y + 55.0, 48, color) };
         let step = (get_time() * 24.0) as usize;
-        for (letter, at) in place(text, bold, |letter| alphabet.size(letter, bold)).0 {
+        for (letter, at) in place(text, bold, f32::INFINITY, |letter| alphabet.size(letter, bold)).0 {
             let frames = &alphabet.letters[&(letter, bold)].0;
             let frame = frames[step % frames.len()];
             let params = DrawTextureParams { dest_size: Some(vec2(frame.source.w * squeeze, frame.source.h)), source: Some(frame.source), ..Default::default() };
@@ -1772,14 +1781,17 @@ mod tests {
             '\'' => Some((vec2(20.0, 25.0), vec2(0.0, 40.0))),
             _ => None,
         };
-        let (placed, width) = place("A a'?", true, size);
+        let (placed, width) = place("A a'?", true, f32::INFINITY, size);
         // capitals use the same letters; the unknown "?" is left out
         assert_eq!(placed, [('a', vec2(0.0, 2.0)), ('a', vec2(78.0, 2.0)), ('\'', vec2(128.0, 5.0))]);
         assert_eq!(width, 148.0);
         // plain letters keep their case (no capital A here), stand lower and sit 2 px apart
-        let (placed, width) = place("Aa a", false, size);
+        let (placed, width) = place("Aa a", false, f32::INFINITY, size);
         assert_eq!(placed, [('a', vec2(0.0, 42.0)), ('a', vec2(80.0, 42.0))]);
         assert_eq!(width, 132.0);
+        // rows: a new line, and (plain text) a space past the wrapping width
+        let (placed, _) = place("a\na a", false, 60.0, size);
+        assert_eq!(placed, [('a', vec2(0.0, 42.0)), ('a', vec2(0.0, 127.0)), ('a', vec2(0.0, 212.0))]);
     }
 
     #[test]

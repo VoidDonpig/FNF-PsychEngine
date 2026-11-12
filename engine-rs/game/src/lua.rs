@@ -38,6 +38,8 @@ pub enum Request {
     Note { index: usize, field: String, value: serde_json::Value },
     /// A video (its file): skippable, over black with the game waiting (else over the song, which goes on), looped.
     Video { path: PathBuf, skippable: bool, cover: bool, looped: bool },
+    /// A dialogue file (DialogueBoxPsych's) and the music to play under it.
+    Dialogue { path: PathBuf, music: Option<String> },
     /// The countdown asked for again (onStartCountdown is called again first), as startCountdown() does.
     StartCountdown,
     EndSong,
@@ -77,6 +79,9 @@ pub struct Shared {
     mod_settings: serde_json::Map<String, serde_json::Value>,
     /// The mod the song comes from.
     mod_folder: String,
+    /// The song's folder name and the chosen language, where startDialogue looks for files.
+    pub song: String,
+    pub language: String,
 }
 
 struct Script {
@@ -671,6 +676,16 @@ impl Scripts {
         request!("characterDance", |args: String| Request::Dance { who: args });
         request!("endSong", |_args: ()| Request::EndSong);
         request!("startCountdown", |_args: ()| Request::StartCountdown);
+        function!("startDialogue", |_lua, shared, args: (String, Option<String>)| {
+            let mut shared = shared.borrow_mut();
+            let found = shared.paths.as_ref().and_then(|paths| crate::speech::find(paths, &shared.song, &args.0, &shared.language));
+            let Some(path) = found else {
+                shared.printed.push((format!("startDialogue: Dialogue file not found: {}", args.0), crate::gfx::get_time()));
+                return Ok(false);
+            };
+            shared.requests.push(Request::Dialogue { path, music: args.1 });
+            Ok(true)
+        });
         // shortcut: playOnLoad false plays it at once all the same; keep it waiting for a play call if a mod needs that
         function!("startVideo", |_lua, shared, args: (String, Option<bool>, Option<bool>, Option<bool>, Option<bool>)| {
             let mut shared = shared.borrow_mut();
