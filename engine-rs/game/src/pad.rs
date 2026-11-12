@@ -33,6 +33,8 @@ pub enum Button {
 struct State {
     down: Vec<Button>,
     was: Vec<Button>,
+    /// The sticks: left x, y, right x, y (-1 to 1, up negative as in Flixel), the first gamepad's.
+    sticks: [f32; 4],
     #[cfg(windows)]
     gilrs: Option<gilrs::Gilrs>,
     #[cfg(windows)]
@@ -53,6 +55,9 @@ fn read(state: &mut State) -> Vec<Button> {
     let Some(gilrs) = &mut state.gilrs else { return Vec::new() };
     while gilrs.next_event().is_some() {}
     let mut down = Vec::new();
+    state.sticks = gilrs.gamepads().next().map_or([0.0; 4], |(_, pad)| {
+        [pad.value(Axis::LeftStickX), -pad.value(Axis::LeftStickY), pad.value(Axis::RightStickX), -pad.value(Axis::RightStickY)]
+    });
     for (_, pad) in gilrs.gamepads() {
         let buttons = [
             (Their::South, Button::A), (Their::East, Button::B), (Their::West, Button::X), (Their::North, Button::Y), (Their::Start, Button::Start),
@@ -84,6 +89,11 @@ pub fn update() {
 
 pub fn down(button: Button) -> bool {
     STATE.with(|state| state.borrow().down.contains(&button))
+}
+
+/// A stick's place along one way (gamepadAnalogX/Y): the left stick or the right, across or down.
+pub fn stick(left: bool, across: bool) -> f32 {
+    STATE.with(|state| state.borrow().sticks[(!left as usize) * 2 + (!across as usize)])
 }
 
 /// Went down this frame.

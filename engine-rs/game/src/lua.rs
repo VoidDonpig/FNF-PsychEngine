@@ -13,6 +13,39 @@ use std::rc::Rc;
 /// What a callback returns to stop what it is called for (an end of song, a pause, a game over...), as in the Haxe engine.
 pub const STOP: &str = "##PSYCHLUA_FUNCTIONSTOP";
 const CONTINUE: &str = "##PSYCHLUA_FUNCTIONCONTINUE";
+
+/// The Haxe engine's shorthands that only call other functions, in Lua: run before each script, which may replace them.
+const PRELUDE: &str = r#"
+local function who(name)
+    name = tostring(name or ''):lower()
+    if name == 'dad' or name == 'opponent' then return 'dad' elseif name == 'gf' or name == 'girlfriend' then return 'gf' end
+    return 'boyfriend'
+end
+function getCharacterX(name) return getProperty(who(name) .. '.x') end
+function getCharacterY(name) return getProperty(who(name) .. '.y') end
+function setCharacterX(name, value) setProperty(who(name) .. '.x', value) end
+function setCharacterY(name, value) setProperty(who(name) .. '.y', value) end
+function getMidpointX(name) return getProperty(name .. '.midpoint.x') end
+function getMidpointY(name) return getProperty(name .. '.midpoint.y') end
+function getGraphicMidpointX(name) return getProperty(name .. '.graphicMidpoint.x') or getMidpointX(name) end
+function getGraphicMidpointY(name) return getProperty(name .. '.graphicMidpoint.y') or getMidpointY(name) end
+function cameraSetTarget(target)
+    setProperty('cameraTarget', ({dad = 0, boyfriend = 1, gf = 2})[who(target)])
+    return target
+end
+function getCameraFollowX() return getProperty('camFollow.x') end
+function getCameraFollowY() return getProperty('camFollow.y') end
+function setCameraFollowPoint(x, y) setProperty('camFollow.x', x); setProperty('camFollow.y', y) end
+function addCameraFollowPoint(x, y) setCameraFollowPoint(getCameraFollowX() + x, getCameraFollowY() + y) end
+function getPropertyLuaSprite(tag, field) return getProperty(tag .. '.' .. field) end
+function setPropertyLuaSprite(tag, field, value) setProperty(tag .. '.' .. field, value) end
+function luaSpriteMakeGraphic(tag, width, height, color) makeGraphic(tag, width, height, color) end
+function scaleLuaSprite(tag, x, y) scaleObject(tag, x, y) end
+function setLuaSpriteCamera(tag, camera) return setObjectCamera(tag, camera) end
+function setLuaSpriteScrollFactor(tag, x, y) setScrollFactor(tag, x, y) end
+function updateScoreText() end
+function addCharacterToList() end
+"#;
 const STOP_LUA: &str = "##PSYCHLUA_FUNCTIONSTOPLUA";
 const STOP_HSCRIPT: &str = "##PSYCHLUA_FUNCTIONSTOPHSCRIPT";
 const STOP_ALL: &str = "##PSYCHLUA_FUNCTIONSTOPALL";
@@ -30,8 +63,14 @@ pub enum Request {
     Animation { who: String, animation: String },
     Dance { who: String },
     SetProperty { name: String, value: serde_json::Value },
-    /// A camera flashes a colour and fades back over that many seconds.
-    Flash { camera: Cam, color: u32, seconds: f64 },
+    /// A camera flashes a colour and fades back over that many seconds, or (rising) fades to it and stays (cameraFade).
+    Flash { camera: Cam, color: u32, seconds: f64, rising: bool },
+    /// setHealthBarColors (or, `time`, setTimeBarColors): the bar's left and right colours, those given.
+    BarColors { time: bool, left: Option<u32>, right: Option<u32> },
+    /// callOnLuas/callOnScripts: a function of every script called, with these values.
+    Call { name: String, args: Vec<serde_json::Value> },
+    /// setOnLuas/setOnScripts: a global of every script set.
+    SetOn { name: String, value: serde_json::Value },
     /// The run's score, misses or hits ("score", "misses", "hits") set, or added to.
     Score { field: &'static str, value: f64, add: bool },
     /// A field of a chart note (by its number) set: ignoreNote, hitCausesMiss, noAnimation, gfNote...
@@ -82,6 +121,8 @@ pub struct Shared {
     /// The song's folder name and the chosen language, where startDialogue looks for files.
     pub song: String,
     pub language: String,
+    /// The scripts running, by their names (isRunning, getRunningScripts).
+    running: Vec<String>,
 }
 
 struct Script {
@@ -361,6 +402,11 @@ impl Sprite {
             "offset.y" => json!(self.offset[1]),
             "width" => json!(size[0] * self.scale[0].abs()),
             "height" => json!(size[1] * self.scale[1].abs()),
+            "midpoint.x" => json!(self.x + size[0] * self.scale[0].abs() / 2.0),
+            "midpoint.y" => json!(self.y + size[1] * self.scale[1].abs() / 2.0),
+            // (scaled around its middle, the picture's middle stays where it was)
+            "graphicMidpoint.x" => json!(self.x - self.offset[0] + size[0] / 2.0),
+            "graphicMidpoint.y" => json!(self.y - self.offset[1] + size[1] / 2.0),
             "frameWidth" => json!(size[0]),
             "frameHeight" => json!(size[1]),
             "animation.curAnim.name" | "animation.name" => json!(self.playing.as_ref().map_or("", |(name, _)| name)),
@@ -561,6 +607,16 @@ impl Shared {
         font
     }
 
+    /// Where a script may write `path`: under the mods folder (the mod's own folder first, when the path does not start
+    /// with "mods/"), never above it.
+    fn writable(&self, path: &str) -> Option<PathBuf> {
+        let mods = self.paths.as_ref()?.roots().iter().find(|root| root.ends_with("mods"))?.clone();
+        let relative = Path::new(path.strip_prefix("mods/").unwrap_or(path));
+        let safe = relative.components().all(|part| matches!(part, std::path::Component::Normal(_)));
+        let inside = if path.starts_with("mods/") || self.mod_folder.is_empty() { mods } else { mods.join(&self.mod_folder) };
+        safe.then(|| inside.join(relative))
+    }
+
     fn sprite(&mut self, tag: &str) -> Option<&mut Sprite> {
         self.sprites.iter_mut().find(|(name, _)| name == tag).map(|(_, sprite)| sprite)
     }
@@ -576,11 +632,14 @@ impl Scripts {
     pub fn start(files: &[PathBuf], globals: &[(&str, serde_json::Value)], shared: Shared) -> Scripts {
         let mut scripts = Scripts { scripts: Vec::new(), shared: Rc::new(RefCell::new(shared)) };
         for file in files {
+            // (listed first, as the Haxe engine lists a script before it runs)
+            scripts.shared.borrow_mut().running.push(file.to_string_lossy().replace('\\', "/"));
             match scripts.open(file, globals) {
                 Ok(script) => scripts.scripts.push(script),
                 Err(error) => eprintln!("Lua {}: {error}", file.display()),
             }
         }
+        scripts.shared.borrow_mut().running = scripts.scripts.iter().map(|script| script.name.clone()).collect();
         scripts
     }
 
@@ -600,6 +659,7 @@ impl Scripts {
             g.set(*key, from_json(&lua, value)?)?;
         }
         self.register(&lua, &closed, &name)?;
+        lua.load(PRELUDE).set_name("prelude").exec()?;
         lua.load(&code).set_name(name.as_str()).exec()?;
         Ok(Script { name, lua, closed })
     }
@@ -609,7 +669,7 @@ impl Scripts {
         let g = lua.globals();
         let shared = &self.shared;
         macro_rules! function {
-            ($name:literal, |$lua:ident, $shared:ident, $args:ident : $ty:ty| $body:expr) => {{
+            ($name:expr, |$lua:ident, $shared:ident, $args:ident : $ty:ty| $body:expr) => {{
                 let $shared = shared.clone();
                 g.set($name, lua.create_function(move |$lua, $args: $ty| {
                     let _ = &$lua;
@@ -618,7 +678,7 @@ impl Scripts {
             }};
         }
         macro_rules! request {
-            ($name:literal, |$args:ident : $ty:ty| $request:expr) => {
+            ($name:expr, |$args:ident : $ty:ty| $request:expr) => {
                 function!($name, |_lua, shared, $args: $ty| {
                     shared.borrow_mut().requests.push($request);
                     Ok(())
@@ -794,8 +854,39 @@ impl Scripts {
                 "other" | "camother" => Cam::Other,
                 _ => Cam::Game,
             };
-            Request::Flash { camera, color: args.1.as_ref().map_or(0xFFFFFF, color_of), seconds: args.2.unwrap_or(1.0) }
+            Request::Flash { camera, color: args.1.as_ref().map_or(0xFFFFFF, color_of), seconds: args.2.unwrap_or(1.0), rising: false }
         });
+        // FlxCamera.fade: to the colour, staying (or, fading out, from it)
+        request!("cameraFade", |args: (String, Option<Value>, Option<f64>, Option<bool>, Option<bool>)| {
+            let camera = match args.0.to_lowercase().as_str() {
+                "hud" | "camhud" => Cam::Hud,
+                "other" | "camother" => Cam::Other,
+                _ => Cam::Game,
+            };
+            Request::Flash { camera, color: args.1.as_ref().map_or(0x000000, color_of), seconds: args.2.unwrap_or(1.0), rising: !args.4.unwrap_or(false) }
+        });
+        request!("setHealthBarColors", |args: (Option<Value>, Option<Value>)| Request::BarColors { time: false, left: args.0.as_ref().map(color_of), right: args.1.as_ref().map(color_of) });
+        request!("setTimeBarColors", |args: (Option<Value>, Option<Value>)| Request::BarColors { time: true, left: args.0.as_ref().map(color_of), right: args.1.as_ref().map(color_of) });
+        // other scripts are reached once this one's call is over (what they answer is not passed back)
+        for name in ["callOnLuas", "callOnScripts"] {
+            request!(name, |args: (String, Option<Vec<Value>>)| Request::Call { name: args.0, args: args.1.unwrap_or_default().iter().map(to_json).collect() });
+        }
+        for name in ["setOnLuas", "setOnScripts"] {
+            function!(name, |_lua, shared, args: (String, Value)| {
+                shared.borrow_mut().requests.push(Request::SetOn { name: args.0, value: to_json(&args.1) });
+                Ok(())
+            });
+        }
+        function!("isRunning", |_lua, shared, args: String| Ok(shared.borrow().running.iter().any(|running| running.ends_with(&args) || running.ends_with(&format!("{args}.lua")))));
+        function!("getRunningScripts", |_lua, shared, _args: ()| Ok(shared.borrow().running.clone()));
+        g.set("mouseReleased", lua.create_function(|_, _args: Option<String>| Ok(is_mouse_released()))?)?;
+        g.set("gamepadAnalogX", lua.create_function(|_, args: (Option<u32>, Option<bool>)| Ok(crate::pad::stick(args.1.unwrap_or(true), true)))?)?;
+        g.set("gamepadAnalogY", lua.create_function(|_, args: (Option<u32>, Option<bool>)| Ok(crate::pad::stick(args.1.unwrap_or(true), false)))?)?;
+        // files a script writes or deletes: inside the game's mods folder only
+        function!("saveFile", |_lua, shared, args: (String, String, Option<bool>)| Ok(shared.borrow().writable(&args.0).is_some_and(|path| {
+            path.parent().is_some_and(|folder| std::fs::create_dir_all(folder).is_ok()) && std::fs::write(path, args.1).is_ok()
+        })));
+        function!("deleteFile", |_lua, shared, args: (String, Option<bool>, Option<bool>)| Ok(shared.borrow().writable(&args.0).is_some_and(|path| std::fs::remove_file(path).is_ok())));
         for (name, field, add) in [("setScore", "score", false), ("addScore", "score", true), ("setMisses", "misses", false), ("addMisses", "misses", true), ("setHits", "hits", false), ("addHits", "hits", true)] {
             let shared = shared.clone();
             g.set(name, lua.create_function(move |_, args: Option<f64>| {
@@ -1190,6 +1281,26 @@ impl Scripts {
         matches!(answer.as_deref(), Some(STOP | STOP_LUA | STOP_ALL))
     }
 
+    /// Calls `name` in every script with values given as JSON (callOnLuas).
+    pub fn call_json(&mut self, name: &str, args: &[serde_json::Value]) {
+        for script in self.scripts.iter().filter(|script| !*script.closed.borrow()) {
+            let Ok(Some(function)) = script.lua.globals().get::<Option<Function>>(name) else { continue };
+            let values: mlua::Result<Vec<Value>> = args.iter().map(|value| from_json(&script.lua, value)).collect();
+            if let Err(error) = values.and_then(|values| function.call::<Value>(mlua::MultiValue::from_iter(values))) {
+                eprintln!("Lua {} ({name}): {error}", script.name);
+            }
+        }
+    }
+
+    /// Sets a global given as JSON in every script (setOnLuas).
+    pub fn set_json(&self, name: &str, value: &serde_json::Value) {
+        for script in &self.scripts {
+            if let Ok(value) = from_json(&script.lua, value) {
+                let _ = script.lua.globals().set(name, value);
+            }
+        }
+    }
+
     /// Sets a global in every script.
     pub fn set(&self, name: &str, value: impl mlua::IntoLua + Clone) {
         for script in &self.scripts {
@@ -1287,6 +1398,19 @@ impl Scripts {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn scripts_write_only_inside_the_mods_folder() {
+        let base = Path::new("game");
+        let mut shared = Shared::new(Default::default(), "", funkin_core::content::Paths::new(base, "", ""));
+        assert_eq!(shared.writable("a/b.txt"), Some(base.join("mods").join("a/b.txt")));
+        assert_eq!(shared.writable("../x.txt"), None);
+        assert_eq!(shared.writable("a/../../x.txt"), None);
+        assert_eq!(shared.writable("/etc/x"), None);
+        shared.mod_folder = "Mine".to_owned();
+        assert_eq!(shared.writable("a.txt"), Some(base.join("mods").join("Mine").join("a.txt")));
+        assert_eq!(shared.writable("mods/a.txt"), Some(base.join("mods").join("a.txt")));
+    }
+
     use super::*;
 
     fn run(code: &str) -> Scripts {

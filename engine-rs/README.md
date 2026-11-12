@@ -168,7 +168,11 @@ Done:
   `data/<song>/<file>.json`, its language's own file first): the speech bubble (normal or angry, at the side or
   in the middle), the portraits of `images/dialogue/<name>.json` sliding in with their expressions, the lines typed
   in the plain letters (wrapping as the Haxe engine's do), music rising under it, Back to skip; onNextDialogue and
-  onSkipDialogue.
+  onSkipDialogue. Also: callOnLuas/callOnScripts and setOnLuas/setOnScripts (reaching the other scripts once the
+  caller's turn is over), isRunning, getRunningScripts, setHealthBarColors, setTimeBarColors, cameraFade,
+  cameraSetTarget, the characters' and the camera's place (getCharacterX/Y, setCharacterX/Y, get/set/add camera
+  follow point), getMidpointX/Y and getGraphicMidpointX/Y, mouseReleased, gamepadAnalogX/Y, saveFile and
+  deleteFile (inside the mods folder only), and the older luaSprite names.
 - **Gamepads** (Windows): any gamepad plays and goes through the menus with Psych's buttons (D-pad and
   A/B/X/Y for the lanes; D-pad or left stick, A or Start, B, Start, Back for the menus); Lua's gamepad functions.
 

@@ -277,7 +277,9 @@ struct Playing {
     /// The strums, where the game or the scripts put them.
     strums: [[Strum; 4]; 2],
     /// A flash a script asked for: the camera it covers, its colour, when it began and how long it fades.
-    flash: Option<(lua::Cam, Color, f64, f64)>,
+    flash: Option<(lua::Cam, Color, f64, f64, bool)>,
+    /// The colours scripts gave the health bar and the time bar (left, right).
+    bar_colors: [[Option<Color>; 2]; 2],
     lua_step: i64,
     lua_section: usize,
     lua_created: bool,
@@ -409,7 +411,7 @@ impl Playing {
         };
         let video = opening.and_then(|name| paths.video(name)).and_then(|path| video::Video::open(&path, true, true, false, false).map_err(|error| eprintln!("{error}")).ok());
         let end_video = closing.and_then(|name| paths.video(name));
-        Ok(Playing { video, end_video, speech: None, countdown_asked: false, countdown_held: false, entry: entry.clone(), play, song, player_voice, own_skin: None, music_fade: None, lua, looks: Default::default(), renamed: Default::default(), strums: strums(settings), flash: None, lua_step: i64::MIN, lua_section: usize::MAX, lua_created: false, end_asked: false, end_held: false, base: base.to_path_buf(), staged, bowing: false, tune: false, paused_at: 0.0, pause_scroll: 0.0, deaths: 0, scene, waited: 0.0, clock: Default::default(), ticked: std::time::Instant::now(), started: false, paused: None, choosing: None, difficulties, story, taunt_until: None, start_at, position: -lead_in, settings: settings.clone(), held_keys: Vec::new(), flash_until: [[f64::MIN; 4]; 2], judgement: None, last_hit: f64::MIN, lanes_used: [false; 4], idled: false, idle_for: 0.0, sang_for: 0.0,
+        Ok(Playing { video, end_video, speech: None, countdown_asked: false, countdown_held: false, entry: entry.clone(), play, song, player_voice, own_skin: None, music_fade: None, lua, looks: Default::default(), renamed: Default::default(), strums: strums(settings), flash: None, bar_colors: Default::default(), lua_step: i64::MIN, lua_section: usize::MAX, lua_created: false, end_asked: false, end_held: false, base: base.to_path_buf(), staged, bowing: false, tune: false, paused_at: 0.0, pause_scroll: 0.0, deaths: 0, scene, waited: 0.0, clock: Default::default(), ticked: std::time::Instant::now(), started: false, paused: None, choosing: None, difficulties, story, taunt_until: None, start_at, position: -lead_in, settings: settings.clone(), held_keys: Vec::new(), flash_until: [[f64::MIN; 4]; 2], judgement: None, last_hit: f64::MIN, lanes_used: [false; 4], idled: false, idle_for: 0.0, sang_for: 0.0,
             paths, cutscene, lead_in, counted: i64::MIN, popups: Vec::new(), splashes: Vec::new(), dead: None, next_event: 0, speed, speed_change: None }.with(settings))
     }
 
@@ -954,13 +956,16 @@ impl Playing {
         let mut props = vec![("health", play.health), ("songPosition", self.position), ("songScore", play.score as f64), ("songMisses", play.misses as f64), ("combo", play.combo as f64), ("songHits", hits as f64), ("songSpeed", self.speed as f64)];
         props.extend(LOOKS.iter().map(|name| (*name, self.looks.get(name).copied().unwrap_or(1.0) as f64)));
         if let Some(scene) = &self.scene {
-            for name in ["defaultCamZoom", "camGame.zoom", "camHUD.zoom", "cameraSpeed", "camFollow.x", "camFollow.y", "isCameraOnForcedPos", "boyfriend.x", "boyfriend.y", "dad.x", "dad.y", "gf.x", "gf.y", "boyfriend.alpha", "dad.alpha", "gf.alpha", "boyfriend.visible", "dad.visible", "gf.visible"] {
+            for name in ["defaultCamZoom", "camGame.zoom", "camHUD.zoom", "cameraSpeed", "camFollow.x", "camFollow.y", "isCameraOnForcedPos", "boyfriend.x", "boyfriend.y", "dad.x", "dad.y", "gf.x", "gf.y", "boyfriend.alpha", "dad.alpha", "gf.alpha", "boyfriend.visible", "dad.visible", "gf.visible", "boyfriend.midpoint.x", "boyfriend.midpoint.y", "dad.midpoint.x", "dad.midpoint.y", "gf.midpoint.x", "gf.midpoint.y"] {
                 props.extend(scene.property(name).map(|value| (name, value)));
             }
         }
         let mut shared = self.lua.shared.borrow_mut();
         for (name, value) in props {
-            shared.props.insert(name.to_owned(), serde_json::json!(value));
+            match shared.props.get_mut(name) {
+                Some(kept) => *kept = serde_json::json!(value),
+                None => drop(shared.props.insert(name.to_owned(), serde_json::json!(value))),
+            }
         }
         // the notes on their way: from the first still in play to two seconds ahead, with their states
         if shared.notes.len() != self.play.chart.notes.len() {
@@ -1032,7 +1037,15 @@ impl Playing {
                     }
                     _ => eprintln!("Lua: setProperty {name} is not known here"),
                 },
-                lua::Request::Flash { camera, color, seconds } => self.flash = Some((camera, Color::from_hex(color), get_time(), seconds)),
+                lua::Request::Flash { camera, color, seconds, rising } => self.flash = Some((camera, Color::from_hex(color), get_time(), seconds, rising)),
+                lua::Request::BarColors { time, left, right } => {
+                    let colors = &mut self.bar_colors[time as usize];
+                    for (kept, given) in colors.iter_mut().zip([left, right]) {
+                        *kept = given.map(Color::from_hex).or(*kept);
+                    }
+                }
+                lua::Request::Call { name, args } => self.lua.call_json(&name, &args),
+                lua::Request::SetOn { name, value } => self.lua.set_json(&name, &value),
                 lua::Request::Score { field, value, add } => {
                     let play = &mut self.play;
                     match field {
@@ -1166,8 +1179,9 @@ impl Playing {
         });
         // a script's flash of a camera: over what it shows, fading out
         let flash = |camera: lua::Cam| {
-            if let Some((_, color, began, seconds)) = self.flash.filter(|flash| flash.0 == camera) {
-                let left = 1.0 - ((get_time() - began) / seconds.max(0.001)).min(1.0) as f32;
+            if let Some((_, color, began, seconds, rising)) = self.flash.filter(|flash| flash.0 == camera) {
+                let done = ((get_time() - began) / seconds.max(0.001)).min(1.0) as f32;
+                let left = if rising { done } else { 1.0 - done };
                 set_camera(&Camera2D { target: vec2(WIDTH / 2.0, HEIGHT / 2.0), zoom: vec2(2.0 / WIDTH, 2.0 / HEIGHT), ..Default::default() });
                 draw_rectangle(0.0, 0.0, WIDTH, HEIGHT, Color { a: color.a * left, ..color });
             }
@@ -1304,8 +1318,12 @@ impl Playing {
             let shown = (1.0 - (shown - 1.0).powi(2)).sqrt();
             let seen = |color: Color| Color { a: color.a * shown, ..color };
             if settings.time_bar < 2 {
+                let [left, right] = self.bar_colors[1];
                 draw_rectangle(WIDTH / 2.0 - 204.0, time_y - 4.0, 408.0, 27.0, seen(BLACK));
-                draw_rectangle(WIDTH / 2.0 - 200.0, time_y, 400.0 * (played / length) as f32, 19.0, seen(WHITE));
+                if let Some(right) = right {
+                    draw_rectangle(WIDTH / 2.0 - 200.0, time_y, 400.0, 19.0, seen(right));
+                }
+                draw_rectangle(WIDTH / 2.0 - 200.0, time_y, 400.0 * (played / length) as f32, 19.0, seen(left.unwrap_or(WHITE)));
             }
             if shown > 0.0 {
                 skin.centered(&words[settings.time_bar], time_y + 17.0, 22, seen(WHITE));
@@ -1322,8 +1340,9 @@ impl Playing {
         let middle = bar_x + bar_w * (1.0 - player_share);
         if piece("healthBar") {
             draw_rectangle(bar_x - 4.0, bar_y - 4.0, bar_w + 8.0, 26.0, faded(BLACK));
-            draw_rectangle(bar_x, bar_y, middle - bar_x, 18.0, faded(singers[0].map_or(Color::from_hex(0xFF0000), |c| c.color)));
-            draw_rectangle(middle, bar_y, bar_w * player_share, 18.0, faded(singers[1].map_or(Color::from_hex(0x66FF33), |c| c.color)));
+            let [left, right] = self.bar_colors[0];
+            draw_rectangle(bar_x, bar_y, middle - bar_x, 18.0, faded(left.or(singers[0].map(|c| c.color)).unwrap_or(Color::from_hex(0xFF0000))));
+            draw_rectangle(middle, bar_y, bar_w * player_share, 18.0, faded(right.or(singers[1].map(|c| c.color)).unwrap_or(Color::from_hex(0x66FF33))));
         }
         // the two singers' icons meet where the bar's colours meet; the losing one shows its second picture
         let icon_size = 150.0 * self.scene.as_ref().map_or(1.0, |scene| scene.icon_scale);

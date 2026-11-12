@@ -1103,6 +1103,8 @@ pub struct Scene {
     gf_speed: i64,
     /// Where a chart event pinned the camera.
     pinned: Option<Vec2>,
+    /// Who a script turned the camera to, and when (it holds for the rest of that section).
+    turned: Option<(usize, f64)>,
     /// Seconds until the camera, held for a stunt, goes back to following the singers.
     unpin_in: Option<f32>,
     /// The stage's name.
@@ -1249,6 +1251,7 @@ impl Scene {
             icon_scale: 1.0,
             gf_speed: 1,
             pinned: None,
+            turned: None,
             unpin_in: None,
             stage: chart.stage.clone(),
             shake: [(0.0, 0.0); 2],
@@ -1388,6 +1391,8 @@ impl Scene {
                 match field {
                     "x" => character.position.x as f64,
                     "y" => character.position.y as f64,
+                    "midpoint.x" => character.middle().x as f64,
+                    "midpoint.y" => character.middle().y as f64,
                     "alpha" => character.tint.a as f64,
                     "visible" => (character.tint.a > 0.0) as u8 as f64,
                     _ => return None,
@@ -1409,6 +1414,9 @@ impl Scene {
             "camFollow.y" => self.pinned = Some(vec2(self.pinned.unwrap_or(self.target).x, value)),
             "isCameraOnForcedPos" if value == 0.0 => self.pinned = None,
             "isCameraOnForcedPos" => self.pinned = Some(self.pinned.unwrap_or(self.target)),
+            // cameraSetTarget: the camera turns to a character (0 the opponent, 1 the player, 2 the girlfriend) until the
+            // next section, as the Haxe engine's moveCamera
+            "cameraTarget" => self.turned = Some((value as usize, self.position)),
             _ => {
                 let Some((who, field)) = name.split_once('.') else { return false };
                 let who = match who { "boyfriend" => 1, "dad" => 0, "gf" => 2, _ => return false };
@@ -1615,7 +1623,10 @@ impl Scene {
             return;
         }
         let Some(section) = chart.section_at(position) else { return };
-        let target = if section.gf && self.gf.is_some() { self.view_of(2) } else { self.view_of(section.must_hit as usize) };
+        let turned = self.turned.filter(|(_, when)| chart.section_at(*when).is_some_and(|then| std::ptr::eq(then, section)));
+        self.turned = turned;
+        let side = turned.map_or(if section.gf && self.gf.is_some() { 2 } else { section.must_hit as usize }, |(side, _)| side);
+        let target = self.view_of(side);
         self.target = target.unwrap_or(self.target);
     }
 
