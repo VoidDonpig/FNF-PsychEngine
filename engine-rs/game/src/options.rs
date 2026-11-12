@@ -72,13 +72,14 @@ enum Bind {
 }
 
 /// The key binds' rows in the Haxe engine's order: each with its name, and its name while it waits for a key.
-const BINDS: [(Bind, &str, &str); 24] = {
+const BINDS: [(Bind, &str, &str); 28] = {
     use Bind::*;
     [
         (Header, "NOTES", ""), (Lane(0), "Left", "Note Left"), (Lane(1), "Down", "Note Down"), (Lane(2), "Up", "Note Up"), (Lane(3), "Right", "Note Right"), (Gap, "", ""),
         (Header, "UI", ""), (Action(0), "Left", "UI Left"), (Action(1), "Down", "UI Down"), (Action(2), "Up", "UI Up"), (Action(3), "Right", "UI Right"), (Gap, "", ""),
         (Action(7), "Reset", "Reset"), (Action(4), "Accept", "Accept"), (Action(5), "Back", "Back"), (Action(6), "Pause", "Pause"), (Gap, "", ""),
-        (Header, "VOLUME", ""), (Action(8), "Mute", "Volume Mute"), (Action(9), "Up", "Volume Up"), (Action(10), "Down", "Volume Down"), (Gap, "", ""), (Gap, "", ""),
+        (Header, "VOLUME", ""), (Action(8), "Mute", "Volume Mute"), (Action(9), "Up", "Volume Up"), (Action(10), "Down", "Volume Down"), (Gap, "", ""),
+        (Header, "DEBUG", ""), (Action(11), "Key 1", "Debug Key #1"), (Action(12), "Key 2", "Debug Key #2"), (Gap, "", ""), (Gap, "", ""),
         (Defaults, "Reset to Default Keys", ""),
     ]
 };

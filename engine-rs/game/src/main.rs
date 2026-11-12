@@ -6,6 +6,7 @@
 //! opens the options, and `--shot <file.png>` saves the picture after a few frames (or `--after <seconds>`, or
 //! once the song has reached `--when <seconds>`) and quits.
 mod adjust;
+mod chart_editor;
 mod animate;
 mod atlas;
 mod audio;
@@ -291,6 +292,8 @@ struct Playing {
     lua_created: bool,
     end_asked: bool,
     end_held: bool,
+    /// The chart editor's chart, when this is a play-test of it: the debug key and the song's end go back to the editor.
+    charting: Option<String>,
     /// A video playing, and the one the song ends with (Weekend 1's in story mode).
     video: Option<video::Video>,
     end_video: Option<PathBuf>,
@@ -367,8 +370,12 @@ struct Playing {
 impl Playing {
     /// `story`: played in story mode, where some songs open with a talk.
     /// `seen`: the talk and the stage's own opening scene were seen already (a retry): they do not come again.
-    fn open(base: &Path, entry: &SongEntry, songs: &[SongEntry], settings: &Settings, start_at: f64, story: bool, seen: bool) -> Result<Playing, String> {
-        let text = std::fs::read_to_string(&entry.chart).map_err(|e| format!("{}: {e}", entry.chart.display()))?;
+    /// `charting`: the chart editor's chart, played as it is (a play-test) instead of the file's.
+    fn open(base: &Path, entry: &SongEntry, songs: &[SongEntry], settings: &Settings, start_at: f64, story: bool, seen: bool, charting: Option<String>) -> Result<Playing, String> {
+        let text = match &charting {
+            Some(text) => text.clone(),
+            None => std::fs::read_to_string(&entry.chart).map_err(|e| format!("{}: {e}", entry.chart.display()))?,
+        };
         let mut chart = funkin_core::chart::parse(&text).map_err(|e| format!("{}: {e}", entry.chart.display()))?;
         // events shared by all difficulties of the song sit in their own file
         if let Some(shared) = std::fs::read_to_string(entry.chart.with_file_name("events.json")).ok().and_then(|text| funkin_core::chart::parse(&text).ok()) {
@@ -417,7 +424,7 @@ impl Playing {
         };
         let video = opening.and_then(|name| paths.video(name)).and_then(|path| video::Video::open(&path, true, true, false, false).map_err(|error| eprintln!("{error}")).ok());
         let end_video = closing.and_then(|name| paths.video(name));
-        Ok(Playing { video, end_video, speech: None, countdown_asked: false, countdown_held: false, entry: entry.clone(), play, song, player_voice, own_skin: None, music_fade: None, lua, looks: Default::default(), renamed: Default::default(), strums: strums(settings), flash: None, sounds: HashMap::new(), fades: Vec::new(), music_volume: 1.0, bar_colors: Default::default(), lua_step: i64::MIN, lua_section: usize::MAX, lua_created: false, end_asked: false, end_held: false, base: base.to_path_buf(), staged, bowing: false, tune: false, paused_at: 0.0, pause_scroll: 0.0, deaths: 0, scene, waited: 0.0, clock: Default::default(), ticked: std::time::Instant::now(), started: false, paused: None, choosing: None, difficulties, story, taunt_until: None, start_at, position: -lead_in, settings: settings.clone(), held_keys: Vec::new(), flash_until: [[f64::MIN; 4]; 2], judgement: None, last_hit: f64::MIN, lanes_used: [false; 4], idled: false, idle_for: 0.0, sang_for: 0.0,
+        Ok(Playing { charting, video, end_video, speech: None, countdown_asked: false, countdown_held: false, entry: entry.clone(), play, song, player_voice, own_skin: None, music_fade: None, lua, looks: Default::default(), renamed: Default::default(), strums: strums(settings), flash: None, sounds: HashMap::new(), fades: Vec::new(), music_volume: 1.0, bar_colors: Default::default(), lua_step: i64::MIN, lua_section: usize::MAX, lua_created: false, end_asked: false, end_held: false, base: base.to_path_buf(), staged, bowing: false, tune: false, paused_at: 0.0, pause_scroll: 0.0, deaths: 0, scene, waited: 0.0, clock: Default::default(), ticked: std::time::Instant::now(), started: false, paused: None, choosing: None, difficulties, story, taunt_until: None, start_at, position: -lead_in, settings: settings.clone(), held_keys: Vec::new(), flash_until: [[f64::MIN; 4]; 2], judgement: None, last_hit: f64::MIN, lanes_used: [false; 4], idled: false, idle_for: 0.0, sang_for: 0.0,
             paths, cutscene, lead_in, counted: i64::MIN, popups: Vec::new(), splashes: Vec::new(), dead: None, next_event: 0, speed, speed_change: None }.with(settings))
     }
 
@@ -683,6 +690,10 @@ impl Playing {
                 Some(_) => Flow::Quit,
                 None => Flow::Continue,
             };
+        }
+        // the debug key: the chart editor (not while the song is ending)
+        if controls::pressed(Ui::Debug1) && !self.end_asked {
+            return Flow::Editor;
         }
         // (as the Haxe engine does, the game pauses itself when another window comes to the front)
         if !self.bowing && (controls::pressed(Ui::Pause) || (self.settings.auto_pause && !is_focused())) && !lua::Scripts::stopped(&self.lua.call("onPause", ())) {
@@ -1651,6 +1662,8 @@ enum Flow {
     Difficulty(String),
     /// The options, and then back to the paused song.
     Options,
+    /// The chart editor, with the song's chart.
+    Editor,
     Quit,
 }
 
@@ -1659,6 +1672,7 @@ enum Screen {
     /// The options, and the menu they were opened from.
     Options(options::OptionsMenu, Page),
     Playing(Box<Playing>),
+    Editor(Box<chart_editor::ChartEditor>),
     Failed(String),
     /// What a new player is told before anything flashes.
     Warning,
@@ -1810,7 +1824,7 @@ fn main() {
         // compared as file names are, so that spaces, hyphens and capitals do not matter
         let wanted = funkin_core::content::song_path(&wanted);
         screen = match songs.iter().find(|s| funkin_core::content::song_path(&format!("{} {}", s.title, s.difficulty)).contains(&wanted)) {
-            Some(entry) => Playing::open(&base, entry, &songs, &settings, start_at, false, false).map_or_else(Screen::Failed, |p| Screen::Playing(Box::new(p))),
+            Some(entry) => Playing::open(&base, entry, &songs, &settings, start_at, false, false, None).map_or_else(Screen::Failed, |p| Screen::Playing(Box::new(p))),
             None => Screen::Failed(format!("No song matches \"{wanted}\".")),
         };
     }
@@ -1821,7 +1835,7 @@ fn main() {
             Some((week, mut list)) => {
                 let entry = &songs[list.remove(0)];
                 story = Some((week, list, 0, 0));
-                Playing::open(&base, entry, &songs, &settings, start_at, true, false).map_or_else(Screen::Failed, |p| Screen::Playing(Box::new(p)))
+                Playing::open(&base, entry, &songs, &settings, start_at, true, false, None).map_or_else(Screen::Failed, |p| Screen::Playing(Box::new(p)))
             }
             None => Screen::Failed(format!("No week \"{wanted}\" with a Normal difficulty.")),
         };
@@ -1957,8 +1971,12 @@ fn main() {
                 }
                 // what the week goes on with, as its folder is called
                 let coming = || story.as_ref().and_then(|(_, rest, ..)| rest.first()).map_or(String::new(), |next| funkin_core::content::song_path(&songs[*next].title));
+                let editor = |playing: &Playing| chart_editor::ChartEditor::open(&base, &playing.entry, playing.charting.clone()).map_or_else(Screen::Failed, |editor| Screen::Editor(Box::new(editor)));
                 match flow {
                     Flow::Continue => Screen::Playing(playing),
+                    Flow::Editor => editor(&playing),
+                    // a play-test goes back to the editor at its end, as the Haxe engine's charting mode
+                    Flow::Finished if playing.charting.is_some() => editor(&playing),
                     Flow::Finished if playing.bows_out(&coming()) => Screen::Playing(playing),
                     Flow::Finished => {
                         let (play, entry) = (&playing.play, &playing.entry);
@@ -1984,7 +2002,7 @@ fn main() {
                                 save.save(&base);
                                 let next = &songs[rest.remove(0)];
                                 story = Some((week, rest, score + play.score, misses + play.misses));
-                                Playing::open(&base, next, &songs, &settings, 0.0, true, false).map_or_else(Screen::Failed, |p| Screen::Playing(Box::new(p)))
+                                Playing::open(&base, next, &songs, &settings, 0.0, true, false, None).map_or_else(Screen::Failed, |p| Screen::Playing(Box::new(p)))
                             }
                             Some((week, _, score, _)) => {
                                 if playing.settings.keeps_scores() {
@@ -2001,12 +2019,12 @@ fn main() {
                         }
                     }
                     // a retry goes straight to the song: the talk was heard
-                    Flow::Restart => Playing::open(&base, &playing.entry, &songs, &settings, 0.0, story.is_some(), true).map_or_else(Screen::Failed, |mut again| {
+                    Flow::Restart => Playing::open(&base, &playing.entry, &songs, &settings, 0.0, story.is_some(), true, None).map_or_else(Screen::Failed, |mut again| {
                         again.deaths = playing.deaths;
                         Screen::Playing(Box::new(again))
                     }),
                     Flow::Difficulty(name) => match songs.iter().find(|other| other.week == playing.entry.week && other.title == playing.entry.title && other.difficulty == name) {
-                        Some(entry) => Playing::open(&base, entry, &songs, &settings, 0.0, false, false).map_or_else(Screen::Failed, |p| Screen::Playing(Box::new(p))),
+                        Some(entry) => Playing::open(&base, entry, &songs, &settings, 0.0, false, false, None).map_or_else(Screen::Failed, |p| Screen::Playing(Box::new(p))),
                         None => Screen::Playing(playing),
                     },
                     Flow::Options => {
@@ -2018,6 +2036,18 @@ fn main() {
                     Flow::Quit => Screen::Menu(if story.take().is_some() { Page::Story } else { Page::Freeplay }),
                 }
             }
+            Screen::Editor(mut editor) => match &skin {
+                Some(skin) => {
+                    let go = editor.update();
+                    editor.draw(skin);
+                    match go {
+                        chart_editor::Go::Stay => Screen::Editor(editor),
+                        chart_editor::Go::Play(text) => Playing::open(&base, &editor.entry, &songs, &settings, 0.0, false, true, Some(text)).map_or_else(Screen::Failed, |p| Screen::Playing(Box::new(p))),
+                        chart_editor::Go::Leave => Screen::Menu(Page::Freeplay),
+                    }
+                }
+                None => Screen::Menu(Page::Freeplay),
+            },
             Screen::Loading(entry, talk, shown) => {
                 clear_background(Color::from_hex(0xCAFF4D));
                 if let Some(picture) = atlas::picture(&base.join("assets/shared/images/funkay.png")) {
@@ -2027,7 +2057,7 @@ fn main() {
                 plain(&phrase_with("now_loading", "Now Loading{1}", &["..."]), 12.0, HEIGHT - 16.0, 30, WHITE);
                 // the reading itself holds this frame up: the picture was put on screen by the one before
                 match shown {
-                    true => Playing::open(&base, &songs[entry], &songs, &settings, 0.0, talk, false).map_or_else(Screen::Failed, |p| Screen::Playing(Box::new(p))),
+                    true => Playing::open(&base, &songs[entry], &songs, &settings, 0.0, talk, false, None).map_or_else(Screen::Failed, |p| Screen::Playing(Box::new(p))),
                     false => Screen::Loading(entry, talk, true),
                 }
             }
@@ -2156,7 +2186,7 @@ fn main() {
         if mouse_moved() || is_mouse_pressed() {
             pointer_moved = get_time();
         }
-        show_mouse(matches!(screen, Screen::Menu(_) | Screen::Options(..)) && get_time() - pointer_moved < 2.0);
+        show_mouse(matches!(screen, Screen::Editor(_)) || (matches!(screen, Screen::Menu(_) | Screen::Options(..)) && get_time() - pointer_moved < 2.0));
         let showing = match &screen {
             Screen::Playing(playing) => (3, &**playing as *const Playing as usize, playing.paused.is_some(), playing.dead.is_some(), playing.started),
             Screen::Menu(page) => (1, *page as usize, false, false, false),

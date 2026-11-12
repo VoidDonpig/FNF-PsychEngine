@@ -108,7 +108,7 @@ pub enum KeyCode {
     A, B, C, D, E, F, G, H, I, J, K, L, M, N, O, P, Q, R, S, T, U, V, W, X, Y, Z,
     Key0, Key1, Key2, Key3, Key4, Key5, Key6, Key7, Key8, Key9,
     Kp0, Kp1, Kp2, Kp3, Kp4, Kp5, Kp6, Kp7, Kp8, Kp9,
-    Left, Right, Up, Down, Space, Enter, Escape, Backspace, Home, End, F11, KpAdd, KpSubtract,
+    Left, Right, Up, Down, Space, Enter, Escape, Backspace, Delete, Home, End, F11, KpAdd, KpSubtract,
     LeftShift, RightShift, LeftControl, RightControl, LeftAlt, RightAlt,
     Comma, Period, Slash, Semicolon, Apostrophe, LeftBracket, RightBracket, Minus, Equal, Backslash,
 }
@@ -126,7 +126,7 @@ fn key(code: winit::keyboard::KeyCode) -> Option<KeyCode> {
         Their::Numpad0 => Kp0, Their::Numpad1 => Kp1, Their::Numpad2 => Kp2, Their::Numpad3 => Kp3, Their::Numpad4 => Kp4,
         Their::Numpad5 => Kp5, Their::Numpad6 => Kp6, Their::Numpad7 => Kp7, Their::Numpad8 => Kp8, Their::Numpad9 => Kp9,
         Their::ArrowLeft => Left, Their::ArrowRight => Right, Their::ArrowUp => Up, Their::ArrowDown => Down,
-        Their::Space => Space, Their::Enter | Their::NumpadEnter => Enter, Their::Escape => Escape, Their::Backspace => Backspace, Their::Home => Home, Their::End => End, Their::F11 => F11,
+        Their::Space => Space, Their::Enter | Their::NumpadEnter => Enter, Their::Escape => Escape, Their::Backspace => Backspace, Their::Delete => Delete, Their::Home => Home, Their::End => End, Their::F11 => F11,
         Their::ShiftLeft => LeftShift, Their::ShiftRight => RightShift, Their::ControlLeft => LeftControl, Their::ControlRight => RightControl,
         Their::AltLeft => LeftAlt, Their::AltRight => RightAlt, Their::NumpadAdd => KpAdd, Their::NumpadSubtract => KpSubtract,
         Their::Comma => Comma, Their::Period => Period, Their::Slash => Slash, Their::Semicolon => Semicolon, Their::Quote => Apostrophe,

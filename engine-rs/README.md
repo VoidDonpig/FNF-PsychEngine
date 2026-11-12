@@ -178,6 +178,15 @@ Done:
   (musicFadeIn/Out).
   loadGraphic (whole, or cut in a grid of frames for addAnimation), loadFrames, setBlendMode ("add") and
   objectsOverlap for the scripts' sprites.
+- **Chart editor** (first part): 7 (Debug Key #1, on the key binds page with Debug Key #2) during a song opens it on
+  that song's chart: the Haxe editor's grid (the events' column, the player's four, the opponent's four; the
+  section playing light, the others dark), the notes and holds, events shown, the icons, the information box;
+  Space plays and stops the music, W/S and the wheel move (the wheel by the beat snap), A/D go a section back or on
+  (Shift: four), Home/End, R; a click puts a note down or takes one off (Shift picks it), Q/E make the picked note's
+  hold shorter or longer, Delete removes it; Left/Right change the beat snap, Z/X the zoom; Ctrl+Z/Y undo and redo;
+  Ctrl+S saves over the chart's file, the one before kept as `<file>.bak` (an older chart is saved in the Psych 1.0
+  format, its keys where they were); Enter play-tests the chart as it is, and 7 or the song's end come back to it;
+  Escape leaves.
 - **Gamepads** (Windows): any gamepad plays and goes through the menus with Psych's buttons (D-pad and
   A/B/X/Y for the lanes; D-pad or left stick, A or Start, B, Start, Back for the menus); Lua's gamepad functions.
 
@@ -192,6 +201,8 @@ Not there yet:
 - **Scripts**: the rest of Lua's functions (notes' own textures and health, shaders, groups, and getProperty/setProperty
   beyond the camera, health, score, the characters' place and the scripts' sprites); custom events and note types run by scripts. HScript is Haxe code run against the Haxe
   engine's own classes, so mods that use it cannot run here as they are. Custom shaders.
-- **Editors**: chart, character, stage, week, menu character, dialogue, dialogue character, note splash.
+- **Editors**: the chart editor's menus and tabs (song, section, note and event settings, the waveform, the vortex
+  editor, events placed, copy and paste, selecting many notes, autosave), and the main menu's list of editors (7);
+  the character, stage, week, menu character, dialogue, dialogue character and note splash editors.
 - **Other**: gamepads on Linux and macOS (gilrs needs libudev there); binding a gamepad's buttons on the key binds
   page (Psych's buttons are used as they are).

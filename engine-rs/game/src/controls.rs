@@ -15,21 +15,26 @@ pub enum Ui {
     VolumeMute,
     VolumeUp,
     VolumeDown,
+    /// The debug keys: the chart editor from a song (and the editors from the main menu), the character editor.
+    Debug1,
+    // (bound and kept, for the character editor to come)
+    #[allow(dead_code)]
+    Debug2,
 }
 
 /// Two keys for each action, in the order of `Ui`.
-pub type Binds = [[Option<KeyCode>; 2]; 11];
+pub type Binds = [[Option<KeyCode>; 2]; 13];
 
 /// Each action's name in the settings file (the Haxe engine's) and in the options.
-pub const NAMES: [(&str, &str); 11] = [
+pub const NAMES: [(&str, &str); 13] = [
     ("ui_left", "Left"), ("ui_down", "Down"), ("ui_up", "Up"), ("ui_right", "Right"), ("accept", "Accept"), ("back", "Back"), ("pause", "Pause"), ("reset", "Reset"),
-    ("volume_mute", "Volume Mute"), ("volume_up", "Volume Up"), ("volume_down", "Volume Down"),
+    ("volume_mute", "Volume Mute"), ("volume_up", "Volume Up"), ("volume_down", "Volume Down"), ("debug_1", "Debug Key #1"), ("debug_2", "Debug Key #2"),
 ];
 
 /// The Haxe engine's keys.
 pub fn defaults() -> Binds {
     use KeyCode::*;
-    [[A, Left], [S, Down], [W, Up], [D, Right], [Space, Enter], [Backspace, Escape], [Enter, Escape], [R, R], [Key0, Key0], [KpAdd, Equal], [KpSubtract, Minus]].map(|keys| keys.map(Some))
+    [[A, Left], [S, Down], [W, Up], [D, Right], [Space, Enter], [Backspace, Escape], [Enter, Escape], [R, R], [Key0, Key0], [KpAdd, Equal], [KpSubtract, Minus], [Key7, Key7], [Key8, Key8]].map(|keys| keys.map(Some))
 }
 
 thread_local! {
