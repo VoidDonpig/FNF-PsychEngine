@@ -137,13 +137,13 @@ impl Play {
         held
     }
 
-    /// Starts the run at `pos` (ms): every note before it is out of play and counts for nothing.
+    /// Goes on from `pos` (ms), back or forward: every note before it is out of play and counts for nothing, every note
+    /// from it on is to be played (again).
     pub fn skip_to(&mut self, pos: f64) {
-        for (note, state) in self.chart.notes.iter().zip(&mut self.state) {
-            if note.time < pos {
-                *state = NoteState::Done;
-            }
+        for ((note, state), judged) in self.chart.notes.iter().zip(&mut self.state).zip(&mut self.judged_to) {
+            (*state, *judged) = if note.time < pos { (NoteState::Done, *judged) } else { (NoteState::Pending, 0.0) };
         }
+        self.held = [false; 4];
         self.first_open = self.state.iter().position(|s| *s != NoteState::Done).unwrap_or(self.state.len());
     }
 
@@ -452,6 +452,10 @@ mod tests {
         assert!(p.press(2, 5000.0).is_some());
         p.update(5000.0);
         assert!(p.finished());
+        // and back: the notes from there on are to be played again
+        p.skip_to(150.0);
+        assert_eq!((p.first_open(), p.finished()), (1, false));
+        assert!(p.press(1, 200.0).is_some());
     }
 
     #[test]

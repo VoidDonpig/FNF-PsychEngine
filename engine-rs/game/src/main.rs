@@ -344,6 +344,9 @@ struct Playing {
     /// Game overs on this song since it was chosen in the menus (the pause menu counts them).
     deaths: u32,
     choosing: Option<usize>,
+    /// The pause menu's Skip Time: where to (ms), and how long Left or Right has been held.
+    skip_time: f64,
+    skip_held: f32,
     /// The difficulties the song can be switched to from the pause menu (none in story mode).
     difficulties: Vec<String>,
     /// Arrows fade in one after the other when the song opens (not in story mode, as in the Haxe engine).
@@ -446,7 +449,7 @@ impl Playing {
         };
         let video = opening.and_then(|name| paths.video(name)).and_then(|path| video::Video::open(&path, true, true, false, false).map_err(|error| eprintln!("{error}")).ok());
         let end_video = closing.and_then(|name| paths.video(name));
-        Ok(Playing { charting, video, end_video, speech: None, countdown_asked: false, countdown_held: false, entry: entry.clone(), play, song, player_voice, own_skin: None, music_fade: None, lua, looks: Default::default(), renamed: Default::default(), strums: strums(settings), flash: None, sounds: HashMap::new(), fades: Vec::new(), music_volume: 1.0, bar_colors: Default::default(), lua_step: i64::MIN, lua_section: usize::MAX, lua_created: false, end_asked: false, end_held: false, base: base.to_path_buf(), staged, bowing: false, tune: false, paused_at: 0.0, pause_scroll: 0.0, deaths: 0, scene, waited: 0.0, clock: Default::default(), ticked: std::time::Instant::now(), started: false, paused: None, choosing: None, difficulties, story, taunt_until: None, start_at, position: -lead_in, settings: settings.clone(), held_keys: Vec::new(), flash_until: [[f64::MIN; 4]; 2], judgement: None, last_hit: f64::MIN, lanes_used: [false; 4], idled: false, idle_for: 0.0, sang_for: 0.0,
+        Ok(Playing { charting, video, end_video, speech: None, countdown_asked: false, countdown_held: false, entry: entry.clone(), play, song, player_voice, own_skin: None, music_fade: None, lua, looks: Default::default(), renamed: Default::default(), strums: strums(settings), flash: None, sounds: HashMap::new(), fades: Vec::new(), music_volume: 1.0, bar_colors: Default::default(), lua_step: i64::MIN, lua_section: usize::MAX, lua_created: false, end_asked: false, end_held: false, base: base.to_path_buf(), staged, bowing: false, tune: false, paused_at: 0.0, pause_scroll: 0.0, deaths: 0, scene, waited: 0.0, clock: Default::default(), ticked: std::time::Instant::now(), started: false, paused: None, choosing: None, skip_time: 0.0, skip_held: 0.0, difficulties, story, taunt_until: None, start_at, position: -lead_in, settings: settings.clone(), held_keys: Vec::new(), flash_until: [[f64::MIN; 4]; 2], judgement: None, last_hit: f64::MIN, lanes_used: [false; 4], idled: false, idle_for: 0.0, sang_for: 0.0,
             paths, cutscene, lead_in, counted: i64::MIN, popups: Vec::new(), splashes: Vec::new(), dead: None, next_event: 0, speed, speed_change: None }.with(settings))
     }
 
@@ -489,6 +492,13 @@ impl Playing {
             items.push("Change Difficulty");
         }
         items.extend(["Options", "Exit to menu"]);
+        // a play-test's, as the Haxe engine's charting mode; practice mode can skip time too
+        if self.charting.is_some() {
+            let skip: &[&str] = if self.started { &["Skip Time"] } else { &[] };
+            items.splice(2..2, ["Leave Charting Mode"].iter().chain(skip).chain(&["End Song", "Toggle Practice Mode", "Toggle Botplay"]).copied());
+        } else if self.settings.practice && self.started {
+            items.insert(3, "Skip Time");
+        }
         items
     }
 
@@ -691,6 +701,21 @@ impl Playing {
             let items = self.pause_items();
             let row = step(row, items.len());
             self.paused = Some(row);
+            if items[row] == "Skip Time" {
+                // a second a press, as the Haxe engine; held, 45 seconds a second; round the song's ends
+                let way = controls::down(Ui::Right) as i32 - controls::down(Ui::Left) as i32;
+                let tap = controls::pressed(Ui::Right) as i32 - controls::pressed(Ui::Left) as i32;
+                if tap != 0 {
+                    (self.skip_time, self.skip_held) = (self.skip_time + 1000.0 * tap as f64, 0.0);
+                    self.sound("scrollMenu", 0.4, false);
+                } else if way != 0 {
+                    self.skip_held += get_frame_time();
+                    if self.skip_held > 0.5 {
+                        self.skip_time += 45000.0 * get_frame_time() as f64 * way as f64;
+                    }
+                }
+                self.skip_time = self.skip_time.rem_euclid(self.length());
+            }
             let chosen = if controls::pressed(Ui::Back) { Some("Resume") } else { controls::pressed(Ui::Accept).then_some(items[row]) };
             return match chosen {
                 Some("Resume") => {
@@ -709,6 +734,29 @@ impl Playing {
                     Flow::Continue
                 }
                 Some("Options") => Flow::Options,
+                Some("Leave Charting Mode") => Flow::LeaveCharting,
+                Some("End Song") => Flow::Finished,
+                Some("Toggle Practice Mode") => {
+                    self.settings.practice ^= true;
+                    Flow::Continue
+                }
+                Some("Toggle Botplay") => {
+                    self.play.botplay ^= true;
+                    Flow::Continue
+                }
+                Some("Skip Time") => {
+                    // the song goes on from there, back or forward: the notes before it count for nothing
+                    let to = self.skip_time;
+                    self.play.skip_to(to);
+                    self.song.seek(to - self.start_at - self.play.chart.offset);
+                    self.position = to;
+                    self.paused = None;
+                    self.lua.call("onResume", ());
+                    self.forget_released();
+                    self.song.stop_sounds();
+                    self.song.start();
+                    Flow::Continue
+                }
                 Some(_) => Flow::Quit,
                 None => Flow::Continue,
             };
@@ -723,7 +771,7 @@ impl Playing {
         // (as the Haxe engine does, the game pauses itself when another window comes to the front)
         if !self.bowing && (controls::pressed(Ui::Pause) || (self.settings.auto_pause && !is_focused())) && !lua::Scripts::stopped(&self.lua.call("onPause", ())) {
             self.song.pause();
-            (self.paused, self.paused_at, self.pause_scroll) = (Some(0), get_time(), 0.0);
+            (self.paused, self.paused_at, self.pause_scroll, self.skip_time) = (Some(0), get_time(), 0.0, self.position.max(0.0));
             self.pause_music();
             return Flow::Continue;
         }
@@ -1571,6 +1619,13 @@ impl Playing {
             for (index, label) in items.iter().enumerate() {
                 let from = index as f32 - self.pause_scroll;
                 letters(label, 90.0 + from * 20.0, 320.0 + from * 1.3 * 120.0, if index == row { 1.0 } else { 0.6 });
+                // where Skip Time goes, beside it
+                if self.choosing.is_none() && self.pause_items().get(index) == Some(&"Skip Time") {
+                    let clock = |ms: f64| format!("{}:{:02}", (ms / 60000.0) as u32, (ms / 1000.0) as u32 % 60);
+                    let words = format!("{} / {}", clock(self.skip_time), clock(self.length()));
+                    let (x, y) = (90.0 + from * 20.0 + 560.0, 320.0 + from * 1.3 * 120.0 + 55.0);
+                    draw_text_ex(&words, x, y, TextParams { font: skin.font.as_ref(), font_size: 64, color: Color::new(1.0, 1.0, 1.0, if index == row { 1.0 } else { 0.6 }), ..Default::default() });
+                }
             }
         }
     }
@@ -1700,6 +1755,8 @@ enum Flow {
     Editor,
     /// The character editor, on the song's opponent.
     CharacterEditor,
+    /// A play-test's song again from its start, its chart kept, as a song like any other.
+    LeaveCharting,
     Quit,
 }
 
@@ -2103,6 +2160,10 @@ fn main() {
                     }
                     // a retry goes straight to the song: the talk was heard
                     // (a play-test's retry plays the editor's chart again, not the file's)
+                    Flow::LeaveCharting => Playing::open(&base, &playing.entry, &songs, &settings, 0.0, false, true, playing.charting.clone()).map_or_else(Screen::Failed, |mut again| {
+                        again.charting = None;
+                        Screen::Playing(Box::new(again))
+                    }),
                     Flow::Restart => Playing::open(&base, &playing.entry, &songs, &settings, 0.0, story.is_some(), true, playing.charting.clone()).map_or_else(Screen::Failed, |mut again| {
                         again.deaths = playing.deaths;
                         Screen::Playing(Box::new(again))

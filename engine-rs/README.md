@@ -191,7 +191,9 @@ Done:
   (Shift: four), Home/End, R; a click puts a note down or takes one off (Shift picks it), Q/E make the picked note's
   hold shorter or longer, Delete removes it; Left/Right change the beat snap, Z/X the zoom; Ctrl+Z/Y undo and redo;
   Ctrl+S saves over the chart's file, the one before kept as `<file>.bak` (an older chart is saved in the Psych 1.0
-  format, its keys where they were); Enter play-tests the chart as it is, and 7 or the song's end come back to it;
+  format, its keys where they were); Enter play-tests the chart as it is, and 7 or the song's end come back to it (its pause menu has the Haxe
+  engine's charting entries: Leave Charting Mode, Skip Time, End Song, Toggle Practice Mode, Toggle Botplay; Skip
+  Time is there in practice mode too);
   Escape leaves (twice with changes not saved). Ctrl+drag boxes notes and events in, Shift+click adds one to what is
   picked (or takes it out), Ctrl+A picks the section's; Ctrl+C/X copy and cut them, Ctrl+V pastes them at the line,
   Delete takes them off, Q/E change all their holds. Events are put down, taken off and picked in their column, written
@@ -263,7 +265,7 @@ Not there yet:
 
 - **Play screen**: the events and note types that belong to scripts (Set Property beyond the camera, custom
   ones); the rain of weekend 1 (on the streets and in the fight; the Shaders switch turns it off with the title's
-  colour shift) is drawn as falling streaks, growing heavier through the song, not with the Haxe engine's shader; the charting mode entries of the pause menu.
+  colour shift) is drawn as falling streaks, growing heavier through the song, not with the Haxe engine's shader.
 - **Menus**: achievements of mods; the note colours' copy and paste buttons (no clipboard here); the GPU Caching switch (nothing to switch here); update check.
 - **Cutscenes**: a video's playOnLoad is not kept waiting.
 - **Scripts**: the rest of Lua's functions (notes' own textures and health, shaders, groups, and getProperty/setProperty
