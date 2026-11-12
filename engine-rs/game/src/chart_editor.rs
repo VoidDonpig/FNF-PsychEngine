@@ -201,7 +201,7 @@ impl ChartEditor {
             undo: Vec::new(), redo: Vec::new(), unsaved, leaving: false, said: None, background: picture("menuDesat"), event_icon: picture("editors/eventIcon"), icons,
             rate: 1.0, wheel_snaps: true, hitsounds: [0.0; 3], volumes: [0.6, 1.0, 1.0], muted: [false; 3], heard: 0.0, voice_tracks,
             sounds: [paths.find("sounds/hitsound.ogg"), paths.find("sounds/Metronome_Tick.ogg")],
-            ui: Ui::default(), tab: 4, note_types, note_type: 0, events, abouts, event: 0, values: Default::default(), copied: None,
+            ui: Ui::default(), tab: 5, note_types, note_type: 0, events, abouts, event: 0, values: Default::default(), copied: None,
             base: base.to_path_buf(), autosaved: (std::time::Instant::now(), String::new()),
         };
         editor.autosaved.1 = editor.text();
@@ -906,17 +906,49 @@ impl ChartEditor {
         self.measure();
     }
 
-    /// The box at the right with the Haxe editor's Song, Section, Note and Events tabs.
+    /// The box at the right with the Haxe editor's tabs.
     fn panel(&mut self) {
-        let area = Rect::new(920.0, 60.0, 300.0, 260.0);
-        self.tab = self.ui.tabs(area, &["Charting", "Events", "Note", "Section", "Song"], self.tab);
+        let area = Rect::new(900.0, 60.0, 360.0, 260.0);
+        self.tab = self.ui.tabs(area, &["Charting", "Data", "Events", "Note", "Section", "Song"], self.tab);
         let (x, y) = (area.x + 10.0, area.y + 10.0);
         match self.tab {
             0 => self.charting_tab(x, y),
-            1 => self.events_tab(x, y),
-            2 => self.note_tab(x, y),
-            3 => self.section_tab(x, y),
+            1 => self.data_tab(x, y),
+            2 => self.events_tab(x, y),
+            3 => self.note_tab(x, y),
+            4 => self.section_tab(x, y),
             _ => self.song_tab(x, y),
+        }
+    }
+
+    /// The song's game over character, sounds and music, and its notes' and splashes' looks; a text left empty takes
+    /// its field off (the game's own is used).
+    fn data_tab(&mut self, x: f32, y: f32) {
+        let fields = [
+            ("gameOverChar", "Game Over Character:"), ("gameOverSound", "Game Over Death Sound (sounds/):"),
+            ("gameOverLoop", "Game Over Loop Music (music/):"), ("gameOverEnd", "Game Over Retry Music (music/):"),
+        ];
+        for (index, (field, words)) in fields.into_iter().enumerate() {
+            let top = y + 40.0 * index as f32;
+            self.ui.label(x, top, words);
+            if let Some(text) = self.ui.input(field, x, top + 16.0, 150.0, self.json[field].as_str().unwrap_or_default()) {
+                self.remember();
+                if text.trim().is_empty() {
+                    self.json.as_object_mut().map(|fields| fields.remove(field));
+                } else {
+                    self.json[field] = json!(text);
+                }
+            }
+        }
+        if let Some(off) = self.ui.check(x + 180.0, y + 16.0, "Disable Note RGB", self.json["disableNoteRGB"].as_bool().unwrap_or(false)) {
+            self.set("disableNoteRGB", json!(off));
+        }
+        for (index, (field, words)) in [("arrowSkin", "Note Texture:"), ("splashSkin", "Note Splashes Texture:")].into_iter().enumerate() {
+            let x = x + 180.0 * index as f32;
+            self.ui.label(x, y + 166.0, words);
+            if let Some(text) = self.ui.input(field, x, y + 182.0, 150.0, self.json[field].as_str().unwrap_or_default()) {
+                self.set(field, if text.trim().is_empty() { Value::Null } else { json!(text.trim()) });
+            }
         }
     }
 
