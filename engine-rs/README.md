@@ -241,10 +241,12 @@ Done:
   its file (the one before kept as `.bak`).
 - **Stage editor**: from the editors' list: a stage file (`stages/`; in a mod folder its own first) shown as the game
   builds it from its objects, the three characters (the file's `_editorMeta` ones) where it puts them, the point the
-  camera looks at each; the Sprite List (pick, order up and down, new sprite or square, delete), a click picks what is
+  camera looks at each; the Sprite List (pick, order up and down, new sprite, square or animated sprite, delete), a click picks what is
   drawn on top there, the arrow keys and the right mouse button move it (Shift: four times, Ctrl: a pixel); Meta (the
   characters shown, UI style), Data (asset folder, hide girlfriend, camera offsets, zoom, camera speed) and Object (place,
-  name, image, scroll, scale, opacity, angle, colour, flips, antialiasing, low/high quality) tabs; J/K/L/I move the view,
+  name, image, scroll, scale, opacity, angle, colour, flips, antialiasing, low/high quality) and Animation (an animated sprite's
+  animations: shown, made the main one, name, prefix, framerate, loop, indices, offsets; add/update, remove) tabs;
+  J/K/L/I move the view,
   E/Q zoom, R back to the stage's zoom, F12 hides the boxes, F1 the help; saved over its file or under a new name (the
   one before kept as `.bak`). The game's own stages draw theirs in code, so only their characters show, as in the Haxe
   editor.
@@ -270,6 +272,6 @@ Not there yet:
 - **Editors**: the chart editor's File/Edit/View menus, the vortex editor, lists to choose characters and stages from, pasted notes following the mouse before they are put down, the autosave's time and count settings, a song
   chosen to chart from the editors' list;
   the week editor's Copy/Paste Color (no system clipboard here); the
-  note splash editor's Shader tab; the stage editor's animated sprites (its animation box) and image file picker.
+  note splash editor's Shader tab; the stage editor's image file picker.
 - **Other**: gamepads on Linux and macOS (gilrs needs libudev there); binding a gamepad's buttons on the key binds
   page (Psych's buttons are used as they are).
