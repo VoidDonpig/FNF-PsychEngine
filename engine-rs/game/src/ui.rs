@@ -76,10 +76,14 @@ impl Ui {
     /// A box (black, faded) with tabs along its top; the tab chosen (a click on another chooses it). Clicks inside
     /// the box are the box's.
     pub fn tabs(&mut self, area: Rect, names: &[&str], chosen: usize) -> usize {
-        let width = area.w / names.len() as f32;
+        // each as wide as its name asks, the box's width shared out
+        let wanted: Vec<f32> = names.iter().map(|name| name.len() as f32 + 2.0).collect();
+        let unit = area.w / wanted.iter().sum::<f32>();
         let mut chosen = chosen;
+        let mut left = area.x;
         for (index, name) in names.iter().enumerate() {
-            let tab = Rect::new(area.x + index as f32 * width, area.y - 20.0, width, 20.0);
+            let tab = Rect::new(left, area.y - 20.0, wanted[index] * unit, 20.0);
+            left += tab.w;
             if self.click(tab) {
                 chosen = index;
             }

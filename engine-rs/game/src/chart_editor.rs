@@ -2,8 +2,9 @@
 //! events' column, then the player's four, then the opponent's four), scrolling under a line as the music plays; notes
 //! put down and taken off with the mouse at the chosen beat snap, held longer or shorter with Q and E; undo and redo;
 //! play-testing the chart as it is (Enter) and saving it over its file, the old one kept beside it as `.bak`. Events
-//! are put down in their column; the box at the right has the Haxe editor's Song, Section, Note and Events tabs.
-// shortcut: the File/Edit/View menus and the Charting and Data tabs are not here, characters and stages are typed
+//! are put down in their column; the box at the right has the Haxe editor's Charting, Events, Note, Section and Song
+//! tabs.
+// shortcut: the File/Edit/View menus and the Data tab are not here, characters and stages are typed
 // rather than chosen from lists, and Escape leaves (the Haxe editor's File > Exit).
 use crate::gfx::*;
 use crate::{audio, ui::Ui, Skin, HEIGHT, NOTE_NAMES, WIDTH};
@@ -110,6 +111,18 @@ pub struct ChartEditor {
     values: [String; 2],
     /// A section's notes copied (their times from its start).
     copied: Option<Vec<Value>>,
+    /// The Charting tab: how fast the music plays, whether the wheel steps by the beat snap, how loud the player's and
+    /// the opponent's hitsounds and the metronome are, each track's volume and whether it is muted (instrumental,
+    /// player's voice, opponent's voice); where the music was last frame, for the sounds on the way.
+    rate: f64,
+    wheel_snaps: bool,
+    hitsounds: [f32; 3],
+    volumes: [f32; 3],
+    muted: [bool; 3],
+    heard: f64,
+    /// Which tracks the voices are (None: the song has no such file).
+    voice_tracks: [Option<usize>; 2],
+    sounds: [Option<PathBuf>; 2],
 }
 
 impl ChartEditor {
@@ -130,6 +143,7 @@ impl ChartEditor {
         let mut tracks = vec![entry.inst.as_path()];
         tracks.extend(entry.voices_player.as_deref());
         tracks.extend(entry.voices_opponent.as_deref());
+        let voice_tracks = [entry.voices_player.as_ref().map(|_| 1), entry.voices_opponent.as_ref().map(|_| tracks.len() - 1)];
         let song = audio::Song::load(&tracks);
         let length = song.length_ms().or_else(|| audio::seconds(&entry.inst).map(|seconds| seconds as f64 * 1000.0)).unwrap_or(60000.0);
         fill_sections(&mut json, length);
@@ -167,9 +181,12 @@ impl ChartEditor {
         let mut editor = ChartEditor {
             entry: entry.clone(), json, spans: Vec::new(), song, playing: false, position: 0.0, length, zoom: 2, quant: 3, selected: None,
             undo: Vec::new(), redo: Vec::new(), unsaved, leaving: false, said: None, background: picture("menuDesat"), event_icon: picture("editors/eventIcon"), icons,
-            ui: Ui::default(), tab: 3, note_types, note_type: 0, events, abouts, event: 0, values: Default::default(), copied: None,
+            rate: 1.0, wheel_snaps: true, hitsounds: [0.0; 3], volumes: [0.6, 1.0, 1.0], muted: [false; 3], heard: 0.0, voice_tracks,
+            sounds: [paths.find("sounds/hitsound.ogg"), paths.find("sounds/Metronome_Tick.ogg")],
+            ui: Ui::default(), tab: 4, note_types, note_type: 0, events, abouts, event: 0, values: Default::default(), copied: None,
         };
         editor.measure();
+        editor.set_volumes();
         Ok(editor)
     }
 
@@ -292,6 +309,13 @@ impl ChartEditor {
             // a beat and a half a second, four times that with Shift, slower zoomed in
             let toward = if is_key_down(KeyCode::W) { -1.0 } else { 1.0 };
             self.wind(self.position + toward * 60000.0 / span.bpm * if shift { 4.0 } else { 1.0 } * 1.5 * dt / ZOOMS[self.zoom] as f64);
+        } else if held(KeyCode::LeftBracket) || held(KeyCode::RightBracket) {
+            // the music faster or slower ([ and ]; Alt puts it back)
+            let alt = held(KeyCode::LeftAlt) || held(KeyCode::RightAlt);
+            let toward = if held(KeyCode::RightBracket) { 1.0 } else { -1.0 };
+            self.set_rate(if alt { 1.0 } else { self.rate + toward * dt });
+        } else if mouse_wheel() != 0.0 && !self.wheel_snaps {
+            self.wind(self.position - mouse_wheel() as f64 * 60000.0 / span.bpm * if shift { 4.0 } else { 1.0 } * 0.25 / ZOOMS[self.zoom] as f64);
         } else if mouse_wheel() != 0.0 {
             // the wheel steps by the beat snap, rounded onto it (the Haxe editor's Mouse Scroll Snap)
             let snap = 16.0 / QUANTS[self.quant] as f64 / ZOOMS[self.zoom] as f64;
@@ -331,7 +355,9 @@ impl ChartEditor {
             if self.position >= self.length {
                 self.wind(self.length);
             }
+            self.tick_sounds();
         }
+        self.heard = self.position;
         if is_mouse_pressed() && !self.ui.took_click() {
             self.click(shift);
         }
@@ -577,6 +603,72 @@ impl ChartEditor {
         self.ui.draw(skin.font.as_ref());
     }
 
+    /// The hitsounds of the notes passed since the last frame (one a side at most) and the metronome's beats.
+    fn tick_sounds(&self) {
+        if self.position <= self.heard {
+            return;
+        }
+        let passed = |time: f64| self.heard < time && time <= self.position;
+        let mut sides = [false; 2];
+        for note in self.sections().iter().flat_map(|section| section["sectionNotes"].as_array().into_iter().flatten()) {
+            if let (Some(time), Some(data)) = (note[0].as_f64(), note[1].as_f64()) {
+                if passed(time) && (0.0..8.0).contains(&data) {
+                    sides[(data >= 4.0) as usize] = true;
+                }
+            }
+        }
+        let beat = |ms: f64| (self.row_of(ms) / 4.0).floor();
+        let ticked = beat(self.position) > beat(self.heard);
+        for (sounded, (volume, sound)) in sides.into_iter().chain([ticked]).zip(self.hitsounds.iter().zip([&self.sounds[0], &self.sounds[0], &self.sounds[1]])) {
+            if let (true, Some(sound)) = (sounded && *volume > 0.0, sound) {
+                self.song.play_sound(sound, *volume, false);
+            }
+        }
+    }
+
+    fn set_rate(&mut self, rate: f64) {
+        self.rate = (rate * 100.0).round().clamp(10.0, 500.0) / 100.0;
+        self.song.set_speed(self.rate);
+    }
+
+    /// Each track as loud as the Charting tab says (muted ones silent).
+    fn set_volumes(&self) {
+        for (track, (volume, muted)) in [Some(0), self.voice_tracks[0], self.voice_tracks[1]].into_iter().zip(self.volumes.iter().zip(self.muted)) {
+            if let Some(track) = track {
+                self.song.set_volume(track, if muted { 0.0 } else { *volume });
+            }
+        }
+    }
+
+    fn charting_tab(&mut self, x: f32, y: f32) {
+        self.ui.label(x, y, "Any options here won't actually\naffect gameplay!");
+        self.ui.label(x, y + 38.0, "Playback Rate:");
+        if let Some(rate) = self.ui.stepper("rate", x + 130.0, y + 38.0, 60.0, self.rate, 0.1, 0.1, 5.0) {
+            self.set_rate(rate);
+        }
+        if let Some(snaps) = self.ui.check(x, y + 66.0, "Mouse Scroll Snap", self.wheel_snaps) {
+            self.wheel_snaps = snaps;
+        }
+        for (index, words) in ["Hitsound\n(Player):", "Hitsound\n(Opp.):", "Metronome:"].into_iter().enumerate() {
+            let x = x + 95.0 * index as f32;
+            self.ui.label(x, y + 96.0, words);
+            if let Some(volume) = self.ui.stepper(["hit player", "hit opponent", "metronome"][index], x, y + 132.0, 36.0, self.hitsounds[index] as f64, 0.2, 0.0, 1.0) {
+                self.hitsounds[index] = volume as f32;
+            }
+        }
+        for (index, words) in ["Inst.\nVolume:", "Main\nVocals:", "Opp.\nVocals:"].into_iter().enumerate() {
+            let x = x + 95.0 * index as f32;
+            self.ui.label(x, y + 166.0, words);
+            let volume = self.ui.stepper(["inst volume", "player volume", "opponent volume"][index], x, y + 202.0, 36.0, self.volumes[index] as f64, 0.1, 0.0, 1.0);
+            let muted = self.ui.check(x, y + 228.0, "Mute", self.muted[index]);
+            if volume.is_some() || muted.is_some() {
+                self.volumes[index] = volume.map_or(self.volumes[index], |volume| volume as f32);
+                self.muted[index] = muted.unwrap_or(self.muted[index]);
+                self.set_volumes();
+            }
+        }
+    }
+
     /// Sets a field of the song (a step to undo), and measures the sections again (the tempo may have changed).
     fn set(&mut self, field: &str, value: Value) {
         self.remember();
@@ -593,12 +685,13 @@ impl ChartEditor {
     /// The box at the right with the Haxe editor's Song, Section, Note and Events tabs.
     fn panel(&mut self) {
         let area = Rect::new(920.0, 60.0, 300.0, 260.0);
-        self.tab = self.ui.tabs(area, &["Events", "Note", "Section", "Song"], self.tab);
+        self.tab = self.ui.tabs(area, &["Charting", "Events", "Note", "Section", "Song"], self.tab);
         let (x, y) = (area.x + 10.0, area.y + 10.0);
         match self.tab {
-            0 => self.events_tab(x, y),
-            1 => self.note_tab(x, y),
-            2 => self.section_tab(x, y),
+            0 => self.charting_tab(x, y),
+            1 => self.events_tab(x, y),
+            2 => self.note_tab(x, y),
+            3 => self.section_tab(x, y),
             _ => self.song_tab(x, y),
         }
     }
