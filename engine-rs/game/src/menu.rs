@@ -46,6 +46,8 @@ pub enum Go {
     ModSettings(String, Vec<funkin_core::mod_settings::ModOption>),
     /// The chart editor, on the first song of a mod's folder ("": the game's).
     ChartEditor(String),
+    /// The character editor, in a mod's folder.
+    CharacterEditor(String),
 }
 
 const UP: Ui = Ui::Up;
@@ -1311,7 +1313,7 @@ impl Menus {
     }
 
     /// The editors in large letters, gliding as the Haxe engine's menu items do, and the mod folder they work in.
-    // shortcut: only the chart editor is here; the others say so.
+    // shortcut: only the chart and character editors are here; the others say so.
     fn editors(&mut self, skin: &Skin) -> Go {
         const EDITORS: [&str; 8] = ["Chart Editor", "Character Editor", "Stage Editor", "Week Editor", "Menu Character Editor", "Dialogue Editor", "Dialogue Portrait Editor", "Note Splash Editor"];
         let dt = get_frame_time().min(0.1);
@@ -1345,8 +1347,10 @@ impl Menus {
             return Go::Page(Page::Main);
         }
         if pressed(&ACCEPT) {
-            if self.editor == 0 {
-                return Go::ChartEditor(folder.clone());
+            match self.editor {
+                0 => return Go::ChartEditor(folder.clone()),
+                1 => return Go::CharacterEditor(folder.clone()),
+                _ => {}
             }
             self.sound("cancelMenu", 1.0);
             self.said = Some((format!("The {} is not here yet", EDITORS[self.editor]), get_time()));

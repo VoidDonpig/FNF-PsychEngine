@@ -108,7 +108,7 @@ pub enum KeyCode {
     A, B, C, D, E, F, G, H, I, J, K, L, M, N, O, P, Q, R, S, T, U, V, W, X, Y, Z,
     Key0, Key1, Key2, Key3, Key4, Key5, Key6, Key7, Key8, Key9,
     Kp0, Kp1, Kp2, Kp3, Kp4, Kp5, Kp6, Kp7, Kp8, Kp9,
-    Left, Right, Up, Down, Space, Enter, Escape, Backspace, Delete, Home, End, F11, KpAdd, KpSubtract,
+    Left, Right, Up, Down, Space, Enter, Escape, Backspace, Delete, Home, End, F1, F11, F12, KpAdd, KpSubtract,
     LeftShift, RightShift, LeftControl, RightControl, LeftAlt, RightAlt,
     Comma, Period, Slash, Semicolon, Apostrophe, LeftBracket, RightBracket, Minus, Equal, Backslash,
 }
@@ -126,7 +126,7 @@ fn key(code: winit::keyboard::KeyCode) -> Option<KeyCode> {
         Their::Numpad0 => Kp0, Their::Numpad1 => Kp1, Their::Numpad2 => Kp2, Their::Numpad3 => Kp3, Their::Numpad4 => Kp4,
         Their::Numpad5 => Kp5, Their::Numpad6 => Kp6, Their::Numpad7 => Kp7, Their::Numpad8 => Kp8, Their::Numpad9 => Kp9,
         Their::ArrowLeft => Left, Their::ArrowRight => Right, Their::ArrowUp => Up, Their::ArrowDown => Down,
-        Their::Space => Space, Their::Enter | Their::NumpadEnter => Enter, Their::Escape => Escape, Their::Backspace => Backspace, Their::Delete => Delete, Their::Home => Home, Their::End => End, Their::F11 => F11,
+        Their::Space => Space, Their::Enter | Their::NumpadEnter => Enter, Their::Escape => Escape, Their::Backspace => Backspace, Their::Delete => Delete, Their::Home => Home, Their::End => End, Their::F1 => F1, Their::F11 => F11, Their::F12 => F12,
         Their::ShiftLeft => LeftShift, Their::ShiftRight => RightShift, Their::ControlLeft => LeftControl, Their::ControlRight => RightControl,
         Their::AltLeft => LeftAlt, Their::AltRight => RightAlt, Their::NumpadAdd => KpAdd, Their::NumpadSubtract => KpSubtract,
         Their::Comma => Comma, Their::Period => Period, Their::Slash => Slash, Their::Semicolon => Semicolon, Their::Quote => Apostrophe,
@@ -221,6 +221,8 @@ struct Mouse {
     down: bool,
     pressed: bool,
     released: bool,
+    /// The right button is down.
+    right: bool,
     /// Notches turned this frame, away from the player positive.
     wheel: f32,
     moved: bool,
@@ -860,11 +862,13 @@ impl Context {
                     self.focused = focused;
                     self.down.clear();
                     self.mouse.down = false;
+                    self.mouse.right = false;
                 }
                 WindowEvent::CursorMoved { position, .. } => {
                     self.mouse.at = vec2(position.x as f32 / self.config.width as f32, position.y as f32 / self.config.height as f32);
                     self.mouse.moved = true;
                 }
+                WindowEvent::MouseInput { state, button: winit::event::MouseButton::Right, .. } => self.mouse.right = state == ElementState::Pressed,
                 WindowEvent::MouseInput { state, button: winit::event::MouseButton::Left, .. } => {
                     self.mouse.down = state == ElementState::Pressed;
                     self.mouse.pressed |= self.mouse.down;
@@ -1090,6 +1094,10 @@ pub fn mouse_position(size: Vec2) -> Vec2 {
 /// The left mouse button: went down this frame, is down.
 pub fn is_mouse_pressed() -> bool {
     with(|context| context.mouse.pressed)
+}
+
+pub fn is_mouse_right_down() -> bool {
+    with(|context| context.mouse.right)
 }
 
 /// Came up this frame.

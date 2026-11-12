@@ -198,6 +198,18 @@ Done:
   swap), Note (the picked note's hold and time, the note type for it and new notes, the mods' types too) and Events
   (the event, its description and values for the picked event and new ones, the mods' events too; the entries of
   one moment: before, after, taken off, added). Undo covers all of it.
+- **Character editor**: 8 (Debug Key #2) during a song opens it on the song's opponent (Escape goes back to the song),
+  and the editors' list has it too (on bf, in the mod folder chosen). As the Haxe editor: the character on week 1's
+  stage beside the silhouettes of where the opponent and the player stand, the cross where the camera looks at it;
+  J/K/L/I move the camera, E/Q zoom, R back to normal; W/S change the animation, Space plays it again, A/D step
+  through its frames (held still); the arrow keys (held: on and on) and the mouse with its right button move its
+  offset (Shift: ten times), Ctrl+C/V/R/Z copy, paste, reset and undo it; F12 hides the silhouettes, F1 shows the
+  help. Its animations listed with their offsets, the frame shown, the zoom, the health bar in its colour and its
+  icon. The boxes: Ghost (a pose kept behind, how see-through), Settings (the characters there are, playable or
+  not, reload), Animations (pick one; name, prefix, indices, framerate, loop; add/update, remove) and Character
+  (image, health icon, vocals file, sing duration, scale, flip X, no antialiasing, its place and the camera's, the
+  health bar's colour; save over its file, the one before kept as `.bak`, or into the mod folder's characters/
+  for a new one). Escape asks twice with changes not saved.
 - **Gamepads** (Windows): any gamepad plays and goes through the menus with Psych's buttons (D-pad and
   A/B/X/Y for the lanes; D-pad or left stick, A or Start, B, Start, Back for the menus); Lua's gamepad functions.
 
@@ -214,6 +226,7 @@ Not there yet:
   engine's own classes, so mods that use it cannot run here as they are. Custom shaders.
 - **Editors**: the chart editor's File/Edit/View menus and its Data tab, the waveform, the vortex editor, lists to choose characters and stages from, pasted notes following the mouse before they are put down, autosave, a song
   chosen to chart from the editors' list;
-  the character, stage, week, menu character, dialogue, dialogue character and note splash editors.
+  the character editor's Load Template, ghost highlight and icon colour; the stage, week, menu character, dialogue,
+  dialogue character and note splash editors.
 - **Other**: gamepads on Linux and macOS (gilrs needs libudev there); binding a gamepad's buttons on the key binds
   page (Psych's buttons are used as they are).

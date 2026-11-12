@@ -17,8 +17,6 @@ pub enum Ui {
     VolumeDown,
     /// The debug keys: the chart editor from a song (and the editors from the main menu), the character editor.
     Debug1,
-    // (bound and kept, for the character editor to come)
-    #[allow(dead_code)]
     Debug2,
 }
 

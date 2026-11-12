@@ -646,16 +646,9 @@ impl ChartEditor {
 
     /// Over the chart's file, the one before kept as `<file>.bak`.
     fn save(&mut self) {
-        let file = &self.entry.chart;
-        let backup = PathBuf::from(format!("{}.bak", file.display()));
-        let kept = !file.is_file() || std::fs::copy(file, &backup).is_ok();
-        let written = kept && funkin_core::files::write(file, &self.text()).is_ok();
-        self.unsaved &= !written;
-        self.say(match (kept, written) {
-            (true, true) => format!("Saved {}", file.file_name().map_or(String::new(), |name| name.to_string_lossy().into_owned())),
-            (false, _) => format!("Could not keep a copy of {}; not saved", file.display()),
-            (true, false) => format!("Could not save {}", file.display()),
-        });
+        let done = funkin_core::files::replace(&self.entry.chart, &self.text());
+        self.unsaved &= done.is_err();
+        self.say(done.unwrap_or_else(|error| error));
     }
 
     pub fn draw(&self, skin: &Skin) {
@@ -1137,7 +1130,7 @@ fn fill_sections(song: &mut Value, length: f64) {
 
 /// JSON as the Haxe editor writes charts (PsychJsonPrinter): objects a key a line; a list a thing a line, a thing
 /// without objects in it (a note, an event) on its one line.
-fn print(value: &Value, depth: usize) -> String {
+pub(crate) fn print(value: &Value, depth: usize) -> String {
     let indent = |depth: usize| "\t".repeat(depth);
     let plain = |value: &Value| !value.is_object() && value.as_array().is_none_or(|items| items.iter().all(|item| !item.is_object() && !item.is_array()));
     let flat = |value: &Value| value.as_array().is_some_and(|items| items.iter().all(|item| !item.is_object() && item.as_array().is_none_or(|inner| inner.iter().all(|v| !v.is_object()))));

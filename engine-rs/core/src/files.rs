@@ -13,6 +13,19 @@ pub fn write(path: &Path, text: &str) -> std::io::Result<()> {
     std::fs::rename(&part, path)
 }
 
+/// Saves an editor's file over `path` (folders made as needed), the one there before kept as `<path>.bak`; says what
+/// was done, or why not (nothing is written when the old one cannot be kept).
+pub fn replace(path: &Path, text: &str) -> Result<String, String> {
+    let name = path.file_name().map_or(String::new(), |name| name.to_string_lossy().into_owned());
+    if path.is_file() {
+        std::fs::copy(path, format!("{}.bak", path.display())).map_err(|error| format!("Could not keep a copy of {name} ({error}); not saved"))?;
+    } else if let Some(folder) = path.parent() {
+        std::fs::create_dir_all(folder).map_err(|error| format!("Could not save {name}: {error}"))?;
+    }
+    write(path, text).map_err(|error| format!("Could not save {name}: {error}"))?;
+    Ok(format!("Saved {name}"))
+}
+
 /// The JSON kept at `path`, or null when there is none. One that cannot be read is moved to `<name>.bad.json`, so that
 /// what is saved next does not take its place.
 pub fn read(path: &Path) -> Value {
@@ -40,6 +53,17 @@ mod tests {
         std::fs::write(&path, r#"{"a": 1,"#).unwrap();
         assert_eq!(read(&path), Value::Null);
         assert!(!path.exists() && folder.join("kept.bad.json").exists());
+        let _ = std::fs::remove_dir_all(&folder);
+    }
+
+    #[test]
+    fn an_editor_save_keeps_the_file_before() {
+        let folder = std::env::temp_dir().join(format!("funkin-files-replace-{}", std::process::id()));
+        let path = folder.join("new folder").join("bf.json");
+        assert_eq!(replace(&path, "one"), Ok("Saved bf.json".to_owned()));
+        replace(&path, "two").unwrap();
+        assert_eq!(std::fs::read_to_string(&path).unwrap(), "two");
+        assert_eq!(std::fs::read_to_string(folder.join("new folder").join("bf.json.bak")).unwrap(), "one");
         let _ = std::fs::remove_dir_all(&folder);
     }
 }

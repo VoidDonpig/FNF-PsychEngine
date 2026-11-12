@@ -6,6 +6,7 @@
 //! opens the options, and `--shot <file.png>` saves the picture after a few frames (or `--after <seconds>`, or
 //! once the song has reached `--when <seconds>`) and quits.
 mod adjust;
+mod character_editor;
 mod chart_editor;
 mod animate;
 mod atlas;
@@ -695,6 +696,9 @@ impl Playing {
         // the debug key: the chart editor (not while the song is ending)
         if controls::pressed(Ui::Debug1) && !self.end_asked {
             return Flow::Editor;
+        }
+        if controls::pressed(Ui::Debug2) && !self.end_asked {
+            return Flow::CharacterEditor;
         }
         // (as the Haxe engine does, the game pauses itself when another window comes to the front)
         if !self.bowing && (controls::pressed(Ui::Pause) || (self.settings.auto_pause && !is_focused())) && !lua::Scripts::stopped(&self.lua.call("onPause", ())) {
@@ -1616,6 +1620,7 @@ fn presence(screen: &Screen, weeks: &[funkin_core::content::Week]) -> discord::P
         Screen::Menu(Page::Achievements) => "Achievements Menu",
         Screen::Menu(Page::Editors) => "Editors Main Menu",
         Screen::Editor(_) => "Chart Editor",
+        Screen::CharacterEditor(..) => "Character Editor",
         Screen::Options(..) => "Options Menu",
         Screen::Playing(_) => "",
         _ => "In the Menus",
@@ -1667,6 +1672,8 @@ enum Flow {
     Options,
     /// The chart editor, with the song's chart.
     Editor,
+    /// The character editor, on the song's opponent.
+    CharacterEditor,
     Quit,
 }
 
@@ -1676,6 +1683,8 @@ enum Screen {
     Options(options::OptionsMenu, Page),
     Playing(Box<Playing>),
     Editor(Box<chart_editor::ChartEditor>),
+    /// The character editor, and the song it was opened from (it goes back to it).
+    CharacterEditor(Box<character_editor::CharacterEditor>, Option<SongEntry>),
     Failed(String),
     /// What a new player is told before anything flashes.
     Warning,
@@ -1908,6 +1917,10 @@ fn main() {
                     Some(entry) => chart_editor::ChartEditor::open(&base, entry, None).inspect(|_| menus.quiet()).map_or_else(Screen::Failed, |editor| Screen::Editor(Box::new(editor))),
                     None => Screen::Menu(page),
                 },
+                Some(Go::CharacterEditor(folder)) => {
+                    menus.quiet();
+                    Screen::CharacterEditor(Box::new(character_editor::CharacterEditor::open(&base, &folder, "bf")), None)
+                }
                 Some(Go::Unlock(id)) => {
                     if save.unlock(id) {
                         save.save(&base);
@@ -1984,6 +1997,10 @@ fn main() {
                 match flow {
                     Flow::Continue => Screen::Playing(playing),
                     Flow::Editor => editor(&playing),
+                    Flow::CharacterEditor => {
+                        let editor = character_editor::CharacterEditor::open(&base, &playing.entry.source, &playing.play.chart.opponent);
+                        Screen::CharacterEditor(Box::new(editor), Some(playing.entry.clone()))
+                    }
                     // a play-test goes back to the editor at its end, as the Haxe engine's charting mode
                     Flow::Finished if playing.charting.is_some() => editor(&playing),
                     Flow::Finished if playing.bows_out(&coming()) => Screen::Playing(playing),
@@ -2058,6 +2075,19 @@ fn main() {
                     }
                 }
                 None => Screen::Menu(Page::Freeplay),
+            },
+            Screen::CharacterEditor(mut editor, back) => match &skin {
+                Some(skin) => {
+                    let go = editor.update();
+                    editor.draw(skin);
+                    match (go, back) {
+                        (character_editor::Go::Stay, back) => Screen::CharacterEditor(editor, back),
+                        // (as the Haxe editor: back to the song it came from, else to the editors' list)
+                        (character_editor::Go::Leave, Some(entry)) => Playing::open(&base, &entry, &songs, &settings, 0.0, false, true, None).map_or_else(Screen::Failed, |p| Screen::Playing(Box::new(p))),
+                        (character_editor::Go::Leave, None) => Screen::Menu(Page::Editors),
+                    }
+                }
+                None => Screen::Menu(Page::Editors),
             },
             Screen::Loading(entry, talk, shown) => {
                 clear_background(Color::from_hex(0xCAFF4D));
@@ -2197,7 +2227,7 @@ fn main() {
         if mouse_moved() || is_mouse_pressed() {
             pointer_moved = get_time();
         }
-        show_mouse(matches!(screen, Screen::Editor(_)) || (matches!(screen, Screen::Menu(_) | Screen::Options(..)) && get_time() - pointer_moved < 2.0));
+        show_mouse(matches!(screen, Screen::Editor(_) | Screen::CharacterEditor(..)) || (matches!(screen, Screen::Menu(_) | Screen::Options(..)) && get_time() - pointer_moved < 2.0));
         let showing = match &screen {
             Screen::Playing(playing) => (3, &**playing as *const Playing as usize, playing.paused.is_some(), playing.dead.is_some(), playing.started),
             Screen::Menu(page) => (1, *page as usize, false, false, false),

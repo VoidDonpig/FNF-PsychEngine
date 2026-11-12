@@ -899,8 +899,12 @@ pub struct Character {
 
 impl Character {
     /// Loads characters/<name>.json and its sheet. `spot` is where the stage puts this character.
-    fn load(paths: &Paths, name: &str, spot: Vec2, is_player: bool) -> Result<Character, String> {
-        let json = read_json(paths, &format!("characters/{name}.json"))?;
+    pub(crate) fn load(paths: &Paths, name: &str, spot: Vec2, is_player: bool) -> Result<Character, String> {
+        Character::from_json(paths, name, &read_json(paths, &format!("characters/{name}.json"))?, spot, is_player)
+    }
+
+    /// A character from what its file holds (the character editor builds it again as it is edited).
+    pub(crate) fn from_json(paths: &Paths, name: &str, json: &Value, spot: Vec2, is_player: bool) -> Result<Character, String> {
         // a folder with an Animation.json in it is a character drawn the Animate way
         let whole = json["image"].as_str().unwrap_or("").trim();
         let rig = match paths.find(&format!("images/{whole}/Animation.json")) {
@@ -1041,12 +1045,34 @@ impl Character {
         }
     }
 
-    fn middle(&self) -> Vec2 {
+    pub(crate) fn middle(&self) -> Vec2 {
         self.position + self.size / 2.0
     }
 
-    fn draw(&self) {
+    pub(crate) fn draw(&self) {
         self.draw_as(&self.current, self.time, self.position, self.tint);
+    }
+
+    /// For the character editor: an animation's frame count and speed.
+    pub(crate) fn frames_of(&self, animation: &str) -> Option<(usize, f32)> {
+        self.animations.get(animation).map(|animation| (animation.frames.len(), animation.fps))
+    }
+
+    /// For the character editor: shown in that animation, that far into it.
+    pub(crate) fn show(&mut self, animation: &str, time: f32) {
+        (self.current, self.time) = (animation.to_owned(), time);
+    }
+
+    /// For the character editor: an animation's offset changed.
+    pub(crate) fn set_offset(&mut self, animation: &str, offset: Vec2) {
+        if let Some(animation) = self.animations.get_mut(animation) {
+            animation.offset = offset;
+        }
+    }
+
+    /// Drawn see-through, as the character editor's ghost.
+    pub(crate) fn draw_faded(&self, pose: &str, time: f32, alpha: f32) {
+        self.draw_as(pose, time, self.position, Color { a: alpha, ..WHITE });
     }
 
     /// Draws it as it is, or was: in that pose, that far into it, there, in that light.
