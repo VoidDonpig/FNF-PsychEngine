@@ -50,6 +50,8 @@ pub enum Go {
     CharacterEditor(String),
     /// The week editor, in a mod's folder.
     WeekEditor(String),
+    /// The menu character editor, in a mod's folder.
+    MenuCharacterEditor(String),
 }
 
 const UP: Ui = Ui::Up;
@@ -272,18 +274,35 @@ impl Art {
         let loaded = (|| {
             let path = Paths::new(&self.base, source, "").find(&format!("images/menucharacters/{name}.json"))?;
             let json: serde_json::Value = serde_json::from_str(&std::fs::read_to_string(path).ok()?).ok()?;
-            let sheet = self.sheet(source, &format!("menucharacters/{}", json["image"].as_str()?))?;
-            let frames = |key: &str| json[key].as_str().filter(|name| !name.is_empty()).map_or(Vec::new(), |name| sheet.animation(name, &[]));
-            let number = |value: &serde_json::Value, or: f32| value.as_f64().map_or(or, |n| n as f32);
-            // a cheer that is the idle animation again is no cheer
-            let confirm = if json["confirm_anim"] == json["idle_anim"] { Vec::new() } else { frames("confirm_anim") };
-            Some(Rc::new(MenuCharacter {
-                idle: frames("idle_anim"), confirm, offset: vec2(number(&json["position"][0], 0.0), number(&json["position"][1], 0.0)),
-                scale: number(&json["scale"], 1.0), flip: json["flipX"].as_bool().unwrap_or(false), sheet: sheet.clone(),
-            }))
+            self.character_from(source, &json).map(Rc::new)
         })();
         self.characters.insert(key, loaded.clone());
         loaded
+    }
+
+    /// A story menu character as its file (`images/menucharacters/<name>.json`) has it.
+    fn character_from(&mut self, source: &str, json: &serde_json::Value) -> Option<MenuCharacter> {
+        let sheet = self.sheet(source, &format!("menucharacters/{}", json["image"].as_str()?))?;
+        let frames = |key: &str| json[key].as_str().filter(|name| !name.is_empty()).map_or(Vec::new(), |name| sheet.animation(name, &[]));
+        let number = |value: &serde_json::Value, or: f32| value.as_f64().map_or(or, |n| n as f32);
+        // a cheer that is the idle animation again is no cheer
+        let confirm = if json["confirm_anim"] == json["idle_anim"] { Vec::new() } else { frames("confirm_anim") };
+        Some(MenuCharacter {
+            idle: frames("idle_anim"), confirm, offset: vec2(number(&json["position"][0], 0.0), number(&json["position"][1], 0.0)),
+            scale: number(&json["scale"], 1.0), flip: json["flipX"].as_bool().unwrap_or(false), sheet: sheet.clone(),
+        })
+    }
+}
+
+/// A story menu character in its place (0 to 2): standing, or cheering `since` a week was chosen.
+fn draw_menu_character(character: &MenuCharacter, slot: usize, since: Option<f32>, alpha: f32) {
+    let frame = match since {
+        Some(t) if !character.confirm.is_empty() => once(&character.confirm, t as f64),
+        _ => looped(&character.idle),
+    };
+    if let Some(frame) = frame {
+        let at = vec2(WIDTH * 0.25 * (1 + slot) as f32 - 150.0, 70.0) - character.offset;
+        draw_frame(&character.sheet.texture, frame, at.x, at.y, character.scale, character.flip, white(alpha));
     }
 }
 
@@ -1092,14 +1111,8 @@ impl Menus {
             draw_texture(&picture, 0.0, 56.0, WHITE);
         }
         for (slot, name) in week.characters.iter().enumerate() {
-            let Some(character) = self.art.character(&week.source, name).filter(|_| !name.is_empty()) else { continue };
-            let frame = match since {
-                Some(t) if !character.confirm.is_empty() => once(&character.confirm, t as f64),
-                _ => looped(&character.idle),
-            };
-            if let Some(frame) = frame {
-                let at = vec2(WIDTH * 0.25 * (1 + slot) as f32 - 150.0, 70.0) - character.offset;
-                draw_frame(&character.sheet.texture, frame, at.x, at.y, character.scale, character.flip, WHITE);
+            if let Some(character) = self.art.character(&week.source, name).filter(|_| !name.is_empty()) {
+                draw_menu_character(&character, slot, since, 1.0);
             }
         }
         if let Some(picture) = self.art.own("Menu_Tracks") {
@@ -1111,6 +1124,21 @@ impl Menus {
             label(skin, &title, WIDTH * 0.15 - width / 2.0, 541.0 + row as f32 * 32.0, 32, Color::from_hex(0xE55777), false);
         }
         label(skin, &phrase(&format!("storyname_{}", week.file), &week.story_name).to_uppercase(), WIDTH - 10.0, 10.0, 32, white(0.7), true);
+    }
+
+    /// A story menu character drawn in its place (0 to 2) from its file's JSON (the menu character editor's), as it would
+    /// stand, or cheer `since` a week was chosen; none when its sheet cannot be found.
+    pub fn menu_character(&mut self, source: &str, json: &serde_json::Value, slot: usize, since: Option<f32>) -> bool {
+        let Some(character) = self.art.character_from(source, json) else { return false };
+        draw_menu_character(&character, slot, since, 1.0);
+        true
+    }
+
+    /// A story menu character by name, faded (the menu character editor's other two places).
+    pub fn menu_character_named(&mut self, source: &str, name: &str, slot: usize, alpha: f32) {
+        if let Some(character) = self.art.character(source, name) {
+            draw_menu_character(&character, slot, None, alpha);
+        }
     }
 
     /// A week's picture in the story menu's list (storymenu/<file>.png), if there is one.
@@ -1327,7 +1355,7 @@ impl Menus {
     }
 
     /// The editors in large letters, gliding as the Haxe engine's menu items do, and the mod folder they work in.
-    // shortcut: only the chart, character and week editors are here; the others say so.
+    // shortcut: the stage, dialogue, dialogue portrait and note splash editors are not here; they say so.
     fn editors(&mut self, skin: &Skin) -> Go {
         const EDITORS: [&str; 8] = ["Chart Editor", "Character Editor", "Stage Editor", "Week Editor", "Menu Character Editor", "Dialogue Editor", "Dialogue Portrait Editor", "Note Splash Editor"];
         let dt = get_frame_time().min(0.1);
@@ -1365,6 +1393,7 @@ impl Menus {
                 0 => return Go::ChartEditor(folder.clone()),
                 1 => return Go::CharacterEditor(folder.clone()),
                 3 => return Go::WeekEditor(folder.clone()),
+                4 => return Go::MenuCharacterEditor(folder.clone()),
                 _ => {}
             }
             self.sound("cancelMenu", 1.0);
