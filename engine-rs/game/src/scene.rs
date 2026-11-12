@@ -1251,6 +1251,14 @@ impl Scene {
         };
         // (a file that lists no character at all draws all three: the Haxe engine would draw none)
         let cast = if cast.is_empty() { vec![0, 1, 2] } else { cast };
+        // every picture of the stage and of its characters' sheets, read at once (the largest take a good part of a second
+        // one after another)
+        let gf_shown = !chart.opponent.starts_with("gf") && !stage["hide_girlfriend"].as_bool().unwrap_or(false);
+        let names = [Some(&chart.opponent), gf_shown.then_some(&chart.gf), Some(&chart.player)];
+        let sheets = names.into_iter().flatten().filter_map(|name| read_json(&paths, &format!("characters/{name}.json")).ok())
+            .flat_map(|json| json["image"].as_str().unwrap_or("").split(',').map(|image| format!("images/{}.png", image.trim())).collect::<Vec<_>>());
+        let files: Vec<std::path::PathBuf> = defs.iter().filter(|def| !def.image.is_empty()).map(|def| format!("images/{}.png", def.image)).chain(sheets).filter_map(|relative| paths.find(&relative)).collect();
+        crate::atlas::preload(&files);
         let mut backdrop: Vec<Layer> = defs.into_iter().filter_map(|def| Layer::load(&paths, def, &mut loaded)).collect();
         // what only shows when its moment comes
         for hidden in backdrop.iter_mut().filter(|layer| ["philly/window", "gore/metalPole", "gore/coldHeartKiller"].contains(&layer.def.image) || matches!(layer.def.anim, Some(("Henchmen on rail" | "henchmen death", _)))) {

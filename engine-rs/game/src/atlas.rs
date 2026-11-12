@@ -1,6 +1,6 @@
 //! Sparrow sprite sheets: a picture plus an .xml that says where each animation frame sits in it.
 use crate::gfx::*;
-use std::path::Path;
+use std::path::{Path, PathBuf};
 
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct Frame {
@@ -106,6 +106,31 @@ pub fn picture(path: &Path) -> Option<Texture2D> {
     };
     texture.set_filter(if SMOOTH.load(std::sync::atomic::Ordering::Relaxed) { FilterMode::Linear } else { FilterMode::Nearest });
     Some(texture)
+}
+
+/// Reads the pictures of several files at once, each on a thread of its own, and puts each on the graphics card as it is
+/// ready; `picture` then finds them there.
+pub fn preload(files: &[PathBuf]) {
+    let mut wanted: Vec<&PathBuf> = files.iter().filter(|file| !PICTURES.with(|pictures| pictures.borrow().contains_key(*file))).collect();
+    wanted.sort();
+    wanted.dedup();
+    std::thread::scope(|scope| {
+        let (send, read) = std::sync::mpsc::channel();
+        for file in &wanted {
+            let send = send.clone();
+            scope.spawn(move || {
+                let image = std::fs::read(file).ok().and_then(|bytes| Image::from_file_with_format(&bytes, None).ok());
+                let _ = send.send((*file, image));
+            });
+        }
+        drop(send);
+        // (each is let go of as soon as the card has it: not all of them are held at once)
+        for (file, image) in read {
+            if let Some(image) = image {
+                PICTURES.with(|pictures| pictures.borrow_mut().insert(file.clone(), Texture2D::from_image(&image)));
+            }
+        }
+    });
 }
 
 /// Lets go of the pictures nothing shows any more. Called when a song has been loaded: what only the song before used goes.

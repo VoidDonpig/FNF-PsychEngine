@@ -14,7 +14,9 @@
 
 use core::sync::atomic::{AtomicI64, AtomicU32, AtomicUsize, Ordering};
 
+#[cfg_attr(not(windows), allow(dead_code))]
 const RI_KEY_BREAK: u16 = 1;
+#[cfg_attr(not(windows), allow(dead_code))]
 const RI_KEY_E0: u16 = 2;
 
 /// Key codes this library delivers. They are Windows virtual keys that equal the Flash/FlxKey
@@ -33,6 +35,7 @@ fn covered(code: i32) -> bool {
 }
 
 /// Key code for a raw keyboard event, or `None` when the OpenFL path must handle the key.
+#[cfg_attr(not(windows), allow(dead_code))]
 fn translate(vkey: u16, make_code: u16, flags: u16) -> Option<u16> {
     if !covered(vkey as i32) {
         return None;
@@ -71,6 +74,7 @@ impl Queue {
     }
 
     /// Drops the event when the game has not read 256 events: it is not consuming input then.
+    #[cfg_attr(not(windows), allow(dead_code))]
     fn push(&self, key: u32, tick: i64) {
         let head = self.head.load(Ordering::Relaxed);
         if head.wrapping_sub(self.tail.load(Ordering::Acquire)) >= Queue::CAP {

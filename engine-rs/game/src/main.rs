@@ -422,7 +422,13 @@ impl Playing {
         tracks.extend(voices_player.as_deref());
         let player_voice = voices_player.as_ref().map(|_| 1);
         tracks.extend(voices_opponent.as_deref());
-        let scene = scene::Scene::load(base, &entry.source, &chart, settings.low_quality, settings.shaders, story).map_err(|e| eprintln!("Stage: {e}")).ok();
+        // the tracks are decoded while the stage and the characters load (the song then finds them decoded)
+        let scene = std::thread::scope(|scope| {
+            if start_at <= 0.0 {
+                scope.spawn(|| audio::decode(&tracks));
+            }
+            scene::Scene::load(base, &entry.source, &chart, settings.low_quality, settings.shaders, story).map_err(|e| eprintln!("Stage: {e}")).ok()
+        });
         // shortcut: --at only moves the silent clock (it exists for screenshots); seek the audio too to make it a practice feature.
         let song = audio::Song::load_at(if start_at > 0.0 { &[] } else { &tracks }, settings.playback_rate);
         // five beats of countdown, as the Haxe engine does
@@ -1955,6 +1961,7 @@ fn main() {
     let mut pointer_moved = f64::MIN;
     // what Discord was last told: whether it may show anything, and of which screen (it is told again only when this changes)
     let mut told_discord = (false, (0u8, 0usize, false, false, false));
+    let mut memory_read: (f64, Option<u64>) = (f64::MIN, None);
     loop {
         // the change itself may have taken long (a song loading): the wipe starts when the new screen first shows
         if wiped == f64::MAX {
@@ -1976,7 +1983,8 @@ fn main() {
             Screen::Menu(page) => *page as usize,
             _ => 0,
         });
-        let (was, was_loading) = (which(&screen), matches!(screen, Screen::Loading(..)));
+        let (was, was_loading, was_menu) = (which(&screen), matches!(screen, Screen::Loading(..)), matches!(screen, Screen::Menu(_)));
+        let song_before = match &screen { Screen::Playing(playing) => Some(playing.entry.chart.clone()), _ => None };
         screen = match screen {
             waiting if closing.is_some() => waiting,
             Screen::Menu(page) => match skin.as_ref().map(|skin| menus.run(page, skin, &weeks, &songs, &save, settings.flashing, settings.shaders)) {
@@ -2327,6 +2335,23 @@ fn main() {
                 Screen::Failed(message)
             }
         };
+        // back in the menus from a song or an editor: its pictures and its song's tracks go, as the Haxe engine clears unused
+        // memory between states (they would stay until the next song)
+        if matches!(screen, Screen::Menu(_)) && !was_menu {
+            atlas::forget_unused();
+            audio::forget_tracks();
+        }
+        // into a song from the menus: the menus' pictures go while it plays (read again when a menu is next shown)
+        if was_menu && matches!(screen, Screen::Playing(_)) {
+            menus.forget();
+            atlas::forget_unused();
+        }
+        // the next song of a week (loaded while the one before was still there): what only that one showed goes now
+        if let (Some(before), Screen::Playing(now)) = (&song_before, &screen) {
+            if *before != now.entry.chart {
+                atlas::forget_unused();
+            }
+        }
 
         // a dark edge slides down over the screen: black with a screen's height of fading edge, `fading` below it or above
         let cover = |edge: f32, fading: f32| {
@@ -2385,7 +2410,11 @@ fn main() {
         set_camera(&Camera2D { target: vec2(WIDTH / 2.0, HEIGHT / 2.0), zoom: vec2(2.0 / WIDTH, 2.0 / HEIGHT), ..Default::default() });
         if settings.show_fps {
             plain(&format!("FPS: {}", get_fps()), 10.0, 17.0, 14, WHITE);
-            if let Some(megabytes) = memory_mb() {
+            // (asked of the system twice a second, not every frame)
+            if get_time() - memory_read.0 >= 0.5 {
+                memory_read = (get_time(), memory_mb());
+            }
+            if let Some(megabytes) = memory_read.1 {
                 plain(&format!("Memory: {megabytes} MB"), 10.0, 31.0, 14, WHITE);
             }
         }

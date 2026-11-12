@@ -55,6 +55,20 @@ pub fn samples(path: &Path) -> Option<(std::sync::Arc<Vec<i16>>, u32)> {
     }
 }
 
+/// Decodes a song's tracks ahead (on another thread), so that loading them is quick.
+pub fn decode(tracks: &[&Path]) {
+    #[cfg(feature = "audio")]
+    output::tracks_of(tracks);
+    #[cfg(not(feature = "audio"))]
+    let _ = tracks;
+}
+
+/// Lets go of the decoded tracks of the song last opened (kept so that playing it again does not decode it again).
+pub fn forget_tracks() {
+    #[cfg(feature = "audio")]
+    output::forget_tracks();
+}
+
 pub struct Song {
     /// Silent clock: ms played before the current run, and when that run began.
     played: f64,
@@ -348,6 +362,10 @@ mod output {
         let samples = Arc::new(samples);
         DECODED.lock().unwrap().push((path.to_owned(), samples.clone(), rate, track));
         Ok((samples, rate))
+    }
+
+    pub(super) fn forget_tracks() {
+        DECODED.lock().unwrap().retain(|kept| !kept.3);
     }
 
     /// The tracks of a song, decoded side by side. Those of the song before are let go of.
