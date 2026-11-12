@@ -163,6 +163,29 @@ pub struct Week {
     /// Folders its charts and its songs' audio are in.
     pub data: PathBuf,
     pub audio: PathBuf,
+    /// Its file (the week editor saves over it).
+    pub path: PathBuf,
+}
+
+/// A week as its file (`<file>.json` of a mod's folder, `source`) has it; where its songs are is left for the caller.
+pub fn parse_week(file: &str, source: &str, week: &Value) -> Week {
+    let text = |key: &str| week[key].as_str().unwrap_or_default().to_owned();
+    let difficulties = match week["difficulties"].as_str().map(str::trim) {
+        Some(list) if !list.is_empty() => list.split(',').map(|d| d.trim().to_owned()).collect(),
+        _ => vec!["Easy".to_owned(), "Normal".to_owned(), "Hard".to_owned()],
+    };
+    let songs = week["songs"].as_array().into_iter().flatten().filter_map(|song| {
+        let color = [0, 1, 2].map(|i| song[2][i].as_f64().map(|c| c.clamp(0.0, 255.0) as u8));
+        let color = if color.contains(&None) { [146, 113, 253] } else { color.map(Option::unwrap_or_default) };
+        Some((song[0].as_str()?.to_owned(), song[1].as_str().unwrap_or("face").to_owned(), color))
+    }).collect();
+    Week {
+        file: file.to_owned(), source: source.to_owned(), story_name: text("storyName"), name: text("weekName"), before: text("weekBefore"),
+        start_unlocked: week["startUnlocked"].as_bool().unwrap_or(true), hidden_until_unlocked: week["hiddenUntilUnlocked"].as_bool().unwrap_or(false),
+        hide_story: week["hideStoryMode"].as_bool().unwrap_or(false), hide_freeplay: week["hideFreeplay"].as_bool().unwrap_or(false),
+        characters: [0, 1, 2].map(|i| week["weekCharacters"][i].as_str().unwrap_or_default().to_owned()), background: text("weekBackground"),
+        difficulties, songs, ..Default::default()
+    }
 }
 
 /// Every week under `base` (the folder holding `assets` and `mods`): the game's, then each mod's.
@@ -193,23 +216,7 @@ pub fn weeks(base: &Path) -> Vec<Week> {
         files.sort_by_key(|path| order.iter().position(|listed| *listed == name(path)).unwrap_or(usize::MAX)); // stable: the rest stay alphabetical
         for path in files {
             let Some(week) = std::fs::read_to_string(&path).ok().and_then(|t| serde_json::from_str::<Value>(&t).ok()) else { continue };
-            let text = |key: &str| week[key].as_str().unwrap_or_default().to_owned();
-            let difficulties = match week["difficulties"].as_str().map(str::trim) {
-                Some(list) if !list.is_empty() => list.split(',').map(|d| d.trim().to_owned()).collect(),
-                _ => vec!["Easy".to_owned(), "Normal".to_owned(), "Hard".to_owned()],
-            };
-            let songs = week["songs"].as_array().into_iter().flatten().filter_map(|song| {
-                let color = [0, 1, 2].map(|i| song[2][i].as_f64().map(|c| c.clamp(0.0, 255.0) as u8));
-                let color = if color.contains(&None) { [146, 113, 253] } else { color.map(Option::unwrap_or_default) };
-                Some((song[0].as_str()?.to_owned(), song[1].as_str().unwrap_or("face").to_owned(), color))
-            }).collect();
-            found.push(Week {
-                file: name(&path), source: source.clone(), story_name: text("storyName"), name: text("weekName"), before: text("weekBefore"),
-                start_unlocked: week["startUnlocked"].as_bool().unwrap_or(true), hidden_until_unlocked: week["hiddenUntilUnlocked"].as_bool().unwrap_or(false),
-                hide_story: week["hideStoryMode"].as_bool().unwrap_or(false), hide_freeplay: week["hideFreeplay"].as_bool().unwrap_or(false),
-                characters: [0, 1, 2].map(|i| week["weekCharacters"][i].as_str().unwrap_or_default().to_owned()), background: text("weekBackground"),
-                difficulties, songs, data: data.clone(), audio: audio.clone(),
-            });
+            found.push(Week { data: data.clone(), audio: audio.clone(), path: path.clone(), ..parse_week(&name(&path), &source, &week) });
         }
     }
     found

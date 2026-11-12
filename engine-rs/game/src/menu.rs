@@ -48,6 +48,8 @@ pub enum Go {
     ChartEditor(String),
     /// The character editor, in a mod's folder.
     CharacterEditor(String),
+    /// The week editor, in a mod's folder.
+    WeekEditor(String),
 }
 
 const UP: Ui = Ui::Up;
@@ -1003,7 +1005,8 @@ impl Menus {
             self.difficulty = week.difficulties[difficulty].clone();
         }
         let difficulty = week.difficulties.get(difficulty).map_or("", String::as_str);
-        let playlist = || playlist(shown[self.week], week, songs, difficulty);
+        let chosen = shown[self.week];
+        let playlist = || playlist(chosen, week, songs, difficulty);
 
         // the week titles roll under the yellow band, the selected one just below it
         let pictures: Vec<Option<Texture2D>> = shown.iter().map(|index| self.art.image(&weeks[*index].source, &format!("storymenu/{}", weeks[*index].file))).collect();
@@ -1053,6 +1056,37 @@ impl Menus {
             }
         }
 
+        self.week_preview(skin, week, since);
+        let best = save.week(&week.file, difficulty) as f64;
+        self.shown.0 = if (best - self.shown.0).abs() < 10.0 { best } else { best + (self.shown.0 - best) * (-dt as f64 * 30.0).exp() };
+        label(skin, &phrase_with("week_score", "WEEK SCORE: {1}", &[&(self.shown.0 as i64).to_string()]), 10.0, 10.0, 32, WHITE, false);
+
+        match since {
+            Some(t) if t >= 1.0 => playlist().map_or(Go::Stay, |list| Go::Play(list, Some(chosen))),
+            Some(_) => Go::Stay,
+            None if is_key_pressed(KeyCode::LeftControl) || is_key_pressed(KeyCode::RightControl) => Go::Changers,
+            None if pressed(&Ui::Reset) => {
+                let called = if week.name.is_empty() { &week.file } else { &week.name };
+                self.asking = Some((Reset::Week, week.file.clone(), difficulty.to_owned(), format!("{called} ({difficulty})?"), false, 0.0));
+                Go::Stay
+            }
+            None if pressed(&ACCEPT) => {
+                let ready = !locked && playlist().is_some();
+                self.sound(if ready { "confirmMenu" } else { "cancelMenu" }, 1.0);
+                self.chosen = ready.then_some(now);
+                Go::Stay
+            }
+            None if pressed(&BACK) => {
+                self.sound("cancelMenu", 1.0);
+                Go::Page(Page::Main)
+            }
+            None => Go::Stay,
+        }
+    }
+
+    /// What the story menu shows of a week above its list (also the week editor's view): the yellow band, the week's
+    /// background and characters (`since` it was chosen: their confirm poses), its tracks, its name.
+    pub fn week_preview(&mut self, skin: &Skin, week: &Week, since: Option<f32>) {
         draw_rectangle(0.0, 56.0, WIDTH, 386.0, Color::from_hex(0xF9CF51));
         if let Some(picture) = self.art.image(&week.source, &format!("menubackgrounds/menu_{}", week.background)).filter(|_| !week.background.is_empty()) {
             draw_texture(&picture, 0.0, 56.0, WHITE);
@@ -1076,32 +1110,12 @@ impl Menus {
             let width = measure_text(&title, skin.font.as_ref(), 32, 1.0).width;
             label(skin, &title, WIDTH * 0.15 - width / 2.0, 541.0 + row as f32 * 32.0, 32, Color::from_hex(0xE55777), false);
         }
-        let best = save.week(&week.file, difficulty) as f64;
-        self.shown.0 = if (best - self.shown.0).abs() < 10.0 { best } else { best + (self.shown.0 - best) * (-dt as f64 * 30.0).exp() };
-        label(skin, &phrase_with("week_score", "WEEK SCORE: {1}", &[&(self.shown.0 as i64).to_string()]), 10.0, 10.0, 32, WHITE, false);
         label(skin, &phrase(&format!("storyname_{}", week.file), &week.story_name).to_uppercase(), WIDTH - 10.0, 10.0, 32, white(0.7), true);
+    }
 
-        match since {
-            Some(t) if t >= 1.0 => playlist().map_or(Go::Stay, |list| Go::Play(list, Some(shown[self.week]))),
-            Some(_) => Go::Stay,
-            None if is_key_pressed(KeyCode::LeftControl) || is_key_pressed(KeyCode::RightControl) => Go::Changers,
-            None if pressed(&Ui::Reset) => {
-                let called = if week.name.is_empty() { &week.file } else { &week.name };
-                self.asking = Some((Reset::Week, week.file.clone(), difficulty.to_owned(), format!("{called} ({difficulty})?"), false, 0.0));
-                Go::Stay
-            }
-            None if pressed(&ACCEPT) => {
-                let ready = !locked && playlist().is_some();
-                self.sound(if ready { "confirmMenu" } else { "cancelMenu" }, 1.0);
-                self.chosen = ready.then_some(now);
-                Go::Stay
-            }
-            None if pressed(&BACK) => {
-                self.sound("cancelMenu", 1.0);
-                Go::Page(Page::Main)
-            }
-            None => Go::Stay,
-        }
+    /// A week's picture in the story menu's list (storymenu/<file>.png), if there is one.
+    pub fn week_picture(&mut self, week: &Week) -> Option<Texture2D> {
+        self.art.image(&week.source, &format!("storymenu/{}", week.file))
     }
 
     fn freeplay(&mut self, skin: &Skin, weeks: &[Week], songs: &[SongEntry], save: &Save) -> Go {
@@ -1313,7 +1327,7 @@ impl Menus {
     }
 
     /// The editors in large letters, gliding as the Haxe engine's menu items do, and the mod folder they work in.
-    // shortcut: only the chart and character editors are here; the others say so.
+    // shortcut: only the chart, character and week editors are here; the others say so.
     fn editors(&mut self, skin: &Skin) -> Go {
         const EDITORS: [&str; 8] = ["Chart Editor", "Character Editor", "Stage Editor", "Week Editor", "Menu Character Editor", "Dialogue Editor", "Dialogue Portrait Editor", "Note Splash Editor"];
         let dt = get_frame_time().min(0.1);
@@ -1350,6 +1364,7 @@ impl Menus {
             match self.editor {
                 0 => return Go::ChartEditor(folder.clone()),
                 1 => return Go::CharacterEditor(folder.clone()),
+                3 => return Go::WeekEditor(folder.clone()),
                 _ => {}
             }
             self.sound("cancelMenu", 1.0);

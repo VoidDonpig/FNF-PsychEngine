@@ -210,6 +210,12 @@ Done:
   (image, health icon, vocals file, sing duration, scale, flip X, no antialiasing, its place and the camera's, the
   health bar's colour; save over its file, the one before kept as `.bak`, or into the mod folder's characters/
   for a new one). Escape asks twice with changes not saved.
+- **Week editor**: from the editors' list, on the mod folder's first week (or a new one): the story menu shows the
+  week as it is edited, with its picture where the list would have it; the Haxe editor's Week (songs, the three
+  characters, background, display name, week name, week file), Other (locked, hidden until unlocked, the week to
+  finish first, difficulties) and Freeplay (each song's colour and icon, hidden from freeplay) tabs; Load Week (the
+  folder's weeks), New Week, Save Week (over its file, the one before kept as `.bak`, or into the folder's weeks/;
+  the menus read it at once); Escape asks twice with changes not saved.
 - **Gamepads** (Windows): any gamepad plays and goes through the menus with Psych's buttons (D-pad and
   A/B/X/Y for the lanes; D-pad or left stick, A or Start, B, Start, Back for the menus); Lua's gamepad functions.
 
@@ -226,7 +232,7 @@ Not there yet:
   engine's own classes, so mods that use it cannot run here as they are. Custom shaders.
 - **Editors**: the chart editor's File/Edit/View menus and its Data tab, the waveform, the vortex editor, lists to choose characters and stages from, pasted notes following the mouse before they are put down, autosave, a song
   chosen to chart from the editors' list;
-  the character editor's Load Template, ghost highlight and icon colour; the stage, week, menu character, dialogue,
-  dialogue character and note splash editors.
+  the character editor's Load Template, ghost highlight and icon colour; the week editor's freeplay view; the stage,
+  menu character, dialogue, dialogue character and note splash editors.
 - **Other**: gamepads on Linux and macOS (gilrs needs libudev there); binding a gamepad's buttons on the key binds
   page (Psych's buttons are used as they are).

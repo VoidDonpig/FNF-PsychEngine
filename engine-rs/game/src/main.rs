@@ -27,6 +27,7 @@ mod settings;
 mod speech;
 mod ui;
 mod video;
+mod week_editor;
 
 use std::collections::HashMap;
 use funkin_core::content::{songs as find_songs, weeks as find_weeks, Paths, SongEntry};
@@ -1621,6 +1622,7 @@ fn presence(screen: &Screen, weeks: &[funkin_core::content::Week]) -> discord::P
         Screen::Menu(Page::Editors) => "Editors Main Menu",
         Screen::Editor(_) => "Chart Editor",
         Screen::CharacterEditor(..) => "Character Editor",
+        Screen::WeekEditor(_) => "Week Editor",
         Screen::Options(..) => "Options Menu",
         Screen::Playing(_) => "",
         _ => "In the Menus",
@@ -1685,6 +1687,7 @@ enum Screen {
     Editor(Box<chart_editor::ChartEditor>),
     /// The character editor, and the song it was opened from (it goes back to it).
     CharacterEditor(Box<character_editor::CharacterEditor>, Option<SongEntry>),
+    WeekEditor(Box<week_editor::WeekEditor>),
     Failed(String),
     /// What a new player is told before anything flashes.
     Warning,
@@ -1917,6 +1920,10 @@ fn main() {
                     Some(entry) => chart_editor::ChartEditor::open(&base, entry, None).inspect(|_| menus.quiet()).map_or_else(Screen::Failed, |editor| Screen::Editor(Box::new(editor))),
                     None => Screen::Menu(page),
                 },
+                Some(Go::WeekEditor(folder)) => {
+                    menus.quiet();
+                    Screen::WeekEditor(Box::new(week_editor::WeekEditor::open(&base, &folder)))
+                }
                 Some(Go::CharacterEditor(folder)) => {
                     menus.quiet();
                     Screen::CharacterEditor(Box::new(character_editor::CharacterEditor::open(&base, &folder, "bf")), None)
@@ -2089,6 +2096,26 @@ fn main() {
                 }
                 None => Screen::Menu(Page::Editors),
             },
+            Screen::WeekEditor(mut editor) => match &skin {
+                Some(skin) => {
+                    let go = editor.update();
+                    clear_background(BLACK);
+                    set_camera(&Camera2D { target: vec2(WIDTH / 2.0, HEIGHT / 2.0), zoom: vec2(2.0 / WIDTH, 2.0 / HEIGHT), ..Default::default() });
+                    let week = editor.week();
+                    menus.week_preview(skin, &week, None);
+                    let picture = menus.week_picture(&week);
+                    editor.draw(skin, picture.as_ref());
+                    // a saved week shows in the menus at once
+                    if std::mem::take(&mut editor.saved) {
+                        menus.reload = true;
+                    }
+                    match go {
+                        week_editor::Go::Stay => Screen::WeekEditor(editor),
+                        week_editor::Go::Leave => Screen::Menu(Page::Editors),
+                    }
+                }
+                None => Screen::Menu(Page::Editors),
+            },
             Screen::Loading(entry, talk, shown) => {
                 clear_background(Color::from_hex(0xCAFF4D));
                 if let Some(picture) = atlas::picture(&base.join("assets/shared/images/funkay.png")) {
@@ -2227,7 +2254,7 @@ fn main() {
         if mouse_moved() || is_mouse_pressed() {
             pointer_moved = get_time();
         }
-        show_mouse(matches!(screen, Screen::Editor(_) | Screen::CharacterEditor(..)) || (matches!(screen, Screen::Menu(_) | Screen::Options(..)) && get_time() - pointer_moved < 2.0));
+        show_mouse(matches!(screen, Screen::Editor(_) | Screen::CharacterEditor(..) | Screen::WeekEditor(_)) || (matches!(screen, Screen::Menu(_) | Screen::Options(..)) && get_time() - pointer_moved < 2.0));
         let showing = match &screen {
             Screen::Playing(playing) => (3, &**playing as *const Playing as usize, playing.paused.is_some(), playing.dead.is_some(), playing.started),
             Screen::Menu(page) => (1, *page as usize, false, false, false),
