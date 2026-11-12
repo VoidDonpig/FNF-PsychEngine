@@ -1379,6 +1379,9 @@ impl Scene {
             "camGame.zoom" | "FlxG.camera.zoom" => self.zoom as f64,
             "camHUD.zoom" => self.hud_zoom as f64,
             "cameraSpeed" => self.camera_speed as f64,
+            "camFollow.x" => self.target.x as f64,
+            "camFollow.y" => self.target.y as f64,
+            "isCameraOnForcedPos" => self.pinned.is_some() as u8 as f64,
             _ => {
                 let (who, field) = name.split_once('.')?;
                 let character = character(match who { "boyfriend" => "bf", "dad" => "dad", "gf" => "gf", _ => return None })?;
@@ -1386,6 +1389,7 @@ impl Scene {
                     "x" => character.position.x as f64,
                     "y" => character.position.y as f64,
                     "alpha" => character.tint.a as f64,
+                    "visible" => (character.tint.a > 0.0) as u8 as f64,
                     _ => return None,
                 }
             }
@@ -1400,6 +1404,11 @@ impl Scene {
             "camGame.zoom" | "FlxG.camera.zoom" => self.zoom = value,
             "camHUD.zoom" => self.hud_zoom = value,
             "cameraSpeed" => self.camera_speed = value,
+            // the camera held where a script puts it (as the Camera Follow Pos event does), until let go
+            "camFollow.x" => self.pinned = Some(vec2(value, self.pinned.unwrap_or(self.target).y)),
+            "camFollow.y" => self.pinned = Some(vec2(self.pinned.unwrap_or(self.target).x, value)),
+            "isCameraOnForcedPos" if value == 0.0 => self.pinned = None,
+            "isCameraOnForcedPos" => self.pinned = Some(self.pinned.unwrap_or(self.target)),
             _ => {
                 let Some((who, field)) = name.split_once('.') else { return false };
                 let who = match who { "boyfriend" => 1, "dad" => 0, "gf" => 2, _ => return false };
@@ -1408,6 +1417,10 @@ impl Scene {
                     "x" => character.position.x = value,
                     "y" => character.position.y = value,
                     "alpha" => character.tint.a = value,
+                    // (shown again, it comes back fully unless a script left it faded)
+                    "visible" if value == 0.0 => character.tint.a = 0.0,
+                    "visible" if character.tint.a == 0.0 => character.tint.a = 1.0,
+                    "visible" => {}
                     _ => return false,
                 }
             }

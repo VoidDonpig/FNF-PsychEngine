@@ -223,6 +223,13 @@ fn lane_x(settings: &Settings, player: bool, lane: usize) -> f32 {
     left + LANE_WIDTH * lane as f32 + LANE_WIDTH / 2.0
 }
 
+/// What scripts may fade or hide of the cameras and the HUD, by the Haxe engine's names (all at 1 until set).
+const LOOKS: [&str; 18] = [
+    "camHUD.alpha", "camHUD.visible", "camGame.alpha", "camGame.visible", "iconP1.alpha", "iconP1.visible", "iconP2.alpha", "iconP2.visible",
+    "healthBar.alpha", "healthBar.visible", "scoreTxt.alpha", "scoreTxt.visible", "timeBar.alpha", "timeBar.visible", "timeTxt.alpha", "timeTxt.visible",
+    "botplayTxt.alpha", "botplayTxt.visible",
+];
+
 /// A strum as scripts see it (the Haxe engine's StrumNote): its corner, opacity, turn, the direction its notes come
 /// along (90: straight down the screen's y), whether it shows.
 #[derive(Clone, Copy, Debug, PartialEq)]
@@ -262,6 +269,8 @@ struct Playing {
     lua: lua::Scripts,
     /// The type names of notes whose kind a script changed (hitCausesMiss, noAnimation...), which callbacks still pass.
     renamed: std::collections::HashMap<usize, String>,
+    /// What scripts faded or hid (LOOKS), by name.
+    looks: std::collections::HashMap<&'static str, f32>,
     /// The strums, where the game or the scripts put them.
     strums: [[Strum; 4]; 2],
     /// A flash a script asked for: the camera it covers, its colour, when it began and how long it fades.
@@ -379,7 +388,7 @@ impl Playing {
         let mut scene = scene;
         let staged = story && start_at <= 0.0 && !seen && scene.as_mut().is_some_and(|scene| scene.open_with(&funkin_core::content::song_path(&entry.title), 60.0 / play.chart.bpm as f32));
         let lua = start_scripts(base, &paths, entry, &play.chart, settings, story, seen);
-        Ok(Playing { entry: entry.clone(), play, song, player_voice, own_skin: None, music_fade: None, lua, renamed: Default::default(), strums: strums(settings), flash: None, lua_step: i64::MIN, lua_section: usize::MAX, lua_created: false, end_asked: false, end_held: false, base: base.to_path_buf(), staged, bowing: false, tune: false, paused_at: 0.0, pause_scroll: 0.0, deaths: 0, scene, waited: 0.0, clock: Default::default(), ticked: std::time::Instant::now(), started: false, paused: None, choosing: None, difficulties, story, taunt_until: None, start_at, position: -lead_in, settings: settings.clone(), held_keys: Vec::new(), flash_until: [[f64::MIN; 4]; 2], judgement: None, last_hit: f64::MIN, lanes_used: [false; 4], idled: false, idle_for: 0.0, sang_for: 0.0,
+        Ok(Playing { entry: entry.clone(), play, song, player_voice, own_skin: None, music_fade: None, lua, looks: Default::default(), renamed: Default::default(), strums: strums(settings), flash: None, lua_step: i64::MIN, lua_section: usize::MAX, lua_created: false, end_asked: false, end_held: false, base: base.to_path_buf(), staged, bowing: false, tune: false, paused_at: 0.0, pause_scroll: 0.0, deaths: 0, scene, waited: 0.0, clock: Default::default(), ticked: std::time::Instant::now(), started: false, paused: None, choosing: None, difficulties, story, taunt_until: None, start_at, position: -lead_in, settings: settings.clone(), held_keys: Vec::new(), flash_until: [[f64::MIN; 4]; 2], judgement: None, last_hit: f64::MIN, lanes_used: [false; 4], idled: false, idle_for: 0.0, sang_for: 0.0,
             paths, cutscene, lead_in, counted: i64::MIN, popups: Vec::new(), splashes: Vec::new(), dead: None, next_event: 0, speed, speed_change: None }.with(settings))
     }
 
@@ -846,9 +855,10 @@ impl Playing {
         self.lua.set("rating", play.accuracy().unwrap_or(0.0));
         self.lua.set("ratingFC", play.full_combo());
         self.lua.set("startedCountdown", true);
-        let mut props = vec![("health", play.health), ("songPosition", self.position), ("songScore", play.score as f64), ("songMisses", play.misses as f64), ("combo", play.combo as f64), ("songHits", hits as f64)];
+        let mut props = vec![("health", play.health), ("songPosition", self.position), ("songScore", play.score as f64), ("songMisses", play.misses as f64), ("combo", play.combo as f64), ("songHits", hits as f64), ("songSpeed", self.speed as f64)];
+        props.extend(LOOKS.iter().map(|name| (*name, self.looks.get(name).copied().unwrap_or(1.0) as f64)));
         if let Some(scene) = &self.scene {
-            for name in ["defaultCamZoom", "camGame.zoom", "camHUD.zoom", "cameraSpeed", "boyfriend.x", "boyfriend.y", "dad.x", "dad.y", "gf.x", "gf.y", "boyfriend.alpha", "dad.alpha", "gf.alpha"] {
+            for name in ["defaultCamZoom", "camGame.zoom", "camHUD.zoom", "cameraSpeed", "camFollow.x", "camFollow.y", "isCameraOnForcedPos", "boyfriend.x", "boyfriend.y", "dad.x", "dad.y", "gf.x", "gf.y", "boyfriend.alpha", "dad.alpha", "gf.alpha", "boyfriend.visible", "dad.visible", "gf.visible"] {
                 props.extend(scene.property(name).map(|value| (name, value)));
             }
         }
@@ -911,8 +921,13 @@ impl Playing {
                         }
                     }
                 }
-                lua::Request::SetProperty { name, value } => match (name.as_str(), value.as_f64()) {
+                lua::Request::SetProperty { name, value } if LOOKS.contains(&name.as_str()) => {
+                    let number = value.as_f64().or_else(|| value.as_bool().map(|flag| flag as u8 as f64)).unwrap_or(1.0) as f32;
+                    self.looks.extend(LOOKS.iter().find(|look| **look == name).map(|look| (*look, number)));
+                }
+                lua::Request::SetProperty { name, value } => match (name.as_str(), value.as_f64().or_else(|| value.as_bool().map(|flag| flag as u8 as f64))) {
                     ("health", Some(health)) => self.play.health = health.clamp(0.0, 2.0),
+                    ("songSpeed", Some(speed)) => self.speed = speed as f32,
                     ("songScore", Some(score)) => self.play.score = score as i64,
                     (_, Some(number)) => {
                         if !self.scene.as_mut().is_some_and(|scene| scene.set_property(&name, number)) {
@@ -1021,8 +1036,21 @@ impl Playing {
     fn draw(&self, skin: &Skin, letters: &dyn Fn(&str, f32, f32, f32)) {
         let (settings, position) = (&self.settings, self.judged());
         // the stage through its own moving camera, then notes and the rest of the HUD on top
+        // (what scripts faded or hid: a camera, or a piece of the HUD)
+        let look = |name: &str| self.looks.get(name).copied().unwrap_or(1.0);
+        let shown = |piece: &str| look(&format!("{piece}.visible")) != 0.0;
+        // (a hidden HUD is drawn faded out, so that the pause menu and the talk over it still show)
+        let (hud_alpha, game_shown) = (if shown("camHUD") { look("camHUD.alpha") } else { 0.0 }, shown("camGame"));
+        let piece = |name: &str| {
+            fade(hud_alpha * look(&format!("{name}.alpha")));
+            shown(name)
+        };
         let (hud_zoom, hud_shake) = self.scene.as_ref().map_or((1.0, Vec2::ZERO), |scene| {
-            scene.draw(&|front, scroll| self.lua.draw(lua::Cam::Game, front, scroll));
+            if game_shown {
+                fade(look("camGame.alpha"));
+                scene.draw(&|front, scroll| self.lua.draw(lua::Cam::Game, front, scroll));
+                fade(1.0);
+            }
             (scene.hud_zoom, scene.hud_shake())
         });
         // a script's flash of a camera: over what it shows, fading out
@@ -1044,6 +1072,7 @@ impl Playing {
             draw_rectangle(WIDTH - 200.0, HEIGHT - 80.0, 120.0 * scene.skipping.min(1.0), 10.0, Color::new(1.0, 1.0, 1.0, scene.skipping.min(1.0)));
             return;
         }
+        fade(hud_alpha);
         // a faster song does not make the notes travel faster: they are spread out to match
         let speed = self.speed / settings.playback_rate as f32;
         let strum_y = strum_y(settings);
@@ -1154,7 +1183,7 @@ impl Playing {
         // time left, over a bar that fills as the song goes
         let (length, time_y) = (self.length(), if settings.downscroll { HEIGHT - 44.0 } else { 19.0 });
         let hud = !settings.hide_hud;
-        if hud && settings.time_bar < 3 {
+        if hud && settings.time_bar < 3 && piece("timeBar") {
             let played = self.position.clamp(0.0, length);
             let clock = |ms: f64| format!("{}:{:02}", ms as u32 / 60000, ms as u32 / 1000 % 60);
             let words = [clock(length - played), clock(played), self.entry.title.clone()];
@@ -1178,15 +1207,21 @@ impl Playing {
         let side_x = if settings.middlescroll { 60.0 } else { WIDTH * 0.35 - 80.0 };
         let player_share = (self.play.health / 2.0) as f32;
         let faded = |color: Color| Color { a: if hud { settings.health_bar_alpha as f32 } else { 0.0 }, ..color };
-        draw_rectangle(bar_x - 4.0, bar_y - 4.0, bar_w + 8.0, 26.0, faded(BLACK));
         let singers = self.scene.as_ref().map(|scene| [scene.opponent.as_ref(), scene.player.as_ref()]).unwrap_or([None, None]);
         let middle = bar_x + bar_w * (1.0 - player_share);
-        draw_rectangle(bar_x, bar_y, middle - bar_x, 18.0, faded(singers[0].map_or(Color::from_hex(0xFF0000), |c| c.color)));
-        draw_rectangle(middle, bar_y, bar_w * player_share, 18.0, faded(singers[1].map_or(Color::from_hex(0x66FF33), |c| c.color)));
+        if piece("healthBar") {
+            draw_rectangle(bar_x - 4.0, bar_y - 4.0, bar_w + 8.0, 26.0, faded(BLACK));
+            draw_rectangle(bar_x, bar_y, middle - bar_x, 18.0, faded(singers[0].map_or(Color::from_hex(0xFF0000), |c| c.color)));
+            draw_rectangle(middle, bar_y, bar_w * player_share, 18.0, faded(singers[1].map_or(Color::from_hex(0x66FF33), |c| c.color)));
+        }
         // the two singers' icons meet where the bar's colours meet; the losing one shows its second picture
         let icon_size = 150.0 * self.scene.as_ref().map_or(1.0, |scene| scene.icon_scale);
         for (side, singer) in singers.iter().enumerate() {
             let Some(icon) = singer.and_then(|c| c.icon.as_ref()) else { continue };
+            // iconP1 is the player's, iconP2 the opponent's
+            if !piece(if side == 1 { "iconP1" } else { "iconP2" }) {
+                continue;
+            }
             let pictures = (icon.width() / icon.height()).round().max(1.0);
             let losing = if side == 1 { player_share < 0.2 } else { player_share > 0.8 };
             let picture = if losing && pictures > 1.0 { 1.0 } else { 0.0 };
@@ -1200,7 +1235,7 @@ impl Playing {
             let (name, combo) = (funkin_core::play::rating_name(a), self.play.full_combo());
             format!("{} ({}%) - {}", phrase(&format!("rating_{name}"), name), (a * 10000.0).floor() / 100.0, phrase(combo, combo))
         });
-        if hud {
+        if hud && piece("scoreTxt") {
             // the score swells a little on every hit and settles within a fifth of a second
             let swell = if settings.score_zoom { 1.0 + 0.075 * (1.0 - (position - self.last_hit) / 200.0).clamp(0.0, 1.0) } else { 1.0 };
             // the same letters drawn larger, not letters of another size: those would have to be made mid-song, which garbles the text for a frame
@@ -1222,9 +1257,10 @@ impl Playing {
                 skin.text(text, side_x + settings.combo_offset[2] as f32, HEIGHT / 2.0 + 160.0 - settings.combo_offset[3] as f32, 24, fade);
             }
         }
-        if self.play.botplay {
+        if self.play.botplay && piece("botplayTxt") {
             skin.centered(&phrase("Botplay", "Botplay").to_uppercase(), if settings.downscroll { HEIGHT - 190.0 } else { 190.0 }, 32, WHITE);
         }
+        fade(hud_alpha);
         // what scripts printed (debugPrint), newest at the top, each fading out after six seconds, as the Haxe engine shows it
         let now = get_time();
         let printed = &self.lua.shared.borrow().printed;
@@ -1237,6 +1273,7 @@ impl Playing {
         self.lua.draw(lua::Cam::Hud, false, Vec2::ZERO);
         flash(lua::Cam::Hud);
         set_camera(&Camera2D { target: vec2(WIDTH / 2.0, HEIGHT / 2.0), zoom: vec2(2.0 / WIDTH, 2.0 / HEIGHT), ..Default::default() });
+        fade(1.0);
         self.lua.draw(lua::Cam::Other, false, Vec2::ZERO);
         flash(lua::Cam::Other);
         set_camera(&Camera2D { target: vec2(WIDTH / 2.0, HEIGHT / 2.0) + hud_shake, zoom: vec2(2.0 / WIDTH, 2.0 / HEIGHT) * hud_zoom, ..Default::default() });

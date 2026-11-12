@@ -476,6 +476,8 @@ struct Context {
     camera: Mat4,
     models: Vec<Mat4>,
     recolor: Option<[Vec3; 3]>,
+    /// How much of everything drawn now shows (a whole camera faded, as a script fades the HUD's).
+    fade: f32,
     blocks: f32,
     add: bool,
     down: HashSet<KeyCode>,
@@ -643,7 +645,7 @@ pub fn open(conf: Conf) -> Result<(String, Option<String>), String> {
     let now = Instant::now();
     let mut context = Context {
         event_loop: Some(event_loop), app, window, instance, surface: Some(surface), device, queue, config, format, pipeline, adding, layout, samplers, pictures: 0, white: None, letters: None,
-        vertices: Vec::new(), calls: Vec::new(), buffer: None, background: BLACK, camera: Mat4::IDENTITY, models: Vec::new(), recolor: None, blocks: 0.0, add: false,
+        vertices: Vec::new(), calls: Vec::new(), buffer: None, background: BLACK, camera: Mat4::IDENTITY, models: Vec::new(), recolor: None, fade: 1.0, blocks: 0.0, add: false,
         down: HashSet::new(), pressed: HashSet::new(), released: HashSet::new(), last_pressed: None, typed: VecDeque::new(), alt_enter: false, focused: true, mouse: Mouse::default(),
         started: now, frame_began: now, frame_time: 1.0 / 60.0, shown: now, display_lag: 0.0, due: now, open: true,
     };
@@ -714,7 +716,7 @@ impl Context {
         let [red, green, blue] = self.recolor.unwrap_or_default().map(|part| part.to_array());
         let corner = |index: usize| {
             let position = place.transform_point3(corners[index].extend(0.0));
-            Vertex { position: [position.x, position.y], uv: uvs[index].to_array(), color: [color.r, color.g, color.b, color.a], red, green, blue, recolored: self.recolor.is_some() as u8 as f32, blocks: self.blocks }
+            Vertex { position: [position.x, position.y], uv: uvs[index].to_array(), color: [color.r, color.g, color.b, color.a * self.fade], red, green, blue, recolored: self.recolor.is_some() as u8 as f32, blocks: self.blocks }
         };
         self.vertices.extend([0, 1, 2, 0, 2, 3].map(corner));
         if let Some(call) = self.calls.last_mut() {
@@ -932,7 +934,7 @@ pub fn next_frame(fps: f64) -> bool {
         context.vertices.clear();
         context.calls.clear();
         context.models.clear();
-        (context.recolor, context.blocks, context.add, context.last_pressed) = (None, 0.0, false, None);
+        (context.recolor, context.blocks, context.add, context.last_pressed, context.fade) = (None, 0.0, false, None, 1.0);
 
         // sleeping is coarse: it stops a little short, and the rest is waited out awake
         if let Some(left) = context.due.checked_duration_since(Instant::now()).and_then(|left| left.checked_sub(Duration::from_millis(1))) {
@@ -992,6 +994,11 @@ pub fn coarse(blocks: f32) {
 /// Whether what is drawn from now on adds its light to what is under it (Flixel's ADD blend) instead of covering it.
 pub fn blend_add(on: bool) {
     with(|context| context.add = on);
+}
+
+/// Everything drawn from now on shows this much (1: as it is), until set again or the frame ends.
+pub fn fade(alpha: f32) {
+    with(|context| context.fade = alpha);
 }
 
 pub fn recolor(colors: Option<[Vec3; 3]>) {

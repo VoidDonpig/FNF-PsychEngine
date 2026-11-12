@@ -158,6 +158,9 @@ Done:
   their strum along its direction; texts (makeLuaText and the setText/getText functions: words, size, width,
   alignment, colour, outline, font); the notes (getPropertyFromGroup/setPropertyFromGroup on unspawnNotes and
   notes: their time, lane, side, type, state; ignoreNote, hitCausesMiss, noAnimation, gfNote, visible, multAlpha).
+  getProperty/setProperty (and tweens) on the cameras' and the HUD's pieces (camHUD, camGame, iconP1, iconP2,
+  healthBar, scoreTxt, timeBar, timeTxt, botplayTxt: alpha and visible), songSpeed, camFollow,
+  isCameraOnForcedPos and the characters' visible.
 
 Not there yet:
 
