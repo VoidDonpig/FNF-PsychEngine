@@ -173,6 +173,9 @@ Done:
   cameraSetTarget, the characters' and the camera's place (getCharacterX/Y, setCharacterX/Y, get/set/add camera
   follow point), getMidpointX/Y and getGraphicMidpointX/Y, mouseReleased, gamepadAnalogX/Y, saveFile and
   deleteFile (inside the mods folder only), and the older luaSprite names.
+  Sounds by tag (playSound's tag and loop; stopSound, pauseSound, resumeSound, soundFadeIn/Out/Cancel, the
+  volume, place and pitch got and set, luaSoundExists, onSoundFinished) and the song's music's volume and fades
+  (musicFadeIn/Out).
 - **Gamepads** (Windows): any gamepad plays and goes through the menus with Psych's buttons (D-pad and
   A/B/X/Y for the lanes; D-pad or left stick, A or Start, B, Start, Back for the menus); Lua's gamepad functions.
 

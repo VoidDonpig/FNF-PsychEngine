@@ -24,7 +24,7 @@ pub struct Video {
     spare: mpsc::Sender<Vec<u8>>,
     sound: mpsc::Receiver<(Arc<Vec<i16>>, u32)>,
     /// The sound once it plays, to stop it with the video.
-    playing: Option<Arc<Vec<i16>>>,
+    playing: Option<u64>,
     frame_seconds: f64,
     picture: Option<Texture2D>,
     shown: u64,
@@ -66,8 +66,8 @@ impl Video {
     pub fn update(&mut self, song: &Song, dt: f32, accept: bool) -> bool {
         let over = self.advance(song, dt, accept);
         if over {
-            if let Some(samples) = &self.playing {
-                song.stop_samples(samples);
+            if let Some(id) = self.playing {
+                song.stop_sound(id);
             }
         }
         over
@@ -76,8 +76,7 @@ impl Video {
     fn advance(&mut self, song: &Song, dt: f32, accept: bool) -> bool {
         if self.started.is_none() {
             let Ok((samples, rate)) = self.sound.try_recv() else { return false };
-            song.play_samples(samples.clone(), rate, self.looped);
-            self.playing = Some(samples);
+            self.playing = song.play_samples(samples, rate, self.looped);
             self.started = Some(Instant::now());
         }
         if self.skippable {

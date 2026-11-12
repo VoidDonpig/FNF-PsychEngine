@@ -43,6 +43,8 @@ function luaSpriteMakeGraphic(tag, width, height, color) makeGraphic(tag, width,
 function scaleLuaSprite(tag, x, y) scaleObject(tag, x, y) end
 function setLuaSpriteCamera(tag, camera) return setObjectCamera(tag, camera) end
 function setLuaSpriteScrollFactor(tag, x, y) setScrollFactor(tag, x, y) end
+function musicFadeIn(duration, from, to) soundFadeIn('', duration, from, to) end
+function musicFadeOut(duration, to) soundFadeOut('', duration, to) end
 function updateScoreText() end
 function addCharacterToList() end
 "#;
@@ -53,7 +55,10 @@ const STOP_ALL: &str = "##PSYCHLUA_FUNCTIONSTOPALL";
 /// Something a script asked of the game.
 #[derive(Clone, Debug, PartialEq)]
 pub enum Request {
-    Sound { name: String, volume: f32 },
+    /// A sound of sounds/; with a tag, scripts reach it by that name (another of that name stops).
+    Sound { name: String, volume: f32, tag: Option<String>, looped: bool },
+    /// Something done to the sound of a tag ("" for the song's music).
+    SoundOp { tag: String, op: SoundOp },
     Music { name: String, volume: f32, looped: bool },
     /// An event as a chart would have it: its name and two values.
     Event { name: String, value1: String, value2: String },
@@ -84,6 +89,20 @@ pub enum Request {
     EndSong,
     RestartSong,
     ExitSong,
+}
+
+/// What scripts do to a sound they named.
+#[derive(Debug, Clone, PartialEq)]
+pub enum SoundOp {
+    Stop,
+    Pause,
+    Resume,
+    Volume(f32),
+    Time(f64),
+    Pitch(f64),
+    /// Its volume from `from` (or where it is) to `to` over that many seconds.
+    Fade { from: Option<f32>, to: f32, seconds: f64 },
+    FadeCancel,
 }
 
 /// What the scripts of a song share with each other and with the game.
@@ -123,6 +142,8 @@ pub struct Shared {
     pub language: String,
     /// The scripts running, by their names (isRunning, getRunningScripts).
     running: Vec<String>,
+    /// The tagged sounds playing ("" the song's music), as the play screen last told: volume, place in ms, pitch.
+    pub sounds: HashMap<String, (f32, f64, f64)>,
 }
 
 struct Script {
@@ -701,7 +722,29 @@ impl Scripts {
             *stop.borrow_mut() = true;
             Ok(true)
         });
-        request!("playSound", |args: (String, Option<f32>)| Request::Sound { name: args.0, volume: args.1.unwrap_or(1.0) });
+        request!("playSound", |args: (String, Option<f32>, Option<String>, Option<bool>)| {
+            Request::Sound { name: args.0, volume: args.1.unwrap_or(1.0), tag: args.2.filter(|tag| !tag.is_empty()), looped: args.3.unwrap_or(false) }
+        });
+        // a tag's sound (none: the song's music)
+        macro_rules! sound_op {
+            ($name:expr, |$args:ident : $ty:ty| ($tag:expr, $op:expr)) => {
+                request!($name, |$args: $ty| Request::SoundOp { tag: $tag.unwrap_or_default(), op: $op })
+            };
+        }
+        sound_op!("stopSound", |args: Option<String>| (args, SoundOp::Stop));
+        sound_op!("pauseSound", |args: Option<String>| (args, SoundOp::Pause));
+        sound_op!("resumeSound", |args: Option<String>| (args, SoundOp::Resume));
+        sound_op!("soundFadeCancel", |args: Option<String>| (args, SoundOp::FadeCancel));
+        sound_op!("setSoundVolume", |args: (Option<String>, f32)| (args.0, SoundOp::Volume(args.1)));
+        sound_op!("setSoundTime", |args: (Option<String>, f64)| (args.0, SoundOp::Time(args.1)));
+        sound_op!("setSoundPitch", |args: (Option<String>, f64, Option<bool>)| (args.0, SoundOp::Pitch(args.1)));
+        sound_op!("soundFadeIn", |args: (Option<String>, f64, Option<f32>, Option<f32>)| (args.0, SoundOp::Fade { from: Some(args.2.unwrap_or(0.0)), to: args.3.unwrap_or(1.0), seconds: args.1 }));
+        sound_op!("soundFadeOut", |args: (Option<String>, f64, Option<f32>)| (args.0, SoundOp::Fade { from: None, to: args.2.unwrap_or(0.0), seconds: args.1 }));
+        let heard = |shared: &Rc<RefCell<Shared>>, tag: Option<String>| shared.borrow().sounds.get(&tag.unwrap_or_default()).copied();
+        function!("luaSoundExists", |_lua, shared, args: Option<String>| Ok(args.is_some() && heard(&shared, args).is_some()));
+        function!("getSoundVolume", |_lua, shared, args: Option<String>| Ok(heard(&shared, args).map_or(0.0, |sound| sound.0)));
+        function!("getSoundTime", |_lua, shared, args: Option<String>| Ok(heard(&shared, args).map_or(0.0, |sound| sound.1)));
+        function!("getSoundPitch", |_lua, shared, args: Option<String>| Ok(heard(&shared, args).map_or(1.0, |sound| sound.2)));
         request!("playMusic", |args: (String, Option<f32>, Option<bool>)| Request::Music { name: args.0, volume: args.1.unwrap_or(1.0), looped: args.2.unwrap_or(false) });
         request!("triggerEvent", |args: (String, Option<Value>, Option<Value>)| {
             let text = |value: Option<Value>| value.and_then(|value| value.to_string().ok()).unwrap_or_default();
@@ -1432,7 +1475,7 @@ mod tests {
         "#);
         scripts.call("onBeatHit", ());
         scripts.call("onBeatHit", ());
-        assert_eq!(scripts.requests(), [Request::Sound { name: "confirmMenu".to_owned(), volume: 0.5 }, Request::SetHealth(1.5)]);
+        assert_eq!(scripts.requests(), [Request::Sound { name: "confirmMenu".to_owned(), volume: 0.5, tag: None, looped: false }, Request::SetHealth(1.5)]);
         assert!(Scripts::stopped(&scripts.call("onEndSong", ())));
         // a timer of two loops rings twice, then is gone
         scripts.tick(0.6);

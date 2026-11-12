@@ -142,34 +142,64 @@ impl Song {
         self.played + self.started.map_or(0.0, |s| s.elapsed().as_secs_f64() * 1000.0 * self.speed)
     }
 
-    /// Plays a short sound (or, looped, a piece of music) on top of the song, whether the song runs or not.
-    pub fn play_sound(&self, path: &Path, volume: f32, looped: bool) {
+    /// Plays a short sound (or, looped, a piece of music) on top of the song, whether the song runs or not. The number
+    /// it is known by, while it plays (none without sound).
+    pub fn play_sound(&self, path: &Path, volume: f32, looped: bool) -> Option<u64> {
         #[cfg(feature = "audio")]
-        if let Some(output) = &self.output {
-            output.play_sound(path, volume, looped);
-        }
+        return self.output.as_ref().and_then(|output| output.play_sound(path, volume, looped));
         #[cfg(not(feature = "audio"))]
-        let _ = (path, volume, looped);
+        {
+            let _ = (path, volume, looped);
+            None
+        }
     }
 
     /// Plays sound already decoded (stereo, 16 bits a sample, `rate` frames a second) on top of the song: a video's.
-    pub fn play_samples(&self, samples: std::sync::Arc<Vec<i16>>, rate: u32, looped: bool) {
+    pub fn play_samples(&self, samples: std::sync::Arc<Vec<i16>>, rate: u32, looped: bool) -> Option<u64> {
         #[cfg(feature = "audio")]
-        if let Some(output) = &self.output {
-            output.play_samples(samples, rate, 1.0, looped);
-        }
+        return self.output.as_ref().map(|output| output.play_samples(samples, rate, 1.0, looped));
         #[cfg(not(feature = "audio"))]
-        let _ = (samples, rate, looped);
+        {
+            let _ = (samples, rate, looped);
+            None
+        }
     }
 
-    /// Stops what `play_samples` began with these samples.
-    pub fn stop_samples(&self, samples: &std::sync::Arc<Vec<i16>>) {
+    /// A sound still playing (or paused): its volume, place in ms, pitch and whether it is paused.
+    pub fn sound(&self, id: u64) -> Option<(f32, f64, f64, bool)> {
+        #[cfg(feature = "audio")]
+        return self.output.as_ref()?.sounds.lock().unwrap().iter().find(|voice| voice.id == id).map(|voice| (voice.volume, voice.ms(), voice.pitch, voice.paused));
+        #[cfg(not(feature = "audio"))]
+        {
+            let _ = id;
+            None
+        }
+    }
+
+    /// Changes a sound: what is given of its volume, pausing, place (ms) and pitch.
+    pub fn tune_sound(&self, id: u64, volume: Option<f32>, paused: Option<bool>, ms: Option<f64>, pitch: Option<f64>) {
         #[cfg(feature = "audio")]
         if let Some(output) = &self.output {
-            output.sounds.lock().unwrap().retain(|voice| !std::sync::Arc::ptr_eq(voice.samples(), samples));
+            if let Some(voice) = output.sounds.lock().unwrap().iter_mut().find(|voice| voice.id == id) {
+                voice.volume = volume.unwrap_or(voice.volume);
+                voice.paused = paused.unwrap_or(voice.paused);
+                voice.pitch = pitch.unwrap_or(voice.pitch).max(0.0);
+                if let Some(ms) = ms {
+                    voice.set_ms(ms);
+                }
+            }
         }
         #[cfg(not(feature = "audio"))]
-        let _ = samples;
+        let _ = (id, volume, paused, ms, pitch);
+    }
+
+    pub fn stop_sound(&self, id: u64) {
+        #[cfg(feature = "audio")]
+        if let Some(output) = &self.output {
+            output.sounds.lock().unwrap().retain(|voice| voice.id != id);
+        }
+        #[cfg(not(feature = "audio"))]
+        let _ = id;
     }
 
     /// How loud the music playing on top of the song (the looped sounds) is from now on.
@@ -228,13 +258,20 @@ mod output {
 
     /// A sound playing on top of the song.
     pub struct Voice {
+        pub(super) id: u64,
         samples: Arc<Vec<i16>>,
-        /// Source frames per output frame.
+        /// Its frames a second, and its own frames per output frame (at pitch 1).
+        rate: f64,
         step: f64,
-        cursor: f64,
+        pub(super) cursor: f64,
         pub(super) volume: f32,
         pub(super) looped: bool,
+        pub(super) paused: bool,
+        pub(super) pitch: f64,
     }
+
+    /// The number the next sound is known by.
+    static NEXT_ID: AtomicU64 = AtomicU64::new(1);
 
     pub struct Output {
         _stream: cpal::Stream,
@@ -314,8 +351,12 @@ mod output {
     }
 
     impl Voice {
-        pub fn samples(&self) -> &Arc<Vec<i16>> {
-            &self.samples
+        pub(super) fn ms(&self) -> f64 {
+            self.cursor / self.rate * 1000.0
+        }
+
+        pub(super) fn set_ms(&mut self, ms: f64) {
+            self.cursor = (ms / 1000.0 * self.rate).max(0.0);
         }
     }
 
@@ -382,8 +423,8 @@ mod output {
                         }
                     }
                     let mut sounds = for_sounds.lock().unwrap();
-                    for voice in sounds.iter_mut() {
-                        let (frames, volume) = (voice.samples.len() / 2, voice.volume / 32768.0);
+                    for voice in sounds.iter_mut().filter(|voice| !voice.paused) {
+                        let (frames, volume, step) = (voice.samples.len() / 2, voice.volume / 32768.0, voice.step * voice.pitch);
                         for frame in data.chunks_mut(channels) {
                             if voice.looped && frames > 0 {
                                 voice.cursor %= frames as f64;
@@ -392,7 +433,7 @@ mod output {
                             for (channel, out) in frame.iter_mut().take(2).enumerate() {
                                 *out += voice.samples.get(index * 2 + channel).map_or(0.0, |&sample| sample as f32 * volume);
                             }
-                            voice.cursor += voice.step;
+                            voice.cursor += step;
                         }
                     }
                     sounds.retain(|voice| voice.looped || (voice.cursor as usize) < voice.samples.len() / 2);
@@ -412,15 +453,21 @@ mod output {
             self.shared.playing.store(true, Ordering::Relaxed);
         }
 
-        pub fn play_sound(&self, path: &Path, volume: f32, looped: bool) {
+        pub fn play_sound(&self, path: &Path, volume: f32, looped: bool) -> Option<u64> {
             match decoded(path, false) {
-                Ok((samples, rate)) => self.play_samples(samples, rate, volume, looped),
-                Err(error) => eprintln!("Sound: {error}"),
+                Ok((samples, rate)) => Some(self.play_samples(samples, rate, volume, looped)),
+                Err(error) => {
+                    eprintln!("Sound: {error}");
+                    None
+                }
             }
         }
 
-        pub fn play_samples(&self, samples: Arc<Vec<i16>>, rate: u32, volume: f32, looped: bool) {
-            self.sounds.lock().unwrap().push(Voice { samples, step: rate as f64 / self.device_rate, cursor: 0.0, volume, looped });
+        pub fn play_samples(&self, samples: Arc<Vec<i16>>, rate: u32, volume: f32, looped: bool) -> u64 {
+            let id = NEXT_ID.fetch_add(1, Ordering::Relaxed);
+            let (rate, step) = (rate as f64, rate as f64 / self.device_rate);
+            self.sounds.lock().unwrap().push(Voice { id, samples, rate, step, cursor: 0.0, volume, looped, paused: false, pitch: 1.0 });
+            id
         }
 
         /// Stops the sound; `heard_ms` is what the position stays at until it plays again.

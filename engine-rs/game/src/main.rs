@@ -25,6 +25,7 @@ mod settings;
 mod speech;
 mod video;
 
+use std::collections::HashMap;
 use funkin_core::content::{songs as find_songs, weeks as find_weeks, Paths, SongEntry};
 use funkin_core::achievements::{earned, Run, ROADKILL};
 use funkin_core::save::Save;
@@ -271,13 +272,18 @@ struct Playing {
     /// script stopped the end of the song.
     lua: lua::Scripts,
     /// The type names of notes whose kind a script changed (hitCausesMiss, noAnimation...), which callbacks still pass.
-    renamed: std::collections::HashMap<usize, String>,
+    renamed: HashMap<usize, String>,
     /// What scripts faded or hid (LOOKS), by name.
-    looks: std::collections::HashMap<&'static str, f32>,
+    looks: HashMap<&'static str, f32>,
     /// The strums, where the game or the scripts put them.
     strums: [[Strum; 4]; 2],
     /// A flash a script asked for: the camera it covers, its colour, when it began and how long it fades.
     flash: Option<(lua::Cam, Color, f64, f64, bool)>,
+    /// The sounds scripts named, and the fades of their volumes (tag, "" the music; from, to, since, seconds).
+    sounds: HashMap<String, u64>,
+    fades: Vec<(String, f32, f32, f64, f64)>,
+    /// How loud a script left the music (the instrumental).
+    music_volume: f32,
     /// The colours scripts gave the health bar and the time bar (left, right).
     bar_colors: [[Option<Color>; 2]; 2],
     lua_step: i64,
@@ -411,7 +417,7 @@ impl Playing {
         };
         let video = opening.and_then(|name| paths.video(name)).and_then(|path| video::Video::open(&path, true, true, false, false).map_err(|error| eprintln!("{error}")).ok());
         let end_video = closing.and_then(|name| paths.video(name));
-        Ok(Playing { video, end_video, speech: None, countdown_asked: false, countdown_held: false, entry: entry.clone(), play, song, player_voice, own_skin: None, music_fade: None, lua, looks: Default::default(), renamed: Default::default(), strums: strums(settings), flash: None, bar_colors: Default::default(), lua_step: i64::MIN, lua_section: usize::MAX, lua_created: false, end_asked: false, end_held: false, base: base.to_path_buf(), staged, bowing: false, tune: false, paused_at: 0.0, pause_scroll: 0.0, deaths: 0, scene, waited: 0.0, clock: Default::default(), ticked: std::time::Instant::now(), started: false, paused: None, choosing: None, difficulties, story, taunt_until: None, start_at, position: -lead_in, settings: settings.clone(), held_keys: Vec::new(), flash_until: [[f64::MIN; 4]; 2], judgement: None, last_hit: f64::MIN, lanes_used: [false; 4], idled: false, idle_for: 0.0, sang_for: 0.0,
+        Ok(Playing { video, end_video, speech: None, countdown_asked: false, countdown_held: false, entry: entry.clone(), play, song, player_voice, own_skin: None, music_fade: None, lua, looks: Default::default(), renamed: Default::default(), strums: strums(settings), flash: None, sounds: HashMap::new(), fades: Vec::new(), music_volume: 1.0, bar_colors: Default::default(), lua_step: i64::MIN, lua_section: usize::MAX, lua_created: false, end_asked: false, end_held: false, base: base.to_path_buf(), staged, bowing: false, tune: false, paused_at: 0.0, pause_scroll: 0.0, deaths: 0, scene, waited: 0.0, clock: Default::default(), ticked: std::time::Instant::now(), started: false, paused: None, choosing: None, difficulties, story, taunt_until: None, start_at, position: -lead_in, settings: settings.clone(), held_keys: Vec::new(), flash_until: [[f64::MIN; 4]; 2], judgement: None, last_hit: f64::MIN, lanes_used: [false; 4], idled: false, idle_for: 0.0, sang_for: 0.0,
             paths, cutscene, lead_in, counted: i64::MIN, popups: Vec::new(), splashes: Vec::new(), dead: None, next_event: 0, speed, speed_change: None }.with(settings))
     }
 
@@ -538,6 +544,7 @@ impl Playing {
         if !self.lua.is_empty() {
             let dt = get_frame_time().min(0.1);
             self.tell_lua();
+            self.fade_sounds();
             if !std::mem::replace(&mut self.lua_created, true) {
                 self.lua.call("onCreate", ());
                 self.lua.call("onCreatePost", ());
@@ -891,6 +898,73 @@ impl Playing {
         }
     }
 
+    /// What a script does to a sound it named ("": the song's music, whose volume and fades alone are taken).
+    fn sound_op(&mut self, tag: &str, op: lua::SoundOp) {
+        use lua::SoundOp::*;
+        if let Fade { from, to, seconds } = op {
+            let from = from.unwrap_or_else(|| if tag.is_empty() { self.music_volume } else { self.sounds.get(tag).and_then(|id| self.song.sound(*id)).map_or(1.0, |sound| sound.0) });
+            self.fades.retain(|fade| fade.0 != tag);
+            self.fades.push((tag.to_owned(), from, to, get_time(), seconds));
+            return self.fade_sounds();
+        }
+        if op == FadeCancel || op == Stop {
+            self.fades.retain(|fade| fade.0 != tag);
+        }
+        if tag.is_empty() {
+            // shortcut: stopping, pausing, winding or retuning the song's music from a script is not done; the song keeps time by it
+            if let Volume(volume) = op {
+                self.music_volume = volume;
+                self.song.set_volume(0, volume);
+            }
+            return;
+        }
+        let Some(&id) = self.sounds.get(tag) else { return };
+        match op {
+            Stop => {
+                self.song.stop_sound(id);
+                self.sounds.remove(tag);
+            }
+            Pause => self.song.tune_sound(id, None, Some(true), None, None),
+            Resume => self.song.tune_sound(id, None, Some(false), None, None),
+            Volume(volume) => self.song.tune_sound(id, Some(volume), None, None, None),
+            Time(ms) => self.song.tune_sound(id, None, None, Some(ms), None),
+            Pitch(pitch) => self.song.tune_sound(id, None, None, None, Some(pitch)),
+            Fade { .. } | FadeCancel => {}
+        }
+    }
+
+    /// The fades of the scripts' sounds go on; sounds that ended are let go of (onSoundFinished), and the scripts are told
+    /// where the rest are.
+    fn fade_sounds(&mut self) {
+        let now = get_time();
+        for (tag, from, to, since, seconds) in &self.fades {
+            let volume = from + (to - from) * ((now - since) / seconds.max(0.001)).clamp(0.0, 1.0) as f32;
+            if tag.is_empty() {
+                self.music_volume = volume;
+                self.song.set_volume(0, volume);
+            } else if let Some(&id) = self.sounds.get(tag) {
+                self.song.tune_sound(id, Some(volume), None, None, None);
+            }
+        }
+        self.fades.retain(|(_, _, _, since, seconds)| now - since < *seconds);
+        let mut ended = Vec::new();
+        {
+            let heard = &mut self.lua.shared.borrow_mut().sounds;
+            heard.clear();
+            for (tag, id) in &self.sounds {
+                match self.song.sound(*id) {
+                    Some((volume, ms, pitch, _)) => drop(heard.insert(tag.clone(), (volume, ms, pitch))),
+                    None => ended.push(tag.clone()),
+                }
+            }
+            heard.insert(String::new(), (self.music_volume, self.position, self.settings.playback_rate));
+        }
+        for tag in ended {
+            self.sounds.remove(&tag);
+            self.lua.call("onSoundFinished", tag);
+        }
+    }
+
     /// A chart event (or one a script triggered) takes place; scripts hear of it (onEvent).
     fn run_event(&mut self, event: &funkin_core::chart::ChartEvent) {
         let number = |value: &str| value.trim().parse::<f32>().ok();
@@ -996,7 +1070,16 @@ impl Playing {
     fn apply_lua(&mut self) -> Option<Flow> {
         for request in self.lua.requests() {
             match request {
-                lua::Request::Sound { name, volume } => self.sound(&name, volume, false),
+                lua::Request::Sound { name, volume, tag, looped } => {
+                    let played = self.paths.find(&format!("sounds/{name}.ogg")).and_then(|path| self.song.play_sound(&path, volume, looped));
+                    if let Some(tag) = tag {
+                        if let Some(old) = self.sounds.remove(&tag) {
+                            self.song.stop_sound(old);
+                        }
+                        self.sounds.extend(played.map(|id| (tag, id)));
+                    }
+                }
+                lua::Request::SoundOp { tag, op } => self.sound_op(&tag, op),
                 lua::Request::Music { name, volume, looped } => self.sound(&name, volume, looped),
                 lua::Request::Event { name, value1, value2 } => self.run_event(&funkin_core::chart::ChartEvent { time: self.position, name, value1, value2 }),
                 lua::Request::SetHealth(health) => self.play.health = health.clamp(0.0, 2.0),
