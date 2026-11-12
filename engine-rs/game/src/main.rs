@@ -90,8 +90,9 @@ struct Skin {
     /// Pictures for ready, set, go.
     countdown: Vec<Texture2D>,
     splashes: Option<atlas::Sheet>,
-    /// The splash animation of each lane, as the splash skin names it.
+    /// The splash animation of each lane, as the splash skin names it; how its file has them coloured.
     splash_names: [String; 4],
+    splash_rgb: Option<[Option<Vec3>; 3]>,
     /// How much the note pictures are enlarged, and how wide a hold's body and how long its end cap are drawn.
     note_scale: f32,
     hold: Vec2,
@@ -174,7 +175,8 @@ impl Skin {
             let own = named["animations"].as_object().into_iter().flatten().find(|(_, animation)| animation["noteData"] == lane).and_then(|(_, animation)| animation["prefix"].as_str());
             own.map_or(format!("note splash {} 1", NOTE_NAMES[lane]), str::to_owned)
         });
-        Ok(Skin { sheet, frames, lanes: Default::default(), font, ratings: Skin::pictures(&images, &["sick", "good", "bad", "shit"], false), digits, countdown: Skin::pictures(&images, &["ready", "set", "go"], false), splashes, splash_names,
+        let splash_rgb = splash_editor::splash_rgb(&named);
+        Ok(Skin { sheet, frames, lanes: Default::default(), font, ratings: Skin::pictures(&images, &["sick", "good", "bad", "shit"], false), digits, countdown: Skin::pictures(&images, &["ready", "set", "go"], false), splashes, splash_names, splash_rgb,
             note_scale: NOTE_SCALE, hold: vec2(50.0, 64.0) * NOTE_SCALE, popup_scales: [0.7, 0.5, 1.0], plain: own.is_some_and(|(_, chart)| chart.no_rgb) })
     }
 
@@ -220,7 +222,7 @@ impl Skin {
         let digits = Skin::pictures(&dir, &["num0-pixel", "num1-pixel", "num2-pixel", "num3-pixel", "num4-pixel", "num5-pixel", "num6-pixel", "num7-pixel", "num8-pixel", "num9-pixel"], true);
         let splashes = atlas::Sheet::load(&Skin::splash_file(base, own.filter(|(_, chart)| !chart.splash_skin.is_empty()).map(|(paths, chart)| (paths, chart.splash_skin.as_str())), 0)).ok();
         Ok(Skin { sheet, frames, lanes: Default::default(), font, ratings: Skin::pictures(&dir, &["sick-pixel", "good-pixel", "bad-pixel", "shit-pixel"], true), digits,
-            countdown: Skin::pictures(&dir, &["ready-pixel", "set-pixel", "date-pixel"], true), splashes, splash_names: NOTE_NAMES.map(|name| format!("note splash {name} 1")), plain: own.is_some_and(|(_, chart)| chart.no_rgb), note_scale: PIXEL_ZOOM, hold: end * PIXEL_ZOOM, popup_scales: [PIXEL_ZOOM * 0.85, PIXEL_ZOOM, PIXEL_ZOOM] })
+            countdown: Skin::pictures(&dir, &["ready-pixel", "set-pixel", "date-pixel"], true), splashes, splash_names: NOTE_NAMES.map(|name| format!("note splash {name} 1")), splash_rgb: Some([None; 3]), plain: own.is_some_and(|(_, chart)| chart.no_rgb), note_scale: PIXEL_ZOOM, hold: end * PIXEL_ZOOM, popup_scales: [PIXEL_ZOOM * 0.85, PIXEL_ZOOM, PIXEL_ZOOM] })
     }
 
     /// Draws a sheet frame centred on (x, y), stretched to `size` if given. `lane` recolours it.
@@ -1459,7 +1461,7 @@ impl Playing {
             for &(lane, at) in &self.splashes {
                 let frames = sheet.animation(&skin.splash_names[lane], &[]);
                 if let Some(&frame) = frames.get(((position - at) * 0.024) as usize) {
-                    recolor(skin.colors(lane));
+                    recolor(skin.colors(lane).and_then(|note| splash_editor::splash_colors(&skin.splash_rgb, note)));
                     // pixel stages show them as coarse as everything else there
                     coarse(if self.pixel() { PIXEL_ZOOM } else { 0.0 });
                     let at = middle(&self.strums[1][lane]);

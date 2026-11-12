@@ -17,6 +17,8 @@ pub enum Go {
 }
 
 pub struct SplashEditor {
+    /// The Shader box: which of the three colours is shown (0 red: the body, 1 green: the shine, 2 blue: the outline).
+    replacing: usize,
     base: PathBuf,
     folder: String,
     /// The skins there are (their file names), the one edited, what its file holds, its sheet.
@@ -52,6 +54,7 @@ impl SplashEditor {
         names.dedup();
         let first = names.iter().find(|name| *name == "noteSplashes").or(names.first()).cloned().unwrap_or_else(|| "noteSplashes".to_owned());
         let mut editor = SplashEditor {
+            replacing: 0,
             base: base.to_path_buf(), folder: folder.to_owned(), names, name: String::new(), json: Value::Null, sheet: None, chosen: String::new(),
             form: Default::default(), playing: None, copied: [0.0; 2], ui: Ui::default(), unsaved: false, leaving: false, said: None,
         };
@@ -112,6 +115,7 @@ impl SplashEditor {
         let typing = self.ui.typing();
         self.ui.begin();
         self.panel();
+        self.shader_box();
         if typing {
             return Go::Stay;
         }
@@ -250,6 +254,44 @@ impl SplashEditor {
         self.choose(&first);
     }
 
+    /// The Haxe editor's Shader box: for each of the splash's three colours, the one put in place of the note's (written
+    /// to the file's "rgb"), or "Do not replace".
+    fn shader_box(&mut self) {
+        let area = Rect::new(WIDTH - 200.0, 40.0, 180.0, 170.0);
+        self.ui.tabs(area, &["Shader"], 0);
+        let (x, y) = (area.x + 10.0, area.y + 8.0);
+        let names = ["Red", "Green", "Blue"].map(str::to_owned);
+        self.ui.label(x, y, "Color to Replace:");
+        if let Some(picked) = self.ui.dropdown("splash replacing", x, y + 18.0, 100.0, &names, self.replacing) {
+            self.replacing = picked;
+        }
+        let part = self.replacing;
+        let own = self.json["rgb"][part].clone();
+        // what is shown while it is not replaced: the purple note's colour of that part
+        let usual = crate::settings::LANE_COLORS[0][part];
+        let channels = [("r", usual >> 16 & 255), ("g", usual >> 8 & 255), ("b", usual & 255)].map(|(key, usual)| own[key].as_f64().unwrap_or(usual as f64));
+        let mut changed = None;
+        if let Some(keep) = self.ui.check(x, y + 46.0, "Do not replace", !own.is_object()) {
+            changed = Some((!keep).then_some(channels));
+        }
+        for (row, words) in ["Red:", "Green:", "Blue:"].into_iter().enumerate() {
+            let top = y + 72.0 + 24.0 * row as f32;
+            self.ui.label(x, top + 2.0, words);
+            if let Some(value) = self.ui.stepper(["splash red", "splash green", "splash blue"][row], x + 60.0, top, 40.0, channels[row], 1.0, 0.0, 255.0).filter(|_| own.is_object()) {
+                let mut channels = channels;
+                channels[row] = value.round();
+                changed = Some(Some(channels));
+            }
+        }
+        if let Some(colour) = changed {
+            let mut rgb: Vec<Value> = (0..3).map(|other| self.json["rgb"][other].clone()).map(|entry| if entry.is_object() { entry } else { Value::Null }).collect();
+            rgb[part] = colour.map_or(Value::Null, |[r, g, b]| json!({"r": r as i64, "g": g as i64, "b": b as i64}));
+            // none replaced: no "rgb" at all, as the Haxe editor writes it
+            self.json["rgb"] = if rgb.iter().all(Value::is_null) { Value::Null } else { Value::Array(rgb) };
+            self.changed();
+        }
+    }
+
     fn add_animation(&mut self) {
         let (name, prefix, indices, data, from, to) = self.form.clone();
         if name.trim().is_empty() {
@@ -296,7 +338,10 @@ impl SplashEditor {
                 const NOTE: f32 = 160.0 * 0.7;
                 let corner = strum_at(*lane) - vec2(NOTE, NOTE) / 2.0;
                 let at = corner - vec2(NOTE * 0.95, NOTE) - (vec2(10.0, 10.0) + offset) + frame.size * (1.0 - scale) / 2.0;
+                let usual = crate::settings::LANE_COLORS[*lane].map(|color| vec3((color >> 16 & 255) as f32, (color >> 8 & 255) as f32, (color & 255) as f32) / 255.0);
+                recolor(splash_colors(&splash_rgb(&self.json), usual));
                 sheet.draw(*frame, at.x, at.y, scale, false, WHITE);
+                recolor(None);
             }
         }
         let offsets = self.offsets();
@@ -318,6 +363,24 @@ impl SplashEditor {
         }
         self.ui.draw(skin.font.as_ref());
     }
+}
+
+/// How a splash skin's file has its splashes coloured: None when they keep the colours they were painted in (allowRGB
+/// off), else for each of the three colours (body, shine, outline) the one it puts in place of the note's, if any.
+pub(crate) fn splash_rgb(config: &Value) -> Option<[Option<Vec3>; 3]> {
+    if config["allowRGB"] == false {
+        return None;
+    }
+    Some([0, 1, 2].map(|part| {
+        let rgb = &config["rgb"][part];
+        let channel = |key: &str| rgb[key].as_f64().unwrap_or(0.0).clamp(0.0, 255.0) as f32 / 255.0;
+        rgb.is_object().then(|| vec3(channel("r"), channel("g"), channel("b")))
+    }))
+}
+
+/// A lane's three note colours as a splash shows them (`splash_rgb`'s).
+pub(crate) fn splash_colors(rgb: &Option<[Option<Vec3>; 3]>, note: [Vec3; 3]) -> Option<[Vec3; 3]> {
+    rgb.map(|own| [0, 1, 2].map(|part| own[part].unwrap_or(note[part])))
 }
 
 /// A splash config with no animations (NoteSplash.createConfig).
@@ -359,6 +422,15 @@ fn from_txt(text: &str) -> Value {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn splash_colours_replace_the_notes_only_where_the_file_says() {
+        let note = [Vec3::X, Vec3::Y, Vec3::Z];
+        assert_eq!(splash_colors(&splash_rgb(&blank()), note), Some(note));
+        assert_eq!(splash_colors(&splash_rgb(&json!({"allowRGB": false})), note), None);
+        let own = splash_rgb(&json!({"rgb": [null, {"r": 255, "g": 0, "b": 51}]}));
+        assert_eq!(splash_colors(&own, note), Some([Vec3::X, vec3(1.0, 0.0, 0.2), Vec3::Z]));
+    }
 
     #[test]
     fn old_txt_configs_become_an_animation_per_lane_and_offset() {

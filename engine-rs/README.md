@@ -262,7 +262,8 @@ Done:
   played over four strums where Psych's splashes go (Space, or a click on a strum): name, prefix, note data, indices,
   frame rate range (add/update, remove); scale, allow RGB, allow pixel; the arrow keys move an animation's offset
   (Shift: ten times), Ctrl+C/V/R copy, paste and reset it; the folder's skins to load; Template starts it empty,
-  Convert TXT turns the skin's old `.txt` config into the JSON one; saved over its file (the one before kept as `.bak`).
+  Convert TXT turns the skin's old `.txt` config into the JSON one; the Shader box sets the colours put in place of
+  the note's (its "rgb", which the game's splashes follow, and Allow RGB off keeps their own); saved over its file (the one before kept as `.bak`).
 - **Gamepads** (Windows): any gamepad plays and goes through the menus with Psych's buttons (D-pad and
   A/B/X/Y for the lanes; D-pad or left stick, A or Start, B, Start, Back for the menus); Lua's gamepad functions. The key binds page shows and binds
   them after Ctrl (or a shoulder button), as Psych's: the lanes and the menus' actions, kept in the settings.
@@ -279,5 +280,5 @@ Not there yet:
   engine's own classes, so mods that use it cannot run here as they are. Custom shaders.
 - **Editors**: the chart editor's File/Edit/View menus, the vortex editor's strums lighting up, pasted notes following the mouse before they are put down;
   the system clipboard off Windows (the game keeps its own there); the
-  note splash editor's Shader tab; the stage editor's image file picker.
+  the stage editor's image file picker.
 - **Other**: gamepads on Linux and macOS (gilrs needs libudev there).
