@@ -137,6 +137,10 @@ pub struct ChartEditor {
     /// Which tracks the voices are (None: the song has no such file).
     voice_tracks: [Option<usize>; 2],
     sounds: [Option<PathBuf>; 2],
+    /// Autosaves (the Haxe editor's backups/<chart>_<date>.bkp): the game's folder, when the last was made and what it
+    /// held (none is made when nothing changed since).
+    base: PathBuf,
+    autosaved: (std::time::Instant, String),
 }
 
 impl ChartEditor {
@@ -198,7 +202,9 @@ impl ChartEditor {
             rate: 1.0, wheel_snaps: true, hitsounds: [0.0; 3], volumes: [0.6, 1.0, 1.0], muted: [false; 3], heard: 0.0, voice_tracks,
             sounds: [paths.find("sounds/hitsound.ogg"), paths.find("sounds/Metronome_Tick.ogg")],
             ui: Ui::default(), tab: 4, note_types, note_type: 0, events, abouts, event: 0, values: Default::default(), copied: None,
+            base: base.to_path_buf(), autosaved: (std::time::Instant::now(), String::new()),
         };
+        editor.autosaved.1 = editor.text();
         editor.measure();
         editor.set_volumes();
         Ok(editor)
@@ -284,6 +290,9 @@ impl ChartEditor {
         self.ui.begin();
         self.panel();
         let dt = get_frame_time().min(0.1) as f64;
+        if self.autosaved.0.elapsed().as_secs() >= AUTOSAVE_SECONDS {
+            self.autosave();
+        }
         let (ctrl, shift) = (held(KeyCode::LeftControl) || held(KeyCode::RightControl), held(KeyCode::LeftShift) || held(KeyCode::RightShift));
         let current = self.section_at(self.position);
         let span = self.spans.get(current).copied().unwrap_or(Span { start: 0.0, beats: 4.0, bpm: 100.0, rows_before: 0.0 });
@@ -652,6 +661,70 @@ impl ChartEditor {
         self.say(done.unwrap_or_else(|error| error));
     }
 
+    fn backups(&self) -> PathBuf {
+        self.base.join("backups")
+    }
+
+    /// The chart's file name without its ending, which its autosaves start with.
+    fn chart_name(&self) -> String {
+        self.entry.chart.file_stem().map_or("unknown".to_owned(), |stem| stem.to_string_lossy().into_owned())
+    }
+
+    /// The chart into backups/, with the file it is of; the oldest autosaves past the tenth taken off.
+    fn autosave(&mut self) {
+        let text = self.text();
+        self.autosaved.0 = std::time::Instant::now();
+        if text == self.autosaved.1 {
+            return;
+        }
+        let [year, month, day, _, hour, minute, second] = crate::menu::local_time();
+        let name = format!("{}_{year}-{month:02}-{day:02}_{hour:02}-{minute:02}-{second:02}.bkp", self.chart_name());
+        let mut copy = self.json.clone();
+        copy["__original_path"] = json!(self.entry.chart.to_string_lossy());
+        let folder = self.backups();
+        let done = std::fs::create_dir_all(&folder).and_then(|_| funkin_core::files::write(&folder.join(&name), &print(&copy, 0)));
+        match done {
+            Ok(()) => {
+                self.autosaved.1 = text;
+                let names: Vec<String> = std::fs::read_dir(&folder).into_iter().flatten().flatten().map(|file| file.file_name().to_string_lossy().into_owned()).collect();
+                for old in past_limit(&names, BACKUP_LIMIT) {
+                    let _ = std::fs::remove_file(folder.join(old));
+                }
+                self.say(format!("Autosaved {name}"));
+            }
+            Err(error) => self.say(format!("Could not autosave: {error}")),
+        }
+    }
+
+    /// The chart's autosaves, the newest first.
+    fn autosaves(&self) -> Vec<String> {
+        let start = format!("{}_", self.chart_name());
+        let mut names: Vec<String> = std::fs::read_dir(self.backups()).into_iter().flatten().flatten().map(|file| file.file_name().to_string_lossy().into_owned())
+            .filter(|name| name.starts_with(&start) && name.ends_with(".bkp")).collect();
+        names.sort_by(|a, b| b.cmp(a));
+        names
+    }
+
+    /// An autosave of this chart in its place (a step to undo).
+    fn load_autosave(&mut self, name: &str) {
+        let read = std::fs::read_to_string(self.backups().join(name)).ok().and_then(|text| serde_json::from_str::<Value>(&text).ok());
+        let Some(mut json) = read.filter(|json| json["__original_path"].is_string()) else {
+            return self.say("Error: File loaded is not a valid Psych Engine autosave.");
+        };
+        // (another song's chart may have the same file name: it is not put over this one)
+        if json["__original_path"].as_str().map(Path::new) != Some(self.entry.chart.as_path()) {
+            return self.say(format!("{name} is an autosave of {}", json["__original_path"].as_str().unwrap_or_default()));
+        }
+        json.as_object_mut().map(|fields| fields.remove("__original_path"));
+        convert(&mut json);
+        fill_sections(&mut json, self.length);
+        self.remember();
+        self.json = json;
+        self.selected.clear();
+        self.measure();
+        self.say(format!("Opened autosave \"{name}\" successfully!"));
+    }
+
     pub fn draw(&self, skin: &Skin) {
         clear_background(Color::from_hex(0x303030));
         set_camera(&Camera2D { target: vec2(WIDTH / 2.0, HEIGHT / 2.0), zoom: vec2(2.0 / WIDTH, 2.0 / HEIGHT), ..Default::default() });
@@ -873,6 +946,13 @@ impl ChartEditor {
                 self.set(field, json!(value));
             }
         }
+        let autosaves = self.autosaves();
+        // (shown as "11-12 02:41:20", the year left out to fit)
+        let dates: Vec<String> = autosaves.iter().map(|name| name.get(self.chart_name().len() + 6..name.len() - 4).unwrap_or(name).replacen('_', " ", 1).replace('-', ":").replacen(':', "-", 1)).collect();
+        self.ui.label(x + 130.0, y + 184.0, "Load Autosave:");
+        if let Some(index) = self.ui.dropdown("autosaves", x + 130.0, y + 200.0, 150.0, &dates, usize::MAX) {
+            if self.ui.sure("autosaves", index, self.unsaved) { self.load_autosave(&autosaves[index]) } else { self.say(crate::ui::UNSAVED) }
+        }
         if self.ui.button(x, y + 200.0, 120.0, "Save (Ctrl+S)") {
             self.save();
         }
@@ -1060,6 +1140,21 @@ impl ChartEditor {
     }
 }
 
+/// The Haxe editor's autosave defaults: every two minutes, the ten newest kept.
+const AUTOSAVE_SECONDS: u64 = 120;
+const BACKUP_LIMIT: usize = 10;
+
+/// The autosaves (`<chart>_<date>_<time>.bkp`) past the `limit` newest, by the date in their names; files named
+/// otherwise are left alone.
+fn past_limit(names: &[String], limit: usize) -> Vec<&String> {
+    let mut dated: Vec<(&str, &String)> = names.iter().filter(|name| name.ends_with(".bkp"))
+        .filter_map(|name| { let mut parts = name.rsplitn(3, '_'); let (time, date) = (parts.next()?, parts.next()?); parts.next()?; Some((&name[name.len() - time.len() - date.len() - 1..], name)) })
+        .collect();
+    dated.sort();
+    dated.truncate(dated.len().saturating_sub(limit));
+    dated.into_iter().map(|(_, name)| name).collect()
+}
+
 /// A value of an event as text (they are mostly text, sometimes numbers).
 fn plain(value: &Value) -> String {
     value.as_str().map_or_else(|| if value.is_null() { String::new() } else { value.to_string() }, str::to_owned)
@@ -1170,6 +1265,13 @@ pub(crate) fn print(value: &Value, depth: usize) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn the_oldest_autosaves_past_the_limit_go() {
+        let names: Vec<String> = ["b-hard_2026-01-02_00-00-00.bkp", "a_2026-01-01_10-00-00.bkp", "a_2026-01-03_00-00-00.bkp", "notes.txt", "plain.bkp"].map(str::to_owned).to_vec();
+        assert_eq!(past_limit(&names, 2), vec![&names[1]]);
+        assert!(past_limit(&names, 10).is_empty());
+    }
 
     #[test]
     fn a_click_finds_the_note_drawn_under_it() {

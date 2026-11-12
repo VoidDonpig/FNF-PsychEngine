@@ -197,7 +197,8 @@ Done:
   the characters and stage, typed; save), Section (must hit, GF, alt animation, change BPM, beats; copy, paste, clear,
   swap), Note (the picked note's hold and time, the note type for it and new notes, the mods' types too) and Events
   (the event, its description and values for the picked event and new ones, the mods' events too; the entries of
-  one moment: before, after, taken off, added). Undo covers all of it.
+  one moment: before, after, taken off, added). Undo covers all of it. Every two minutes a changed chart is autosaved
+  to `backups/<chart>_<date>.bkp` (the ten newest kept); the Song tab's Load Autosave brings one of this chart's back.
 - **Character editor**: 8 (Debug Key #2) during a song opens it on the song's opponent (Escape goes back to the song),
   and the editors' list has it too (on bf, in the mod folder chosen). As the Haxe editor: the character on week 1's
   stage beside the silhouettes of where the opponent and the player stand, the cross where the camera looks at it;
@@ -248,7 +249,7 @@ Not there yet:
 - **Scripts**: the rest of Lua's functions (notes' own textures and health, shaders, groups, and getProperty/setProperty
   beyond the camera, health, score, the characters' place and the scripts' sprites); custom events and note types run by scripts. HScript is Haxe code run against the Haxe
   engine's own classes, so mods that use it cannot run here as they are. Custom shaders.
-- **Editors**: the chart editor's File/Edit/View menus and its Data tab, the waveform, the vortex editor, lists to choose characters and stages from, pasted notes following the mouse before they are put down, autosave, a song
+- **Editors**: the chart editor's File/Edit/View menus and its Data tab, the waveform, the vortex editor, lists to choose characters and stages from, pasted notes following the mouse before they are put down, the autosave's time and count settings, a song
   chosen to chart from the editors' list;
   the character editor's Load Template, ghost highlight and icon colour; the week editor's freeplay view; the portrait editor's camera; the
   note splash editor's Shader tab, Template and Convert TXT; the stage editor.

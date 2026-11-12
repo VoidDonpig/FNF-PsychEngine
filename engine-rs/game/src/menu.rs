@@ -515,6 +515,12 @@ fn grid_step(selected: usize, count: usize, dx: i32, dy: i32) -> usize {
 
 /// Whether it is Friday evening by the player's own clock.
 fn friday_night() -> bool {
+    let now = local_time();
+    now[3] == 5 && now[4] >= 18
+}
+
+/// The player's own clock: year, month (1-12), day, weekday (0 Sunday), hour, minute, second.
+pub(crate) fn local_time() -> [i32; 7] {
     #[cfg(windows)]
     {
         #[repr(C)]
@@ -525,7 +531,7 @@ fn friday_night() -> bool {
         let mut now = SystemTime::default();
         // SAFETY: GetLocalTime fills the struct it is given and cannot fail.
         unsafe { GetLocalTime(&mut now) };
-        now.day_of_week == 5 && now.hour >= 18
+        [now.year, now.month, now.day, now.day_of_week, now.hour, now.minute, now.second].map(i32::from)
     }
     #[cfg(not(windows))]
     {
@@ -537,7 +543,7 @@ fn friday_night() -> bool {
         let mut now = Tm { sec: 0, min: 0, hour: 0, mday: 0, mon: 0, year: 0, wday: 0, yday: 0, isdst: 0, rest: [0; 4] };
         // SAFETY: both pointers are to live values of the sizes localtime_r reads and writes.
         unsafe { localtime_r(&seconds, &mut now) };
-        now.wday == 5 && now.hour >= 18
+        [now.year + 1900, now.mon + 1, now.mday, now.wday, now.hour, now.min, now.sec]
     }
 }
 
