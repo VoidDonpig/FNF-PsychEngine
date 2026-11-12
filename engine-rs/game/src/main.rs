@@ -260,12 +260,15 @@ struct Playing {
     /// The song's Lua scripts; the step and section they were last told of; whether onEndSong was asked, and whether a
     /// script stopped the end of the song.
     lua: lua::Scripts,
+    /// The type names of notes whose kind a script changed (hitCausesMiss, noAnimation...), which callbacks still pass.
+    renamed: std::collections::HashMap<usize, String>,
     /// The strums, where the game or the scripts put them.
     strums: [[Strum; 4]; 2],
     /// A flash a script asked for: the camera it covers, its colour, when it began and how long it fades.
     flash: Option<(lua::Cam, Color, f64, f64)>,
     lua_step: i64,
     lua_section: usize,
+    lua_created: bool,
     end_asked: bool,
     end_held: bool,
     /// The song is over and the stage plays a scene of its own before the next.
@@ -376,7 +379,7 @@ impl Playing {
         let mut scene = scene;
         let staged = story && start_at <= 0.0 && !seen && scene.as_mut().is_some_and(|scene| scene.open_with(&funkin_core::content::song_path(&entry.title), 60.0 / play.chart.bpm as f32));
         let lua = start_scripts(base, &paths, entry, &play.chart, settings, story, seen);
-        Ok(Playing { entry: entry.clone(), play, song, player_voice, own_skin: None, music_fade: None, lua, strums: strums(settings), flash: None, lua_step: i64::MIN, lua_section: usize::MAX, end_asked: false, end_held: false, base: base.to_path_buf(), staged, bowing: false, tune: false, paused_at: 0.0, pause_scroll: 0.0, deaths: 0, scene, waited: 0.0, clock: Default::default(), ticked: std::time::Instant::now(), started: false, paused: None, choosing: None, difficulties, story, taunt_until: None, start_at, position: -lead_in, settings: settings.clone(), held_keys: Vec::new(), flash_until: [[f64::MIN; 4]; 2], judgement: None, last_hit: f64::MIN, lanes_used: [false; 4], idled: false, idle_for: 0.0, sang_for: 0.0,
+        Ok(Playing { entry: entry.clone(), play, song, player_voice, own_skin: None, music_fade: None, lua, renamed: Default::default(), strums: strums(settings), flash: None, lua_step: i64::MIN, lua_section: usize::MAX, lua_created: false, end_asked: false, end_held: false, base: base.to_path_buf(), staged, bowing: false, tune: false, paused_at: 0.0, pause_scroll: 0.0, deaths: 0, scene, waited: 0.0, clock: Default::default(), ticked: std::time::Instant::now(), started: false, paused: None, choosing: None, difficulties, story, taunt_until: None, start_at, position: -lead_in, settings: settings.clone(), held_keys: Vec::new(), flash_until: [[f64::MIN; 4]; 2], judgement: None, last_hit: f64::MIN, lanes_used: [false; 4], idled: false, idle_for: 0.0, sang_for: 0.0,
             paths, cutscene, lead_in, counted: i64::MIN, popups: Vec::new(), splashes: Vec::new(), dead: None, next_event: 0, speed, speed_change: None }.with(settings))
     }
 
@@ -503,6 +506,10 @@ impl Playing {
         if !self.lua.is_empty() {
             let dt = get_frame_time().min(0.1);
             self.tell_lua();
+            if !std::mem::replace(&mut self.lua_created, true) {
+                self.lua.call("onCreate", ());
+                self.lua.call("onCreatePost", ());
+            }
             self.lua.tick(dt as f64);
             self.lua.call("onUpdate", dt);
         }
@@ -660,7 +667,7 @@ impl Playing {
         events.extend(self.play.update(judged));
         if !self.lua.is_empty() {
             for &event in &events {
-                let kind = |note: usize| self.play.chart.notes.get(note).map_or(String::new(), |note| self.play.chart.type_name(note.kind));
+                let kind = |note: usize| self.renamed.get(&note).cloned().unwrap_or_else(|| self.play.chart.notes.get(note).map_or(String::new(), |note| self.play.chart.type_name(note.kind)));
                 match event {
                     Event::Hit { lane, note, .. } => self.lua.call("goodNoteHit", (note, lane, kind(note), false)),
                     Event::OpponentHit { lane, note } => self.lua.call("opponentNoteHit", (note, lane, kind(note), false)),
@@ -845,10 +852,27 @@ impl Playing {
                 props.extend(scene.property(name).map(|value| (name, value)));
             }
         }
-        let shared = &mut self.lua.shared.borrow_mut().props;
+        let mut shared = self.lua.shared.borrow_mut();
         for (name, value) in props {
-            shared.insert(name.to_owned(), serde_json::json!(value));
+            shared.props.insert(name.to_owned(), serde_json::json!(value));
         }
+        // the notes on their way: from the first still in play to two seconds ahead, with their states
+        if shared.notes.len() != self.play.chart.notes.len() {
+            shared.notes = self.play.chart.notes.iter().enumerate().map(|(index, note)| lua::NoteView {
+                time: note.time, lane: note.lane, player: note.player, sustain: note.sustain, state: 0, fields: Default::default(),
+                kind: self.renamed.get(&index).cloned().unwrap_or_else(|| self.play.chart.type_name(note.kind)),
+            }).collect();
+        }
+        let first = self.play.first_open();
+        let count = self.play.chart.notes[first..].iter().take_while(|note| note.time < self.position + 2000.0).count();
+        shared.notes_window = (first, count);
+        for index in first.saturating_sub(16)..first + count {
+            let state = match self.play.state[index] { NoteState::Pending => 0, NoteState::Held => 1, NoteState::Done => 2, NoteState::Missed => 3 };
+            shared.notes[index].state = state;
+        }
+        let shared = &mut shared.props;
+        shared.insert("notes.length".to_owned(), serde_json::json!(count));
+        shared.insert("unspawnNotes.length".to_owned(), serde_json::json!(self.play.chart.notes.len()));
         // the strums, as "strum<0-7>.<field>" (the opponent's first, as strumLineNotes has them)
         for (index, strum) in self.strums.iter().flatten().enumerate() {
             for (field, value) in [("x", serde_json::json!(strum.x)), ("y", serde_json::json!(strum.y)), ("alpha", serde_json::json!(strum.alpha)), ("angle", serde_json::json!(strum.angle)), ("direction", serde_json::json!(strum.direction)), ("visible", serde_json::json!(strum.visible))] {
@@ -908,6 +932,29 @@ impl Playing {
                             let others: u32 = play.ratings[1..].iter().sum();
                             play.ratings[0] = if add { play.ratings[0] + value as u32 } else { (value as u32).saturating_sub(others) };
                         }
+                    }
+                }
+                lua::Request::Note { index, field, value } => {
+                    let flag = value.as_bool().unwrap_or(false);
+                    let Some(note) = self.play.chart.notes.get_mut(index) else { continue };
+                    let name = self.play.chart.custom_types.clone();
+                    // a kind changed keeps the name callbacks pass
+                    let mut kind_to = |kind: NoteKind| {
+                        let old = self.renamed.get(&index).cloned().unwrap_or_else(|| match note.kind {
+                            NoteKind::Custom(at) => name.get(at as usize).cloned().unwrap_or_default(),
+                            kind => kind.name(),
+                        });
+                        self.renamed.insert(index, old);
+                        note.kind = kind;
+                    };
+                    match field.as_str() {
+                        "ignoreNote" => self.play.ignored[index] = flag,
+                        "hitCausesMiss" if flag => kind_to(NoteKind::Hurt),
+                        "noAnimation" if flag => kind_to(NoteKind::NoAnimation),
+                        "gfNote" if flag => kind_to(NoteKind::GfSing),
+                        // (drawn with what the scripts set: visible, multAlpha)
+                        "visible" | "multAlpha" => {}
+                        _ => eprintln!("Lua: {field} of a note is not used here"),
                     }
                 }
                 lua::Request::EndSong => return Some(Flow::Finished),
@@ -1041,10 +1088,16 @@ impl Playing {
 
         let visible_until = position + (HEIGHT / (PIXELS_PER_MS * speed)) as f64 + 200.0;
         let on_screen = |y: f32| y > -LANE_WIDTH && y < HEIGHT + LANE_WIDTH;
-        let notes = self.play.chart.notes.iter().zip(&self.play.state).take_while(|(note, _)| note.time < visible_until).filter(|(note, _)| shown(note.player));
+        let notes = self.play.chart.notes.iter().zip(&self.play.state).enumerate().take_while(|(_, (note, _))| note.time < visible_until).filter(|(_, (note, _))| shown(note.player));
         // holds first so that heads lie on top of them
+        // what scripts set on notes: whether they show, and how faint
+        let looks = self.lua.shared.borrow();
+        let look = |index: usize, field: &str| looks.notes.get(index).and_then(|note| note.fields.get(field)).cloned();
         for pass in 0..2 {
-            for (note, &state) in notes.clone() {
+            for (index, (note, &state)) in notes.clone() {
+                if look(index, "visible").is_some_and(|visible| visible == false) {
+                    continue;
+                }
                 // a note comes along its strum's direction, as the Haxe engine moves it (straight down the y at 90)
                 let strum = &self.strums[note.player as usize][note.lane];
                 if !strum.visible {
@@ -1053,7 +1106,7 @@ impl Playing {
                 let (centre, turn) = (middle(strum), strum.direction.to_radians());
                 let x = centre.x + turn.cos() * (y_at(note.time) - strum_y);
                 let along = |time: f64| centre.y + turn.sin() * (y_at(time) - strum_y);
-                let alpha = if state == NoteState::Missed { 0.3 } else { 1.0 } * strum.alpha;
+                let alpha = if state == NoteState::Missed { 0.3 } else { 1.0 } * strum.alpha * look(index, "multAlpha").and_then(|alpha| alpha.as_f64()).unwrap_or(1.0) as f32;
                 if pass == 0 && note.sustain > 0.0 && state != NoteState::Done {
                     // shortcut: holds stay upright whatever the strum's direction; turn them with it if a mod's chart shows it
                     let head = if state == NoteState::Held { centre.y } else { along(note.time) };
@@ -1227,8 +1280,8 @@ impl Playing {
 
 /// The Haxe engine's save (`funkin.sol`) and what it holds: one put in the game's folder, else the one the Haxe engine keeps
 /// where the system keeps programs' data, under its company's name.
-/// The song's Lua scripts (those of the `scripts/` folders, the song's and the stage's), started, told about the song
-/// and called back once loaded (onCreate, then onCreatePost), as the Haxe engine's PlayState starts them.
+/// The song's Lua scripts (those of the `scripts/` folders, the song's and the stage's), started and told about the song.
+/// (They are called back once the play screen has told them about its notes: onCreate and onCreatePost, on its first frame.)
 fn start_scripts(base: &Path, paths: &Paths, entry: &SongEntry, chart: &Chart, settings: &Settings, story: bool, seen: bool) -> lua::Scripts {
     let song = funkin_core::content::song_path(&entry.title);
     let events: Vec<&str> = chart.events.iter().map(|event| event.name.as_str()).collect();
@@ -1267,10 +1320,7 @@ fn start_scripts(base: &Path, paths: &Paths, entry: &SongEntry, chart: &Chart, s
     let globals: Vec<(&str, serde_json::Value)> = globals.into_iter().chain(defaults.iter().map(|(name, value)| (name.as_str(), value.clone()))).collect();
     let mut shared = lua::Shared::new(settings.mod_settings.clone(), &entry.source, paths.clone());
     (shared.note_keys, shared.save_dir) = (settings.keys, base.join("funkin-rs-lua-saves"));
-    let mut scripts = lua::Scripts::start(&files, &globals, shared);
-    scripts.call("onCreate", ());
-    scripts.call("onCreatePost", ());
-    scripts
+    lua::Scripts::start(&files, &globals, shared)
 }
 
 fn haxe_save(base: &Path) -> Option<(PathBuf, serde_json::Value)> {

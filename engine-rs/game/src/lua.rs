@@ -34,6 +34,8 @@ pub enum Request {
     Flash { camera: Cam, color: u32, seconds: f64 },
     /// The run's score, misses or hits ("score", "misses", "hits") set, or added to.
     Score { field: &'static str, value: f64, add: bool },
+    /// A field of a chart note (by its number) set: ignoreNote, hitCausesMiss, noAnimation, gfNote...
+    Note { index: usize, field: String, value: serde_json::Value },
     EndSong,
     RestartSong,
     ExitSong,
@@ -58,6 +60,10 @@ pub struct Shared {
     paths: Option<funkin_core::content::Paths>,
     art: HashMap<String, Option<Art>>,
     fonts: HashMap<String, Option<Font>>,
+    /// The chart's notes as scripts see them, and which of them are on their way now (the `notes` group): the first
+    /// and how many.
+    pub notes: Vec<NoteView>,
+    pub notes_window: (usize, usize),
     /// The keys of the four lanes, which keyPressed("left") and the like ask about.
     pub note_keys: [[Option<KeyCode>; 2]; 4],
     /// Where the scripts' own saves are kept, and those open (by name).
@@ -140,6 +146,46 @@ fn from_json(lua: &Lua, value: &serde_json::Value) -> mlua::Result<Value> {
             Value::Table(table)
         }
     })
+}
+
+/// A chart note as scripts see it (the Haxe engine's Note): what the chart says, how its run has gone, and what
+/// scripts set on it.
+#[derive(Clone, Debug, Default, PartialEq)]
+pub struct NoteView {
+    pub time: f64,
+    pub lane: usize,
+    pub player: bool,
+    pub kind: String,
+    pub sustain: f64,
+    /// 0 waiting, 1 held, 2 done, 3 missed.
+    pub state: u8,
+    pub fields: HashMap<String, serde_json::Value>,
+}
+
+impl NoteView {
+    fn get(&self, field: &str, position: f64) -> serde_json::Value {
+        use serde_json::json;
+        if let Some(value) = self.fields.get(field) {
+            return value.clone();
+        }
+        match field {
+            "strumTime" => json!(self.time),
+            "noteData" => json!(self.lane),
+            "mustPress" => json!(self.player),
+            "noteType" => json!(self.kind),
+            "isSustainNote" => json!(false),
+            "sustainLength" => json!(self.sustain),
+            "wasGoodHit" => json!(self.player && matches!(self.state, 1 | 2)),
+            "hitByOpponent" => json!(!self.player && matches!(self.state, 1 | 2)),
+            "tooLate" => json!(self.state == 3),
+            "canBeHit" => json!(self.state == 0 && (self.time - position).abs() < 166.0),
+            "ignoreNote" | "hitCausesMiss" | "noAnimation" | "noMissAnimation" | "gfNote" | "lowPriority" => json!(self.kind == "Hurt Note" && field == "hitCausesMiss"),
+            "visible" => json!(true),
+            "multAlpha" => json!(1.0),
+            "texture" | "animSuffix" => json!(""),
+            _ => serde_json::Value::Null,
+        }
+    }
 }
 
 /// A picture a script loaded: alone, or a sheet of frames.
@@ -786,7 +832,21 @@ impl Scripts {
                 _ => None,
             }
         };
+        // the notes: all of the chart's (unspawnNotes), or those on their way now (notes), by their number
+        let note = |shared: &Shared, group: &str, index: usize| -> Option<usize> {
+            match group {
+                "unspawnNotes" => Some(index).filter(|index| *index < shared.notes.len()),
+                "notes" => Some(shared.notes_window.0 + index).filter(|_| index < shared.notes_window.1),
+                _ => None,
+            }
+        };
         function!("getPropertyFromGroup", |lua, shared, args: (String, usize, String)| {
+            let shared_now = shared.borrow();
+            if let Some(index) = note(&shared_now, &args.0, args.1) {
+                let position = shared_now.props.get("songPosition").and_then(|value| value.as_f64()).unwrap_or(0.0);
+                return from_json(lua, &shared_now.notes[index].get(&args.2, position));
+            }
+            drop(shared_now);
             let value = strum(&args.0, args.1).and_then(|index| shared.borrow().props.get(&format!("strum{index}.{}", args.2)).cloned());
             if value.is_none() {
                 eprintln!("Lua: getPropertyFromGroup {} {} {} is not known here", args.0, args.1, args.2);
@@ -794,6 +854,14 @@ impl Scripts {
             from_json(lua, &value.unwrap_or_default())
         });
         function!("setPropertyFromGroup", |_lua, shared, args: (String, usize, String, Value)| {
+            let mut shared_now = shared.borrow_mut();
+            if let Some(index) = note(&shared_now, &args.0, args.1) {
+                let value = to_json(&args.3);
+                shared_now.notes[index].fields.insert(args.2.clone(), value.clone());
+                shared_now.requests.push(Request::Note { index, field: args.2, value });
+                return Ok(());
+            }
+            drop(shared_now);
             match strum(&args.0, args.1) {
                 Some(index) => shared.borrow_mut().requests.push(Request::SetProperty { name: format!("strum{index}.{}", args.2), value: to_json(&args.3) }),
                 None => eprintln!("Lua: setPropertyFromGroup {} {} {} is not known here", args.0, args.1, args.2),

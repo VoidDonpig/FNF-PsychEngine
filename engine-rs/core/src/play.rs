@@ -58,6 +58,8 @@ pub struct Play {
     pub chart: Chart,
     /// One entry per chart note.
     pub state: Vec<NoteState>,
+    /// Notes set aside by scripts (ignoreNote): not played by the bot or the opponent, not missed when let go.
+    pub ignored: Vec<bool>,
     pub held: [bool; 4],
     pub botplay: bool,
     /// Off: a press with nothing to hit counts as a miss.
@@ -96,7 +98,7 @@ impl Play {
     pub fn new(chart: Chart, botplay: bool) -> Play {
         let state = vec![NoteState::Pending; chart.notes.len()];
         let judged_to = vec![0.0; chart.notes.len()];
-        Play { chart, state, held: [false; 4], botplay, ghost_tapping: true, timing: Timing::default(), health_gain: 1.0, health_loss: 1.0, instakill: false, one_note_holds: true, ratings: [0; 4], score: 0, misses: 0, combo: 0, health: 1.0, rated: 0, weight: 0.0, first_open: 0, judged_to }
+        Play { ignored: vec![false; state.len()], chart, state, held: [false; 4], botplay, ghost_tapping: true, timing: Timing::default(), health_gain: 1.0, health_loss: 1.0, instakill: false, one_note_holds: true, ratings: [0; 4], score: 0, misses: 0, combo: 0, health: 1.0, rated: 0, weight: 0.0, first_open: 0, judged_to }
     }
 
     /// Accuracy from 0 to 1, once anything was rated.
@@ -118,6 +120,11 @@ impl Play {
 
     pub fn finished(&self) -> bool {
         self.first_open == self.state.len()
+    }
+
+    /// The first note still in play (every one before it is done or missed).
+    pub fn first_open(&self) -> usize {
+        self.first_open
     }
 
     /// The lanes of each side (opponent, player) whose hold note is being held at `pos` (ms).
@@ -178,9 +185,11 @@ impl Play {
             }
             let auto = !note.player || self.botplay;
             let hurt = note.kind == NoteKind::Hurt;
+            // a note a script set aside (ignoreNote): nobody plays it for you, and letting it go costs nothing
+            let ignored = self.ignored.get(i) == Some(&true);
             match self.state[i] {
                 NoteState::Pending if auto && note.time <= pos => {
-                    if note.player && hurt {
+                    if (note.player && hurt) || ignored {
                         self.state[i] = NoteState::Done;
                         continue;
                     }
@@ -191,8 +200,8 @@ impl Play {
                 NoteState::Pending if !auto && pos > note.time + self.timing.safe => {
                     // piece by piece, a hold whose start was missed can still be caught
                     let catchable = !self.one_note_holds && note.sustain > 0.0;
-                    self.state[i] = if hurt { NoteState::Done } else if catchable { NoteState::Held } else { NoteState::Missed };
-                    if !hurt {
+                    self.state[i] = if hurt || ignored { NoteState::Done } else if catchable { NoteState::Held } else { NoteState::Missed };
+                    if !hurt && !ignored {
                         events.push(self.miss(note.lane, Some(i)));
                     }
                 }
@@ -374,6 +383,15 @@ mod tests {
             hold.update(1100.0);
             assert_eq!(hold.misses, misses, "let go at {let_go}");
         }
+    }
+
+    #[test]
+    fn a_note_set_aside_is_neither_played_for_you_nor_missed() {
+        let mut p = play(&[(100.0, 0, false, 0.0), (200.0, 1, true, 0.0), (300.0, 2, true, 0.0)], false);
+        (p.ignored[0], p.ignored[1]) = (true, true);
+        // the opponent leaves it, and the player lets it go for nothing; a note not set aside is missed
+        assert_eq!(p.update(1000.0), vec![Event::Miss { lane: 2, note: Some(2), combo: 0 }]);
+        assert_eq!(p.misses, 1);
     }
 
     #[test]
