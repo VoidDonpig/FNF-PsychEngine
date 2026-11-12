@@ -2,7 +2,6 @@
 //! (`images/dialogue/<name>.json`) edited with the game's dialogue showing it; on the Animations tab, the talking and
 //! resting frames of an expression drawn see-through over each other, their offsets moved with WASD and the arrow keys;
 //! saved over its file, the one before kept as `.bak`.
-// shortcut: the camera (J/K/L/I, Q/E zoom) does not move here; the view is the game's own.
 use crate::gfx::*;
 use crate::speech::Speech;
 use crate::ui::Ui;
@@ -12,7 +11,7 @@ use serde_json::{json, Value};
 use std::path::{Path, PathBuf};
 use std::time::Instant;
 
-const TIP_MAIN: &str = "W/S - Change animation    Space - Play the line again    H - Hide the box";
+const TIP_MAIN: &str = "W/S - Change animation    Space - Play the line again    H - Hide the box    J/K/L/I - Move    Q/E - Zoom    R - Reset";
 const TIP_OFFSETS: &str = "WASD - Move Looping animation offset (Red)    Arrow Keys - Move Idle/Finished offset (Blue)    Shift: 10x    H - Ghosts";
 
 pub enum Go {
@@ -32,6 +31,9 @@ pub struct PortraitEditor {
     tab: usize,
     ghosts: usize,
     hidden: bool,
+    /// The view: how far the portrait and box are moved (J/K/L/I), how near (Q/E); R puts both back.
+    moved: Vec2,
+    zoom: f32,
     speech: Option<Speech>,
     ui: Ui,
     /// The Animations tab's form: name, looping frames' prefix, resting frames' prefix.
@@ -51,7 +53,7 @@ impl PortraitEditor {
         names.dedup();
         let mut editor = PortraitEditor {
             base: base.to_path_buf(), folder: folder.to_owned(), names, name: String::new(), json: Value::Null, expression: 0, tab: 1, ghosts: 0,
-            hidden: false, speech: None, ui: Ui::default(), form: Default::default(), unsaved: false, leaving: false, said: None,
+            hidden: false, moved: Vec2::ZERO, zoom: 1.0, speech: None, ui: Ui::default(), form: Default::default(), unsaved: false, leaving: false, said: None,
         };
         editor.load("bf");
         editor
@@ -115,6 +117,13 @@ impl PortraitEditor {
             return Go::Stay;
         }
         let shift = is_key_down(KeyCode::LeftShift) || is_key_down(KeyCode::RightShift);
+        let dt = get_frame_time().min(0.1);
+        let held = |key| is_key_down(key) as i32 as f32;
+        self.moved += vec2(held(KeyCode::J) - held(KeyCode::L), held(KeyCode::I) - held(KeyCode::K)) * if shift { 1200.0 } else { 300.0 } * dt;
+        self.zoom = (self.zoom * (1.0 + (held(KeyCode::E) - held(KeyCode::Q)) * dt)).clamp(0.1, 1.0);
+        if is_key_pressed(KeyCode::R) {
+            (self.moved, self.zoom, self.hidden) = (Vec2::ZERO, 1.0, false);
+        }
         let count = self.animations().len();
         if self.tab == 1 {
             if is_key_pressed(KeyCode::W) != is_key_pressed(KeyCode::S) && count > 0 {
@@ -267,6 +276,8 @@ impl PortraitEditor {
         set_camera(&Camera2D { target: vec2(WIDTH / 2.0, HEIGHT / 2.0), zoom: vec2(2.0 / WIDTH, 2.0 / HEIGHT), ..Default::default() });
         let current = self.current();
         let animation = self.animations().get(self.expression).cloned().unwrap_or_default();
+        let middle = vec2(WIDTH / 2.0, HEIGHT / 2.0);
+        set_camera(&Camera2D { target: middle - self.moved, zoom: vec2(2.0 / WIDTH, 2.0 / HEIGHT) * self.zoom, ..Default::default() });
         match (&self.speech, self.tab) {
             // the two frames over each other (H: one of them alone), as the Haxe editor's ghosts
             (Some(speech), 0) => {
@@ -276,6 +287,7 @@ impl PortraitEditor {
                 if self.ghosts != 1 {
                     speech.draw_pose(&self.name, &current, true, if self.ghosts == 2 { 1.0 } else { 0.6 });
                 }
+                set_camera(&Camera2D { target: middle, zoom: vec2(2.0 / WIDTH, 2.0 / HEIGHT), ..Default::default() });
                 let pair = |field: &str| format!("[{}, {}]", animation[field][0].as_i64().unwrap_or(0), animation[field][1].as_i64().unwrap_or(0));
                 skin.text(&format!("Loop: {}", pair("loop_offsets")), 10.0, 70.0, 32, Color::from_hex(0xFF0000));
                 skin.text(&format!("Idle: {}", pair("idle_offsets")), 10.0, 106.0, 32, Color::from_hex(0x0000FF));
@@ -283,6 +295,7 @@ impl PortraitEditor {
             (Some(speech), _) if !self.hidden => speech.draw(),
             _ => {}
         }
+        set_camera(&Camera2D { target: middle, zoom: vec2(2.0 / WIDTH, 2.0 / HEIGHT), ..Default::default() });
         skin.text(if self.tab == 0 { TIP_OFFSETS } else { TIP_MAIN }, 10.0, 24.0, 16, WHITE);
         if self.tab == 1 {
             let count = self.animations().len();
