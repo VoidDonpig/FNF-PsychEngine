@@ -187,7 +187,9 @@ Done:
   hold shorter or longer, Delete removes it; Left/Right change the beat snap, Z/X the zoom; Ctrl+Z/Y undo and redo;
   Ctrl+S saves over the chart's file, the one before kept as `<file>.bak` (an older chart is saved in the Psych 1.0
   format, its keys where they were); Enter play-tests the chart as it is, and 7 or the song's end come back to it;
-  Escape leaves (twice with changes not saved). Events are put down, taken off and picked in their column, written
+  Escape leaves (twice with changes not saved). Ctrl+drag boxes notes and events in, Shift+click adds one to what is
+  picked (or takes it out), Ctrl+A picks the section's; Ctrl+C/X copy and cut them, Ctrl+V pastes them at the line,
+  Delete takes them off, Q/E change all their holds. Events are put down, taken off and picked in their column, written
   beside the grid. [ and ] change how fast the music plays (Alt: back to normal). The box at the right has the Haxe
   editor's tabs, on controls of the Haxe engine's kind (PsychUI:
   buttons, tick boxes, numbers with - and +, typed text, lists that drop down): Charting (playback rate, mouse
@@ -210,7 +212,7 @@ Not there yet:
 - **Scripts**: the rest of Lua's functions (notes' own textures and health, shaders, groups, and getProperty/setProperty
   beyond the camera, health, score, the characters' place and the scripts' sprites); custom events and note types run by scripts. HScript is Haxe code run against the Haxe
   engine's own classes, so mods that use it cannot run here as they are. Custom shaders.
-- **Editors**: the chart editor's File/Edit/View menus and its Data tab, the waveform, the vortex editor, lists to choose characters and stages from, selecting many notes, autosave, a song
+- **Editors**: the chart editor's File/Edit/View menus and its Data tab, the waveform, the vortex editor, lists to choose characters and stages from, pasted notes following the mouse before they are put down, autosave, a song
   chosen to chart from the editors' list;
   the character, stage, week, menu character, dialogue, dialogue character and note splash editors.
 - **Other**: gamepads on Linux and macOS (gilrs needs libudev there); binding a gamepad's buttons on the key binds

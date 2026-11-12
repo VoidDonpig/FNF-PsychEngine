@@ -58,6 +58,16 @@ enum Picked {
     Event(usize, usize),
 }
 
+impl Picked {
+    /// Which list it is in and where (an event's entries share its place).
+    fn place(&self) -> (usize, usize) {
+        match *self {
+            Picked::Note(section, index) => (section + 1, index),
+            Picked::Event(index, _) => (0, index),
+        }
+    }
+}
+
 /// Where a section starts (ms), how many beats it has, at what tempo, and how many grid rows come before it.
 #[derive(Clone, Copy, Debug, PartialEq)]
 struct Span {
@@ -89,14 +99,18 @@ pub struct ChartEditor {
     length: f64,
     zoom: usize,
     quant: usize,
-    /// The note or event last put down or picked.
-    selected: Option<Picked>,
+    /// The notes and events picked (the one last put down, Shift+clicked, boxed in with Ctrl+drag, Ctrl+A).
+    selected: Vec<Picked>,
+    /// Where a Ctrl+drag began: the mouse's x and the moment under it.
+    boxing: Option<(f32, f64)>,
+    /// Notes and events copied (Ctrl+C, Ctrl+X), their times from the first one's.
+    clipboard: Vec<(bool, Value)>,
     undo: Vec<Value>,
     redo: Vec<Value>,
     /// Changed since it was last saved (or brought back from a play-test), and Escape was pressed once already.
     unsaved: bool,
     leaving: bool,
-    said: Option<(String, f64)>,
+    said: Option<(String, std::time::Instant)>,
     background: Option<Texture2D>,
     event_icon: Option<Texture2D>,
     icons: [Option<Texture2D>; 2],
@@ -179,7 +193,7 @@ impl ChartEditor {
             }
         }
         let mut editor = ChartEditor {
-            entry: entry.clone(), json, spans: Vec::new(), song, playing: false, position: 0.0, length, zoom: 2, quant: 3, selected: None,
+            entry: entry.clone(), json, spans: Vec::new(), song, playing: false, position: 0.0, length, zoom: 2, quant: 3, selected: Vec::new(), boxing: None, clipboard: Vec::new(),
             undo: Vec::new(), redo: Vec::new(), unsaved, leaving: false, said: None, background: picture("menuDesat"), event_icon: picture("editors/eventIcon"), icons,
             rate: 1.0, wheel_snaps: true, hitsounds: [0.0; 3], volumes: [0.6, 1.0, 1.0], muted: [false; 3], heard: 0.0, voice_tracks,
             sounds: [paths.find("sounds/hitsound.ogg"), paths.find("sounds/Metronome_Tick.ogg")],
@@ -237,7 +251,7 @@ impl ChartEditor {
     }
 
     fn say(&mut self, words: impl Into<String>) {
-        self.said = Some((words.into(), get_time()));
+        self.said = Some((words.into(), std::time::Instant::now()));
     }
 
     /// Keeps the chart as it is, to come back to with undo.
@@ -277,6 +291,15 @@ impl ChartEditor {
         } else if ctrl {
             if is_key_pressed(KeyCode::S) {
                 self.save();
+            } else if is_key_pressed(KeyCode::C) || is_key_pressed(KeyCode::X) {
+                self.copy();
+                if is_key_pressed(KeyCode::X) {
+                    self.delete_picked();
+                }
+            } else if is_key_pressed(KeyCode::V) {
+                self.paste();
+            } else if is_key_pressed(KeyCode::A) {
+                self.pick_all();
             } else if is_key_pressed(KeyCode::Z) {
                 self.step_history(true);
             } else if is_key_pressed(KeyCode::Y) {
@@ -339,16 +362,7 @@ impl ChartEditor {
             let by = span.step_ms() / 2.0 * if shift { 4.0 } else { 1.0 } * if is_key_pressed(KeyCode::Q) { -1.0 } else { 1.0 };
             self.hold_longer(by);
         } else if is_key_pressed(KeyCode::Delete) || is_key_pressed(KeyCode::Backspace) {
-            if let Some(picked) = self.selected.take() {
-                self.remember();
-                let (list, index) = match picked {
-                    Picked::Note(section, index) => (&mut self.json["notes"][section]["sectionNotes"], index),
-                    Picked::Event(index, _) => (&mut self.json["events"], index),
-                };
-                if let Some(list) = list.as_array_mut().filter(|list| index < list.len()) {
-                    list.remove(index);
-                }
-            }
+            self.delete_picked();
         }
         if self.playing {
             self.position = self.song.position_ms();
@@ -358,8 +372,16 @@ impl ChartEditor {
             self.tick_sounds();
         }
         self.heard = self.position;
+        // Ctrl+drag boxes notes and events in; a click elsewhere puts down, takes off or picks
         if is_mouse_pressed() && !self.ui.took_click() {
-            self.click(shift);
+            match self.under_mouse(false) {
+                Some((_, at, _)) if ctrl => self.boxing = Some((mouse_position(vec2(WIDTH, HEIGHT)).x, at)),
+                _ => self.click(shift),
+            }
+        }
+        if let Some((x, at)) = self.boxing.filter(|_| !is_mouse_down()) {
+            self.boxing = None;
+            self.pick_boxed(self.picking_box(x, at));
         }
         Go::Stay
     }
@@ -398,13 +420,13 @@ impl ChartEditor {
             return self.click_event(y, from, shift);
         }
         match self.note_at(column, y) {
-            Some((section, index)) if shift => self.selected = Some(Picked::Note(section, index)),
+            Some((section, index)) if shift => self.toggle(Picked::Note(section, index)),
             Some((section, index)) => {
                 self.remember();
                 if let Some(notes) = self.json["notes"][section]["sectionNotes"].as_array_mut() {
                     notes.remove(index);
                 }
-                self.selected = None;
+                self.selected.clear();
             }
             None => {
                 self.remember();
@@ -420,7 +442,7 @@ impl ChartEditor {
                     note.as_array_mut().expect("an array").push(json!(kind));
                 }
                 notes.push(note);
-                self.selected = Some(Picked::Note(section, notes.len() - 1));
+                self.selected = vec![Picked::Note(section, notes.len() - 1)];
             }
         }
     }
@@ -438,7 +460,7 @@ impl ChartEditor {
     fn click_event(&mut self, y: f32, at: f64, shift: bool) {
         match self.event_at(y) {
             Some(index) if shift => {
-                self.selected = Some(Picked::Event(index, 0));
+                self.toggle(Picked::Event(index, 0));
                 self.show_event();
             }
             Some(index) => {
@@ -446,7 +468,7 @@ impl ChartEditor {
                 if let Some(events) = self.json["events"].as_array_mut() {
                     events.remove(index);
                 }
-                self.selected = None;
+                self.selected.clear();
             }
             None => {
                 self.remember();
@@ -458,14 +480,14 @@ impl ChartEditor {
                 // (kept in time order)
                 let place = events.iter().position(|event| event[0].as_f64().is_some_and(|time| time > at)).unwrap_or(events.len());
                 events.insert(place, json!([round(at), [[name, self.values[0], self.values[1]]]]));
-                self.selected = Some(Picked::Event(place, 0));
+                self.selected = vec![Picked::Event(place, 0)];
             }
         }
     }
 
     /// The Events tab shows the picked event's entry: its name and values.
     fn show_event(&mut self) {
-        let Some(Picked::Event(index, entry)) = self.selected else { return };
+        let Some(Picked::Event(index, entry)) = self.one() else { return };
         let entry = &self.json["events"][index][1][entry];
         let name = entry[0].as_str().unwrap_or_default();
         if let Some(found) = self.events.iter().position(|known| known == name) {
@@ -474,13 +496,141 @@ impl ChartEditor {
         self.values = [plain(&entry[1]), plain(&entry[2])];
     }
 
-    /// The picked note held longer (or shorter, never below none).
+    /// The picked notes held longer (or shorter, never below none).
     fn hold_longer(&mut self, by: f64) {
-        let Some(Picked::Note(section, index)) = self.selected else { return };
+        if !self.selected.iter().any(|picked| matches!(picked, Picked::Note(..))) {
+            return;
+        }
         self.remember();
-        let note = &mut self.json["notes"][section]["sectionNotes"][index];
-        if note.is_array() {
-            note[2] = json!(round((note[2].as_f64().unwrap_or(0.0) + by).max(0.0)));
+        for picked in self.selected.clone() {
+            let Picked::Note(section, index) = picked else { continue };
+            let note = &mut self.json["notes"][section]["sectionNotes"][index];
+            if note.is_array() {
+                note[2] = json!(round((note[2].as_f64().unwrap_or(0.0) + by).max(0.0)));
+            }
+        }
+    }
+
+    /// The one thing picked, when only one is (the Note and Events tabs show it).
+    fn one(&self) -> Option<Picked> {
+        match self.selected[..] {
+            [one] => Some(one),
+            _ => None,
+        }
+    }
+
+    /// Picked, or no longer when it was (Shift+click).
+    fn toggle(&mut self, picked: Picked) {
+        match self.selected.iter().position(|kept| *kept == picked) {
+            Some(place) => drop(self.selected.remove(place)),
+            None => self.selected.push(picked),
+        }
+    }
+
+    /// The picked notes and events taken off.
+    fn delete_picked(&mut self) {
+        if self.selected.is_empty() {
+            return;
+        }
+        self.remember();
+        // the last ones first, so the places of the others stay right
+        let mut picked = std::mem::take(&mut self.selected);
+        picked.sort_by(|a, b| b.place().cmp(&a.place()));
+        picked.dedup_by_key(|picked| picked.place());
+        for picked in picked {
+            let (list, index) = match picked {
+                Picked::Note(section, index) => (&mut self.json["notes"][section]["sectionNotes"], index),
+                Picked::Event(index, _) => (&mut self.json["events"], index),
+            };
+            if let Some(list) = list.as_array_mut().filter(|list| index < list.len()) {
+                list.remove(index);
+            }
+        }
+    }
+
+    /// The picked notes and events copied, their times from the first one's.
+    fn copy(&mut self) {
+        let mut copied: Vec<(bool, Value)> = self.selected.iter().filter_map(|picked| match *picked {
+            Picked::Note(section, index) => Some((false, self.json["notes"][section]["sectionNotes"].get(index)?.clone())),
+            Picked::Event(index, _) => Some((true, self.json["events"].get(index)?.clone())),
+        }).collect();
+        let first = copied.iter().filter_map(|(_, thing)| thing[0].as_f64()).fold(f64::INFINITY, f64::min);
+        for (_, thing) in &mut copied {
+            thing[0] = json!(round(thing[0].as_f64().unwrap_or(first) - first));
+        }
+        self.say(format!("Copied {}", copied.len()));
+        self.clipboard = copied;
+    }
+
+    /// What was copied, put down from the line across the middle (on the beat snap), and picked.
+    // shortcut: pasted at the line, the columns as copied; the Haxe editor lets them follow the mouse until a click.
+    fn paste(&mut self) {
+        if self.clipboard.is_empty() {
+            return;
+        }
+        self.remember();
+        let snap = 16.0 / QUANTS[self.quant] as f64;
+        let start = self.ms_of((self.row_of(self.position) / snap).round() * snap);
+        self.selected.clear();
+        for (event, mut thing) in self.clipboard.clone() {
+            let time = round(thing[0].as_f64().unwrap_or(0.0) + start);
+            thing[0] = json!(time);
+            if event {
+                if !self.json["events"].is_array() {
+                    self.json["events"] = json!([]);
+                }
+                let events = self.json["events"].as_array_mut().expect("made an array");
+                let place = events.iter().position(|kept| kept[0].as_f64().is_some_and(|kept| kept > time)).unwrap_or(events.len());
+                // (the events after it move one place on)
+                for picked in &mut self.selected {
+                    if let Picked::Event(index, _) = picked {
+                        *index += (*index >= place) as usize;
+                    }
+                }
+                events.insert(place, thing);
+                self.selected.push(Picked::Event(place, 0));
+            } else {
+                let section = self.section_at(time);
+                let notes = &mut self.json["notes"][section]["sectionNotes"];
+                if !notes.is_array() {
+                    *notes = json!([]);
+                }
+                let notes = notes.as_array_mut().expect("made an array");
+                notes.push(thing);
+                self.selected.push(Picked::Note(section, notes.len() - 1));
+            }
+        }
+    }
+
+    /// Every note and event of the section playing picked (Ctrl+A).
+    fn pick_all(&mut self) {
+        let span = self.spans.get(self.section_at(self.position)).copied();
+        let (from, until) = span.map_or((0.0, 0.0), |span| (span.start, span.start + span.beats * 60000.0 / span.bpm));
+        self.pick_boxed((0.0..COLUMNS as f32, from..until));
+    }
+
+    /// The columns and moments a Ctrl+drag from (`x`, `at`) to the mouse covers.
+    fn picking_box(&self, x: f32, at: f64) -> (std::ops::Range<f32>, std::ops::Range<f64>) {
+        let mouse = mouse_position(vec2(WIDTH, HEIGHT));
+        let now = self.ms_of(self.row_of(self.position) + ((mouse.y - HEIGHT / 2.0) / (GRID * ZOOMS[self.zoom])) as f64);
+        let column = |x: f32| (x - LEFT) / GRID;
+        // (a note is boxed in when its drawn square is: it reaches a cell below its time)
+        let top = self.ms_of((self.row_of(at.min(now)) - 1.0 / ZOOMS[self.zoom] as f64).max(0.0));
+        (column(x.min(mouse.x)).floor()..column(x.max(mouse.x)).ceil(), top..at.max(now))
+    }
+
+    /// The notes and events in some columns between two moments picked.
+    fn pick_boxed(&mut self, (columns, times): (std::ops::Range<f32>, std::ops::Range<f64>)) {
+        let within = |column: f32, time: Option<f64>| columns.contains(&column) && time.is_some_and(|time| times.contains(&time));
+        let notes = self.sections().iter().enumerate().flat_map(|(section, value)| {
+            value["sectionNotes"].as_array().into_iter().flatten().enumerate()
+                .filter(|(_, note)| note[1].as_f64().is_some_and(|data| within(data as f32 + 1.0, note[0].as_f64())))
+                .map(move |(index, _)| Picked::Note(section, index))
+        });
+        let events = self.json["events"].as_array().into_iter().flatten().enumerate().filter(|(_, event)| within(0.0, event[0].as_f64())).map(|(index, _)| Picked::Event(index, 0));
+        self.selected = notes.chain(events).collect();
+        if self.selected.len() == 1 {
+            self.show_event();
         }
     }
 
@@ -489,7 +639,7 @@ impl ChartEditor {
         let Some(chart) = from.pop() else { return };
         to.push(std::mem::replace(&mut self.json, chart));
         (self.unsaved, self.leaving) = (true, false);
-        self.selected = None;
+        self.selected.clear();
         self.measure();
         self.say(if back { "Undone" } else { "Redone" });
     }
@@ -554,7 +704,7 @@ impl ChartEditor {
                 if end > y + GRID / 2.0 {
                     skin.frame(&format!("{} hold piece0000", NOTE_NAMES[lane]), x, (y + GRID / 2.0 + end) / 2.0, Some(vec2(8.0, end - y - GRID / 2.0)), Some(lane), alpha);
                 }
-                if self.selected == Some(Picked::Note(index, place)) {
+                if self.selected.contains(&Picked::Note(index, place)) {
                     draw_rectangle(x - GRID / 2.0, y, GRID, GRID, Color { a: 0.5, ..Color::from_hex(0x00FFFF) });
                 }
                 skin.frame(&format!("{}0000", NOTE_NAMES[lane]), x, y + GRID / 2.0, Some(vec2(GRID, GRID)), Some(lane), alpha);
@@ -567,7 +717,7 @@ impl ChartEditor {
             if !(-GRID..HEIGHT).contains(&y) {
                 continue;
             }
-            if matches!(self.selected, Some(Picked::Event(picked, _)) if picked == index) {
+            if self.selected.iter().any(|picked| matches!(picked, Picked::Event(picked, _) if *picked == index)) {
                 draw_rectangle(LEFT, y, GRID, GRID, Color { a: 0.5, ..Color::from_hex(0x00FFFF) });
             }
             let entries = event[1].as_array().map_or(&[][..], Vec::as_slice);
@@ -590,6 +740,13 @@ impl ChartEditor {
             draw_rectangle(LEFT + column as f32 * GRID, self.y_of(from), GRID, GRID, Color { a: 0.5, ..WHITE });
         }
         draw_rectangle(LEFT, HEIGHT / 2.0 - 2.0, GRID * COLUMNS as f32, 4.0, WHITE);
+        // the Ctrl+drag box
+        if let Some((x, at)) = self.boxing {
+            let (mouse, top) = (mouse_position(vec2(WIDTH, HEIGHT)), self.y_of(at));
+            blend_add(true);
+            draw_rectangle(x.min(mouse.x), top.min(mouse.y), (x - mouse.x).abs(), (top - mouse.y).abs(), Color { a: 0.4, ..Color::from_hex(0x00FFFF) });
+            blend_add(false);
+        }
         // the two sides' icons over their columns (the player's first, as in the Haxe editor)
         for (side, icon) in self.icons.iter().enumerate() {
             let Some(icon) = icon else { continue };
@@ -770,7 +927,7 @@ impl ChartEditor {
             }
         }
         if self.ui.button(x, y + 186.0, 130.0, "Clear Notes") {
-            self.selected = None;
+            self.selected.clear();
             self.set_section(section, "sectionNotes", json!([]));
         }
         // the player's notes become the opponent's and back
@@ -785,7 +942,7 @@ impl ChartEditor {
     }
 
     fn note_tab(&mut self, x: f32, y: f32) {
-        let picked = match self.selected {
+        let picked = match self.one() {
             Some(Picked::Note(section, index)) if self.json["notes"][section]["sectionNotes"][index].is_array() => Some((section, index)),
             _ => None,
         };
@@ -820,7 +977,7 @@ impl ChartEditor {
     }
 
     fn events_tab(&mut self, x: f32, y: f32) {
-        let picked = match self.selected {
+        let picked = match self.one() {
             Some(Picked::Event(index, entry)) if self.json["events"][index][1][entry].is_array() => Some((index, entry)),
             _ => None,
         };
@@ -857,14 +1014,14 @@ impl ChartEditor {
                 }
             }
             match go {
-                Some(0) => self.selected = Some(Picked::Event(index, entry.saturating_sub(1))),
-                Some(1) => self.selected = Some(Picked::Event(index, (entry + 1).min(count - 1))),
+                Some(0) => self.selected = vec![Picked::Event(index, entry.saturating_sub(1))],
+                Some(1) => self.selected = vec![Picked::Event(index, (entry + 1).min(count - 1))],
                 Some(2) if count > 1 => {
                     self.remember();
                     if let Some(entries) = self.json["events"][index][1].as_array_mut() {
                         entries.remove(entry);
                     }
-                    self.selected = Some(Picked::Event(index, entry.saturating_sub(1)));
+                    self.selected = vec![Picked::Event(index, entry.saturating_sub(1))];
                 }
                 Some(3) => {
                     self.remember();
@@ -872,7 +1029,7 @@ impl ChartEditor {
                     if let Some(entries) = self.json["events"][index][1].as_array_mut() {
                         entries.push(json!([name, self.values[0], self.values[1]]));
                     }
-                    self.selected = Some(Picked::Event(index, count));
+                    self.selected = vec![Picked::Event(index, count)];
                 }
                 _ => {}
             }
@@ -889,7 +1046,7 @@ impl ChartEditor {
         let lines = [
             format!("{} / {}", time(self.position), time(self.length)), String::new(),
             format!("Section: {}", self.section_at(self.position)), format!("Beat: {}", (step / 4.0).floor()), format!("Step: {step}"), String::new(),
-            format!("Beat Snap: {} / 16", QUANTS[self.quant]), format!("Selected: {}", self.selected.is_some() as u8),
+            format!("Beat Snap: {} / 16", QUANTS[self.quant]), format!("Selected: {}", self.selected.len()),
         ];
         let (x, y) = (1000.0, 360.0);
         draw_rectangle(x, y - 26.0, 110.0, 26.0, Color { a: 0.8, ..BLACK });
@@ -901,7 +1058,7 @@ impl ChartEditor {
         let help = "Space: play  W/S, wheel: move  A/D: section  Click: note  Q/E: hold  Left/Right: snap  Z/X: zoom  Ctrl+Z/Y: undo/redo  Ctrl+S: save  Enter: play  Esc: leave";
         draw_text_ex(help, 10.0, HEIGHT - 10.0, TextParams { font: skin.font.as_ref(), font_size: 14, color: Color { a: 0.8, ..WHITE }, ..Default::default() });
         if let Some((words, when)) = &self.said {
-            let alpha = (1.0 - (get_time() - when - 2.0).max(0.0)) as f32;
+            let alpha = (1.0 - (when.elapsed().as_secs_f64() - 2.0).max(0.0)) as f32;
             if alpha > 0.0 {
                 draw_text_ex(words, 25.0, HEIGHT - 32.0, TextParams { font: skin.font.as_ref(), font_size: 20, color: Color { a: alpha, ..WHITE }, ..Default::default() });
             }
@@ -1017,6 +1174,29 @@ mod tests {
         assert_eq!(editor.note_at(3, 410.0), Some((0, 2)));
         assert_eq!([editor.note_at(2, 450.0), editor.note_at(0, 370.0)], [None, None]);
         assert!(editor.unsaved, "back from a play-test, it may hold changes");
+    }
+
+    #[test]
+    fn picked_notes_and_events_are_copied_pasted_and_taken_off() {
+        let text = r#"{"bpm": 120, "format": "psych_v1", "events": [[250, [["Hey!", "BF", ""]]]], "notes": [{"sectionNotes": [[0, 1, 0], [125, 6, 0]], "sectionBeats": 4}]}"#;
+        let missing = PathBuf::from("no such folder");
+        let entry = SongEntry {
+            title: "T".to_owned(), difficulty: "Hard".to_owned(), source: String::new(), week: 0, icon: String::new(), color: [0; 3],
+            chart: missing.join("t.json"), inst: missing.join("Inst.ogg"), voices_player: None, voices_opponent: None,
+        };
+        let mut editor = ChartEditor::open(&missing, &entry, Some(text.to_owned())).unwrap();
+        let original = editor.json.clone();
+        editor.pick_all();
+        assert_eq!(editor.selected.len(), 3);
+        editor.copy();
+        // pasted at the line (half a second in), times kept apart as they were
+        editor.position = 500.0;
+        editor.paste();
+        assert_eq!(editor.json["notes"][0]["sectionNotes"], json!([[0, 1, 0], [125, 6, 0], [500.0, 1, 0], [625.0, 6, 0]]));
+        assert_eq!(editor.json["events"][1], json!([750.0, [["Hey!", "BF", ""]]]));
+        // the pasted ones are picked: taking them off leaves the chart as it was
+        editor.delete_picked();
+        assert_eq!(editor.json, original);
     }
 
     #[test]
