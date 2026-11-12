@@ -53,6 +53,11 @@ impl Rect {
     pub const fn new(x: f32, y: f32, w: f32, h: f32) -> Rect {
         Rect { x, y, w, h }
     }
+
+    /// The two share some room (touching edges do not count).
+    pub fn overlaps(&self, other: &Rect) -> bool {
+        self.x < other.x + other.w && other.x < self.x + self.w && self.y < other.y + other.h && other.y < self.y + self.h
+    }
 }
 
 /// Random numbers; the same sequence after the same `srand`.

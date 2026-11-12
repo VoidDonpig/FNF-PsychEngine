@@ -358,11 +358,13 @@ struct Sprite {
     animations: HashMap<String, Animation>,
     /// The animation playing and how long it has played.
     playing: Option<(String, f64)>,
+    /// Drawn adding its light (setBlendMode "add").
+    add: bool,
 }
 
 impl Sprite {
     fn new(art: Option<Art>, x: f64, y: f64) -> Sprite {
-        Sprite { text: None, art, solid: None, x, y, scale: [1.0; 2], scroll: [1.0; 2], offset: [0.0; 2], alpha: 1.0, visible: true, angle: 0.0, flip_x: false, color: 0xFFFFFF, camera: Cam::Game, added: false, front: false, animations: HashMap::new(), playing: None }
+        Sprite { text: None, art, solid: None, x, y, scale: [1.0; 2], scroll: [1.0; 2], offset: [0.0; 2], alpha: 1.0, visible: true, angle: 0.0, flip_x: false, color: 0xFFFFFF, camera: Cam::Game, added: false, front: false, animations: HashMap::new(), playing: None, add: false }
     }
 
     /// The frame shown now: of the animation playing, else the first of the sheet, else the whole picture.
@@ -480,9 +482,11 @@ impl Sprite {
         push_model_matrix(Mat4::from_translation(middle) * Mat4::from_rotation_z((self.angle as f32).to_radians()) * Mat4::from_scale(scale.extend(1.0)) * Mat4::from_translation(-middle));
         let tint = Color::from_hex(self.color);
         let color = Color { a: self.alpha as f32, ..tint };
+        blend_add(self.add);
         if let Some(text) = &self.text {
             text.draw(corner, color);
             pop_model_matrix();
+            blend_add(false);
             return;
         }
         match (&self.solid, self.frame(), &self.art) {
@@ -497,6 +501,13 @@ impl Sprite {
             _ => {}
         }
         pop_model_matrix();
+        blend_add(false);
+    }
+
+    /// Where it is and how big (Flixel's hitbox: its place, and its frame's size scaled).
+    fn bounds(&self) -> Rect {
+        let size = self.size();
+        Rect::new(self.x as f32, self.y as f32, (size[0] * self.scale[0].abs()) as f32, (size[1] * self.scale[1].abs()) as f32)
     }
 }
 
@@ -1061,6 +1072,50 @@ impl Scripts {
                 sprite.solid = Some(([args.1.unwrap_or(256.0), args.2.unwrap_or(256.0)], args.3.as_ref().map_or(0xFFFFFF, color_of)));
             }
             Ok(())
+        });
+        // a new picture for a sprite: whole, or cut in a grid of frames for addAnimation (loadGraphic), or a sheet (loadFrames)
+        function!("loadGraphic", |_lua, shared, args: (String, String, Option<f64>, Option<f64>)| {
+            let mut shared = shared.borrow_mut();
+            let art = shared.art(&args.1, false);
+            let (across, down) = (args.2.unwrap_or(0.0) as f32, args.3.unwrap_or(0.0) as f32);
+            let art = match art {
+                Some(Art::Picture(picture)) if across > 0.0 || down > 0.0 => {
+                    let cell = vec2(if across > 0.0 { across } else { picture.width() }, if down > 0.0 { down } else { picture.height() });
+                    let (columns, rows) = ((picture.width() / cell.x) as usize, (picture.height() / cell.y) as usize);
+                    let frames = (0..rows * columns).map(|index| {
+                        let source = Rect::new((index % columns) as f32 * cell.x, (index / columns) as f32 * cell.y, cell.x, cell.y);
+                        (index.to_string(), Frame { source, offset: Vec2::ZERO, size: cell, rotated: false })
+                    }).collect();
+                    Some(Art::Sheet(Rc::new(Sheet { texture: picture, frames })))
+                }
+                art => art,
+            };
+            if let Some(sprite) = shared.sprite(&args.0) {
+                (sprite.art, sprite.solid, sprite.playing) = (art, None, None);
+                sprite.animations.clear();
+            }
+            Ok(())
+        });
+        function!("loadFrames", |_lua, shared, args: (String, String, Option<String>)| {
+            let mut shared = shared.borrow_mut();
+            let art = shared.art(&args.1, true);
+            if let Some(sprite) = shared.sprite(&args.0) {
+                (sprite.art, sprite.solid, sprite.playing) = (art, None, None);
+                sprite.animations.clear();
+            }
+            Ok(())
+        });
+        function!("setBlendMode", |_lua, shared, args: (String, Option<String>)| {
+            if let Some(sprite) = shared.borrow_mut().sprite(&args.0) {
+                sprite.add = args.1.is_some_and(|blend| blend.trim().eq_ignore_ascii_case("add"));
+            }
+            Ok(())
+        });
+        function!("objectsOverlap", |_lua, shared, args: (String, String)| {
+            let mut shared = shared.borrow_mut();
+            let first = shared.sprite(&args.0).map(|sprite| sprite.bounds());
+            let second = shared.sprite(&args.1).map(|sprite| sprite.bounds());
+            Ok(first.zip(second).is_some_and(|(first, second)| first.overlaps(&second)))
         });
         function!("addLuaSprite", |_lua, shared, args: (String, Option<bool>)| {
             if let Some(sprite) = shared.borrow_mut().sprite(&args.0) {
