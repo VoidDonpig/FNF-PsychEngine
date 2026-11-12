@@ -185,7 +185,7 @@ impl DialogueEditor {
             self.save();
         }
         if let Some(index) = picked {
-            self.load(index);
+            if self.ui.sure("dialogue files", index, self.unsaved) { self.load(index) } else { self.say(crate::ui::UNSAVED) }
         }
     }
 

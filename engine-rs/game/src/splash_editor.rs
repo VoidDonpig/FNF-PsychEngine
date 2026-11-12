@@ -227,7 +227,7 @@ impl SplashEditor {
         }
         if let Some(index) = picked_skin {
             let name = skins[index].clone();
-            self.load(&name);
+            if self.ui.sure("splash skins", index, self.unsaved) { self.load(&name) } else { self.say(crate::ui::UNSAVED) }
         }
     }
 

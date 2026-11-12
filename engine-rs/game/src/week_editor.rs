@@ -100,12 +100,12 @@ impl WeekEditor {
         self.ui.label(x, 262.0, "Load Week:");
         let chosen = self.weeks.iter().position(|week| Some(&week.path) == self.path.as_ref()).unwrap_or(0);
         if let Some(index) = self.ui.dropdown("weeks", x, 280.0, 230.0, &names, chosen) {
-            self.load(index);
+            if self.ui.sure("weeks", index, self.unsaved) { self.load(index) } else { self.say(crate::ui::UNSAVED) }
         }
         if self.ui.button(x, 308.0, 110.0, "Save Week") {
             self.save();
         }
-        if self.ui.button(x + 120.0, 308.0, 110.0, "New Week") {
+        if self.ui.button(x + 120.0, 308.0, 110.0, "New Week") && (self.ui.sure("new week", 0, self.unsaved) || { self.say(crate::ui::UNSAVED); false }) {
             (self.path, self.file, self.json, self.song, self.unsaved) = (None, "week1".to_owned(), new_week(), 0, true);
         }
         let area = Rect::new(WIDTH - 250.0, HEIGHT - 355.0, 250.0, 355.0);

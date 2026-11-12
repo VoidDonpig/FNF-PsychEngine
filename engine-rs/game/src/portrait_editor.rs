@@ -249,7 +249,7 @@ impl PortraitEditor {
         }
         if let Some(index) = picked {
             let name = self.names[index].clone();
-            self.load(&name);
+            if self.ui.sure("portraits", index, self.unsaved) { self.load(&name) } else { self.say(crate::ui::UNSAVED) }
         }
     }
 

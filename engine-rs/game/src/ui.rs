@@ -24,11 +24,16 @@ pub struct Ui {
     open: Option<(&'static str, usize)>,
     /// The boxes drawn this frame: clicks on them are not the editor's.
     boxes: Vec<Rect>,
+    /// A choice that would drop changes not saved, asked about once (which control, which choice).
+    asked: Option<(&'static str, usize)>,
     mouse: Vec2,
     clicked: bool,
 }
 
 const TEXT: f32 = 14.0;
+
+/// What an editor says when a choice would drop changes not saved.
+pub const UNSAVED: &str = "Unsaved changes: choose it again to drop them";
 const ROWS: usize = 10;
 
 fn inside(rect: Rect, at: Vec2) -> bool {
@@ -44,6 +49,14 @@ impl Ui {
         self.mouse = mouse_position(vec2(crate::WIDTH, crate::HEIGHT));
         self.clicked = is_mouse_pressed();
         self.taken = false;
+    }
+
+    /// Whether a choice that would drop changes not saved goes ahead: at once with none, else only when made a second
+    /// time (the first time, the editor says so: UNSAVED).
+    pub fn sure(&mut self, id: &'static str, choice: usize, unsaved: bool) -> bool {
+        let sure = !unsaved || self.asked == Some((id, choice));
+        self.asked = if sure { None } else { Some((id, choice)) };
+        sure
     }
 
     /// Whether this frame's click went to the controls or fell on their boxes.
@@ -204,5 +217,18 @@ impl Ui {
                 Shape::Text(words, at, color) => draw_text_ex(words, at.x, at.y, TextParams { font, font_size: TEXT as u16, color: *color, ..Default::default() }),
             }
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    #[test]
+    fn a_choice_dropping_changes_is_made_twice() {
+        let mut ui = super::Ui::default();
+        assert!(ui.sure("list", 3, false), "nothing to lose: at once");
+        assert!(!ui.sure("list", 3, true), "first time: asked");
+        assert!(!ui.sure("list", 4, true), "another choice: asked again");
+        assert!(ui.sure("list", 4, true), "the same again: done");
+        assert!(!ui.sure("list", 4, true), "and asked anew afterwards");
     }
 }

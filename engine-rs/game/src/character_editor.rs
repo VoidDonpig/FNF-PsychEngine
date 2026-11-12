@@ -310,7 +310,7 @@ impl CharacterEditor {
             let chosen = self.characters.iter().position(|name| *name == self.name).unwrap_or(0);
             if let Some(index) = self.ui.dropdown("character", x, y, 120.0, &self.characters, chosen) {
                 let name = self.characters[index].clone();
-                self.load(&name);
+                if self.ui.sure("character", index, self.unsaved) { self.load(&name) } else { self.say(crate::ui::UNSAVED) }
             }
             if let Some(player) = self.ui.check(x, y + 30.0, "Playable Character", self.player) {
                 self.player = player;
@@ -319,7 +319,7 @@ impl CharacterEditor {
             }
             if self.ui.button(x + 140.0, y, 90.0, "Reload Char") {
                 let name = self.name.clone();
-                self.load(&name);
+                if self.ui.sure("reload character", 0, self.unsaved) { self.load(&name) } else { self.say(crate::ui::UNSAVED) }
             }
         }
         let big = Rect::new(WIDTH - 375.0, 195.0, 350.0, 290.0);

@@ -107,7 +107,7 @@ impl MenuCharacterEditor {
         let chosen = self.names.iter().position(|name| *name == self.name).unwrap_or(0);
         if let Some(index) = self.ui.dropdown("menu characters", WIDTH / 2.0 - 180.0, 480.0, 150.0, &self.names, chosen) {
             let name = self.names[index].clone();
-            self.load(&name);
+            if self.ui.sure("menu characters", index, self.unsaved) { self.load(&name) } else { self.say(crate::ui::UNSAVED) }
         }
         if self.ui.button(WIDTH / 2.0 + 10.0, 479.0, 130.0, "Save Character") {
             self.save();
