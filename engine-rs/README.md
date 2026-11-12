@@ -256,15 +256,15 @@ Done:
   (Shift: ten times), Ctrl+C/V/R copy, paste and reset it; the folder's skins to load; Template starts it empty,
   Convert TXT turns the skin's old `.txt` config into the JSON one; saved over its file (the one before kept as `.bak`).
 - **Gamepads** (Windows): any gamepad plays and goes through the menus with Psych's buttons (D-pad and
-  A/B/X/Y for the lanes; D-pad or left stick, A or Start, B, Start, Back for the menus); Lua's gamepad functions.
+  A/B/X/Y for the lanes; D-pad or left stick, A or Start, B, Start, Back for the menus); Lua's gamepad functions. The key binds page shows and binds
+  them after Ctrl (or a shoulder button), as Psych's: the lanes and the menus' actions, kept in the settings.
 
 Not there yet:
 
 - **Play screen**: the events and note types that belong to scripts (Set Property beyond the camera, custom
   ones); the rain of weekend 1 (on the streets and in the fight; the Shaders switch turns it off with the title's
   colour shift) is drawn as falling streaks, growing heavier through the song, not with the Haxe engine's shader; the charting mode entries of the pause menu.
-- **Menus**: achievements of mods; the note colours' copy and paste buttons (no clipboard here); the key binds' gamepad
-  side and debug keys (no editors yet); the GPU Caching switch (nothing to switch here); update check.
+- **Menus**: achievements of mods; the note colours' copy and paste buttons (no clipboard here); the GPU Caching switch (nothing to switch here); update check.
 - **Cutscenes**: a video's playOnLoad is not kept waiting.
 - **Scripts**: the rest of Lua's functions (notes' own textures and health, shaders, groups, and getProperty/setProperty
   beyond the camera, health, score, the characters' place and the scripts' sprites); custom events and note types run by scripts. HScript is Haxe code run against the Haxe
@@ -273,5 +273,4 @@ Not there yet:
   chosen to chart from the editors' list;
   the week editor's Copy/Paste Color (no system clipboard here); the
   note splash editor's Shader tab; the stage editor's image file picker.
-- **Other**: gamepads on Linux and macOS (gilrs needs libudev there); binding a gamepad's buttons on the key binds
-  page (Psych's buttons are used as they are).
+- **Other**: gamepads on Linux and macOS (gilrs needs libudev there).

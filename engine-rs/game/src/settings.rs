@@ -235,6 +235,8 @@ pub struct Settings {
     pub keys: [[Option<KeyCode>; 2]; 4],
     /// The keys of the menus and of the volume.
     pub ui_keys: crate::controls::Binds,
+    /// The gamepad's buttons of the lanes and the menus (`pad::ROWS`).
+    pub pad: crate::pad::Binds,
     /// The language file chosen ("pt-BR"); the game's own words are "en-US".
     pub language: String,
     /// Each mod's own settings (its `data/settings.json`), by folder: the values by their save names.
@@ -252,7 +254,7 @@ impl Default for Settings {
             scroll_type: 0, scroll_speed: 1.0, playback_rate: 1.0, health_gain: 1.0, health_loss: 1.0, instakill: false, practice: false,
             combo_offset: [0.0; 4], low_quality: false, antialiasing: true, shaders: true, framerate: refresh_rate().clamp(60.0, 1000.0), graphics_api: if cfg!(windows) { 1 } else { 2 }, fullscreen: false, exclusive_fullscreen: false, note_colors: LANE_COLORS, pixel_note_colors: PIXEL_LANE_COLORS,
             keys: [[Some(A), Some(Left)], [Some(S), Some(Down)], [Some(W), Some(Up)], [Some(D), Some(Right)]],
-            ui_keys: crate::controls::defaults(), language: funkin_core::lang::ENGLISH.0.to_owned(), mod_settings: serde_json::Map::new(),
+            ui_keys: crate::controls::defaults(), pad: crate::pad::defaults(), language: funkin_core::lang::ENGLISH.0.to_owned(), mod_settings: serde_json::Map::new(),
         }
     }
 }
@@ -281,6 +283,11 @@ impl Settings {
         for ((name, _), slots) in crate::controls::NAMES.iter().zip(settings.ui_keys.iter_mut()) {
             if json["ui_keys"][name].is_array() {
                 *slots = [0, 1].map(|slot| ui_bindable().into_iter().find(|key| Some(format!("{key:?}").as_str()) == json["ui_keys"][name][slot].as_str()));
+            }
+        }
+        for (name, slots) in crate::pad::ROWS.iter().zip(settings.pad.iter_mut()) {
+            if json["pad_binds"][name].is_array() {
+                *slots = [0, 1].map(|slot| json["pad_binds"][name][slot].as_str().and_then(crate::pad::named));
             }
         }
         if json["keys"].is_array() {
@@ -317,6 +324,8 @@ impl Settings {
         json.insert("keys".to_owned(), json!(keys));
         let ui_keys: serde_json::Map<String, Value> = crate::controls::NAMES.iter().zip(self.ui_keys).map(|((name, _), slots)| ((*name).to_owned(), json!(slots.map(|key| key.map(|key| format!("{key:?}")))))).collect();
         json.insert("ui_keys".to_owned(), Value::Object(ui_keys));
+        let pad: serde_json::Map<String, Value> = crate::pad::ROWS.iter().zip(self.pad).map(|(name, slots)| ((*name).to_owned(), json!(slots.map(|button| button.map(crate::pad::flx_name))))).collect();
+        json.insert("pad_binds".to_owned(), Value::Object(pad));
         json.insert("language".to_owned(), json!(self.language));
         json.insert("mod_settings".to_owned(), Value::Object(self.mod_settings.clone()));
         for (key, colors) in [("note_colors", &self.note_colors), ("pixel_note_colors", &self.pixel_note_colors)] {
@@ -378,6 +387,7 @@ mod tests {
         settings.note_colors[2] = [0x000001, 0xABCDEF, 0];
         settings.bind(0, 0, Some(KeyCode::Z));
         settings.bind(3, 1, None);
+        settings.pad[0] = [Some(crate::pad::Button::LeftTrigger), None];
         assert_eq!(Settings::from_json(&settings.to_json()), settings);
         assert_eq!(Settings::from_json("not json"), Settings::default());
         assert_eq!(Settings::from_json(r#"{"downscroll":true,"keys":"?","offset_ms":9999,"note_colors":[["red","+12345","12345"]]}"#), Settings { downscroll: true, offset_ms: 500.0, ..Default::default() });

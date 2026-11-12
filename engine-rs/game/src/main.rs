@@ -795,11 +795,11 @@ impl Playing {
         }
         // a gamepad's lane buttons, timed by the frame
         for lane in 0..4 {
-            let buttons = pad::LANES[lane];
-            if buttons.iter().any(|&button| pad::pressed(button)) && !self.play.botplay {
+            let buttons = pad::lane(lane);
+            if buttons.into_iter().flatten().any(pad::pressed) && !self.play.botplay {
                 self.lanes_used[lane] = true;
                 events.extend(self.play.press(lane, judged));
-            } else if buttons.iter().any(|&button| pad::released(button)) && !self.lane_held(lane) {
+            } else if buttons.into_iter().flatten().any(pad::released) && !self.lane_held(lane) {
                 self.play.release(lane);
             }
         }
@@ -1269,7 +1269,7 @@ impl Playing {
     }
 
     fn lane_held(&self, lane: usize) -> bool {
-        self.held_keys.iter().any(|&key| self.settings.lane_of(key) == Some(lane)) || pad::LANES[lane].iter().any(|&button| pad::down(button))
+        self.held_keys.iter().any(|&key| self.settings.lane_of(key) == Some(lane)) || pad::lane(lane).into_iter().flatten().any(pad::down)
     }
 
     /// `letters` writes in the menus' bold letters: words, left and top, opacity.
@@ -1786,6 +1786,7 @@ fn main() {
     settings::set_skins(&listed("images/noteSkins/list.txt"), &listed("images/noteSplashes/list.txt"));
     let mut settings = Settings::load(&base);
     controls::set(settings.ui_keys);
+    pad::set(settings.pad);
     audio::set_master(settings.volume as f32);
     // the volume as it was when its keys were last used, and when
     let mut volume_shown = f64::MIN;

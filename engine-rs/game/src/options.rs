@@ -38,6 +38,8 @@ pub struct OptionsMenu {
     /// Key binds: the second key of the row is chosen; how long Escape or Backspace has been held while binding.
     alt: bool,
     holding: f32,
+    /// Key binds: the gamepad's buttons are shown and bound instead of the keyboard's (Ctrl, or a shoulder button).
+    pad_mode: bool,
     /// How long Left or Right has been held on a page, and the value it has scrolled to (a mod's settings).
     held: f32,
     hold_value: f64,
@@ -496,6 +498,35 @@ impl OptionsMenu {
         Some(Some(key))
     }
 
+    /// Waits for a gamepad button as `rebind` does for a key: B (or Escape) held half a second gives up, Back (or Backspace)
+    /// leaves none; a short press of B or Back binds it once let go.
+    fn pad_rebind(&mut self, menus: &mut crate::menu::Menus, skin: &crate::Skin, what: &str, dt: f32) -> Option<Option<crate::pad::Button>> {
+        use crate::pad::{self, Button};
+        let since = (get_time() - self.flipped) as f32;
+        draw_rectangle(0.0, 0.0, crate::WIDTH, HEIGHT, Color::new(1.0, 1.0, 1.0, 0.6 * (since / 0.35).min(1.0)));
+        let rebinding = funkin_core::lang::phrase_with("controls_rebinding", "Rebinding {1}", &[what]);
+        menus.write(skin, &rebinding, false, (crate::WIDTH - menus.width(skin, &rebinding, false)) / 2.0, 160.0, 1.0, 1.0);
+        for (line, words) in phrase("controls_rebinding2_gamepad", "Hold B to Cancel\nHold Back to Delete").lines().enumerate() {
+            menus.write(skin, words, true, (crate::WIDTH - menus.width(skin, words, true)) / 2.0, 340.0 + line as f32 * 85.0, 1.0, 1.0);
+        }
+        let (cancel, delete) = (pad::down(Button::B) || is_key_down(KeyCode::Escape), pad::down(Button::Back) || is_key_down(KeyCode::Backspace));
+        if cancel || delete {
+            self.holding += dt;
+            if self.holding > 0.5 {
+                menus.sound("cancelMenu", 1.0);
+                self.binding = false;
+                return delete.then_some(None);
+            }
+            return None;
+        }
+        self.holding = 0.0;
+        let tapped = [Button::B, Button::Back].into_iter().find(|&button| pad::released(button));
+        let button = pad::first_pressed().filter(|button| !matches!(button, Button::B | Button::Back)).or(tapped)?;
+        menus.sound("confirmMenu", 1.0);
+        self.binding = false;
+        Some(Some(button))
+    }
+
     /// A mod's own settings, as the Haxe engine's page for them: like the other pages, a key among them bound as on the key
     /// binds' page. Kept in the settings by the mod's folder. True when the player leaves.
     fn mod_settings(&mut self, settings: &mut Settings, menus: &mut crate::menu::Menus, skin: &crate::Skin, back: bool, dt: f32) -> bool {
@@ -776,25 +807,46 @@ impl OptionsMenu {
     #[allow(clippy::too_many_arguments)]
     fn controls(&mut self, settings: &mut Settings, menus: &mut crate::menu::Menus, skin: &crate::Skin, text: &dyn Fn(&str, f32, f32, u16, Color), dt: f32, back: bool, raw_input: bool, bindable: &[KeyCode]) -> bool {
         grid();
+        use crate::pad::Button;
+        // Ctrl or a shoulder button: the keyboard's keys or the gamepad's buttons, as the Haxe engine
+        if !self.binding && (is_key_pressed(KeyCode::LeftControl) || is_key_pressed(KeyCode::RightControl) || crate::pad::pressed(Button::LeftShoulder) || crate::pad::pressed(Button::RightShoulder)) {
+            (self.pad_mode, self.row) = (!self.pad_mode, 0);
+            menus.sound("scrollMenu", 1.0);
+        }
         if let Some(sign) = menus.picture("controllertype") {
-            draw_texture_ex(&sign, 50.0, 40.0, WHITE, DrawTextureParams { source: Some(Rect::new(0.0, 0.0, 82.0, 60.0)), ..Default::default() });
+            let source = Rect::new(if self.pad_mode { 82.0 } else { 0.0 }, 0.0, 82.0, 60.0);
+            draw_texture_ex(&sign, 50.0, 40.0, WHITE, DrawTextureParams { source: Some(source), ..Default::default() });
         }
         small(menus, skin, "CTRL", false, vec2(60.0, 90.0), 0.4, WHITE);
 
-        let rows: Vec<usize> = (0..BINDS.len()).filter(|&id| matches!(BINDS[id].0, Bind::Lane(_) | Bind::Action(_) | Bind::Defaults)).collect();
+        // a gamepad has no volume or debug keys: their rows are left out
+        let shown: Vec<usize> = (0..BINDS.len()).filter(|&id| !self.pad_mode || !(17..25).contains(&id)).collect();
+        let rows: Vec<usize> = (0..shown.len()).filter(|&place| matches!(BINDS[shown[place]].0, Bind::Lane(_) | Bind::Action(_) | Bind::Defaults)).collect();
         if !self.binding {
             self.row = (self.row + (pressed(Ui::Down) as usize + pressed(Ui::Up) as usize * (rows.len() - 1))) % rows.len();
         }
-        let chosen = rows[self.row];
+        let chosen_place = rows[self.row.min(rows.len() - 1)];
+        let chosen = shown[chosen_place];
         // the list glides to keep three rows above the chosen one and four below, short of its ends
-        self.scroll += ((chosen as f32).clamp(3.0, (BINDS.len() - 5) as f32) - self.scroll) * (1.0 - (-dt * 9.6).exp());
-        let keys = |bind: Bind| match bind {
-            Bind::Lane(lane) => settings.keys[lane],
-            Bind::Action(action) => settings.ui_keys[action],
-            _ => [None; 2],
+        self.scroll += ((chosen_place as f32).clamp(3.0, (shown.len() - 5) as f32) - self.scroll) * (1.0 - (-dt * 9.6).exp());
+        let pad_row = |bind: Bind| match bind {
+            Bind::Lane(lane) => Some(lane),
+            Bind::Action(action) if action < 8 => Some(4 + action),
+            _ => None,
         };
-        for (id, &(bind, name, _)) in BINDS.iter().enumerate() {
-            let y = (id as f32 - self.scroll) * 1.3 * 60.0 + 300.0;
+        let keys = |bind: Bind| -> [String; 2] {
+            if self.pad_mode {
+                return pad_row(bind).map_or(["---".to_owned(), "---".to_owned()], |row| settings.pad[row].map(|button| crate::pad::shown(button).to_owned()));
+            }
+            match bind {
+                Bind::Lane(lane) => settings.keys[lane],
+                Bind::Action(action) => settings.ui_keys[action],
+                _ => [None; 2],
+            }.map(key_name)
+        };
+        for (place, &id) in shown.iter().enumerate() {
+            let (bind, name, _) = BINDS[id];
+            let y = (place as f32 - self.scroll) * 1.3 * 60.0 + 300.0;
             let alpha = if id == chosen { 1.0 } else { 0.6 };
             if bind == Bind::Gap || !(-100.0..HEIGHT + 20.0).contains(&y) {
                 continue;
@@ -812,7 +864,6 @@ impl OptionsMenu {
                         if id == chosen && slot == self.alt as usize {
                             draw_rectangle(x, y - 6.0, 250.0, 78.0, Color::new(1.0, 1.0, 1.0, 0.75));
                         }
-                        let key = key_name(key);
                         menus.write(skin, &key, false, x + 10.0, y - 52.0, (230.0 / menus.width(skin, &key, false)).min(1.0), alpha);
                     }
                 }
@@ -828,8 +879,13 @@ impl OptionsMenu {
                 menus.sound("scrollMenu", 1.0);
             }
             if pressed(Ui::Accept) && bind == Bind::Defaults {
-                (settings.keys, settings.ui_keys) = (Settings::default().keys, crate::controls::defaults());
-                crate::controls::set(settings.ui_keys);
+                if self.pad_mode {
+                    settings.pad = crate::pad::defaults();
+                    crate::pad::set(settings.pad);
+                } else {
+                    (settings.keys, settings.ui_keys) = (Settings::default().keys, crate::controls::defaults());
+                    crate::controls::set(settings.ui_keys);
+                }
                 menus.sound("cancelMenu", 1.0);
             } else if pressed(Ui::Accept) {
                 (self.binding, self.holding, self.flipped) = (true, 0.0, get_time());
@@ -841,6 +897,19 @@ impl OptionsMenu {
             return false;
         }
 
+        // waiting for a button
+        if self.pad_mode {
+            if let (Some(button), Some(row)) = (self.pad_rebind(menus, skin, BINDS[chosen].2, dt), pad_row(bind)) {
+                let (slot, buttons) = (self.alt as usize, &mut settings.pad[row]);
+                // a button is not bound twice to the same thing
+                if button.is_some() && buttons[1 - slot] == button {
+                    buttons[1 - slot] = None;
+                }
+                buttons[slot] = button;
+                crate::pad::set(settings.pad);
+            }
+            return false;
+        }
         // waiting for a key
         let allowed = |key: &KeyCode| if matches!(bind, Bind::Lane(_)) { bindable.contains(key) } else { crate::settings::ui_bindable().contains(key) };
         let chosen_key = self.rebind(menus, skin, BINDS[chosen].2, dt, allowed);
