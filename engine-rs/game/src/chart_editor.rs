@@ -141,6 +141,8 @@ pub struct ChartEditor {
     /// held (none is made when nothing changed since).
     base: PathBuf,
     autosaved: (std::time::Instant, String),
+    /// The waveform drawn on the grid: of which track (0 none, 1 the instrumental, 2 and 3 the voices), its peaks.
+    waveform: (usize, Peaks),
 }
 
 impl ChartEditor {
@@ -202,7 +204,7 @@ impl ChartEditor {
             rate: 1.0, wheel_snaps: true, hitsounds: [0.0; 3], volumes: [0.6, 1.0, 1.0], muted: [false; 3], heard: 0.0, voice_tracks,
             sounds: [paths.find("sounds/hitsound.ogg"), paths.find("sounds/Metronome_Tick.ogg")],
             ui: Ui::default(), tab: 5, note_types, note_type: 0, events, abouts, event: 0, values: Default::default(), copied: None,
-            base: base.to_path_buf(), autosaved: (std::time::Instant::now(), String::new()),
+            base: base.to_path_buf(), autosaved: (std::time::Instant::now(), String::new()), waveform: (0, Peaks::default()),
         };
         editor.autosaved.1 = editor.text();
         editor.measure();
@@ -661,6 +663,26 @@ impl ChartEditor {
         self.say(done.unwrap_or_else(|error| error));
     }
 
+    /// The chosen track's loudness down the grid, a line of each screen row: out from the middle stripe by how far
+    /// its left and right channels swing (the Haxe editor's waveform, in its blue).
+    fn draw_waveform(&self, row_height: f32) {
+        if self.waveform.0 == 0 || self.waveform.1.peaks.is_empty() {
+            return;
+        }
+        let (middle, half) = (LEFT + 5.0 * GRID, 4.0 * GRID);
+        let at = |y: f32| self.ms_of(self.row_of(self.position) + ((y - HEIGHT / 2.0) / row_height) as f64);
+        let top = self.y_of(0.0).max(0.0) as usize;
+        for y in top..HEIGHT as usize {
+            let [low, high] = self.waveform.1.between(at(y as f32), at(y as f32 + 1.0));
+            // (as the Haxe editor: a full swing reaches a quarter of the grid each way and no further)
+            let reach = |swing: f32| (swing * 2.0 * half / 1.12).min(half) / 2.0;
+            let (left, right) = (reach(low), reach(high));
+            if left + right >= 0.5 {
+                draw_rectangle(middle - left, y as f32, left + right, 1.0, Color::from_hex(0x0000FF));
+            }
+        }
+    }
+
     fn backups(&self) -> PathBuf {
         self.base.join("backups")
     }
@@ -755,6 +777,7 @@ impl ChartEditor {
                 draw_rectangle(LEFT + column * GRID - 1.0, top.max(0.0), 2.0, bottom.min(HEIGHT) - top.max(0.0), BLACK);
             }
         }
+        self.draw_waveform(row_height);
         for (index, section) in self.sections().iter().enumerate() {
             for (place, note) in section["sectionNotes"].as_array().into_iter().flatten().enumerate() {
                 let (Some(time), Some(data)) = (note[0].as_f64(), note[1].as_f64()) else { continue };
@@ -869,6 +892,13 @@ impl ChartEditor {
         self.ui.label(x, y + 38.0, "Playback Rate:");
         if let Some(rate) = self.ui.stepper("rate", x + 130.0, y + 38.0, 60.0, self.rate, 0.1, 0.1, 5.0) {
             self.set_rate(rate);
+        }
+        // (the list first: open, it drops down over the controls under it)
+        self.ui.label(x + 238.0, y + 38.0, "Waveform:");
+        let tracks = ["None", "Instrumental", "Main Vocals", "Opp. Vocals"].map(str::to_owned);
+        if let Some(track) = self.ui.dropdown("waveform", x + 238.0, y + 56.0, 102.0, &tracks, self.waveform.0) {
+            let path = [None, Some(&self.entry.inst), self.entry.voices_player.as_ref(), self.entry.voices_opponent.as_ref()][track].cloned();
+            self.waveform = (track, path.and_then(|path| audio::samples(&path)).map_or_else(Peaks::default, |(samples, rate)| Peaks::of(&samples, rate)));
         }
         if let Some(snaps) = self.ui.check(x, y + 66.0, "Mouse Scroll Snap", self.wheel_snaps) {
             self.wheel_snaps = snaps;
@@ -1172,6 +1202,37 @@ impl ChartEditor {
     }
 }
 
+/// A track's loudest swings each millisecond, to draw its waveform from without going through all its samples.
+#[derive(Default)]
+struct Peaks {
+    /// Each millisecond: how far down and up its left and right channels go, as 0 to 0.5 (the Haxe editor's scale).
+    peaks: Vec<[f32; 2]>,
+}
+
+impl Peaks {
+    fn of(samples: &[i16], rate: u32) -> Peaks {
+        let frames = (rate as usize / 1000).max(1);
+        let peaks = samples.chunks(frames * 2).map(|chunk| {
+            let (mut low, mut high) = ([0i32; 2], [0i32; 2]);
+            for frame in chunk.chunks_exact(2) {
+                for channel in 0..2 {
+                    low[channel] = low[channel].min(frame[channel] as i32);
+                    high[channel] = high[channel].max(frame[channel] as i32);
+                }
+            }
+            // the channels' swings added up, down and up, as Haxe's lmin + rmin and lmax + rmax
+            [(-low[0] - low[1]) as f32 / 65535.0, (high[0] + high[1]) as f32 / 65535.0]
+        }).collect();
+        Peaks { peaks }
+    }
+
+    /// The loudest swings down and up from `from` to `to` ms.
+    fn between(&self, from: f64, to: f64) -> [f32; 2] {
+        let (start, end) = (from.max(0.0) as usize, (to.max(0.0) as usize).max(from.max(0.0) as usize + 1));
+        self.peaks.get(start..end.min(self.peaks.len())).unwrap_or(&[]).iter().fold([0.0f32; 2], |most, peak| [most[0].max(peak[0]), most[1].max(peak[1])])
+    }
+}
+
 /// The Haxe editor's autosave defaults: every two minutes, the ten newest kept.
 const AUTOSAVE_SECONDS: u64 = 120;
 const BACKUP_LIMIT: usize = 10;
@@ -1297,6 +1358,17 @@ pub(crate) fn print(value: &Value, depth: usize) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn waveform_peaks_are_the_loudest_swings_of_each_millisecond() {
+        // 2 kHz stereo: two frames a millisecond
+        let samples = [100, -50, -200, 300, 0, 0, 32767, -32768];
+        let peaks = Peaks::of(&samples, 2000);
+        assert_eq!(peaks.peaks.len(), 2);
+        assert_eq!(peaks.peaks[0], [250.0 / 65535.0, 400.0 / 65535.0]);
+        assert_eq!(peaks.between(0.0, 2.0), [32768.0 / 65535.0, 32767.0 / 65535.0]);
+        assert_eq!(peaks.between(5.0, 9.0), [0.0, 0.0]);
+    }
 
     #[test]
     fn the_oldest_autosaves_past_the_limit_go() {

@@ -44,6 +44,17 @@ pub fn set_master(volume: f32) {
     let _ = volume;
 }
 
+/// A song track's samples (interleaved stereo) and rate, decoded once and kept while its song is the one open.
+pub fn samples(path: &Path) -> Option<(std::sync::Arc<Vec<i16>>, u32)> {
+    #[cfg(feature = "audio")]
+    return output::decoded(path, true).ok();
+    #[cfg(not(feature = "audio"))]
+    {
+        let _ = path;
+        None
+    }
+}
+
 pub struct Song {
     /// Silent clock: ms played before the current run, and when that run began.
     played: f64,
