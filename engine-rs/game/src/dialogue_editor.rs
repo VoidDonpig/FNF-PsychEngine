@@ -67,7 +67,7 @@ impl DialogueEditor {
     fn show(&mut self) {
         self.line = self.line.min(self.lines().len().saturating_sub(1));
         let line = self.lines().get(self.line).cloned().unwrap_or_else(new_line);
-        match Speech::from_json(&self.paths(), &json!({"dialogue": [line]}), None) {
+        match Speech::from_json(&self.paths(), &json!({"dialogue": [line]}), None, None) {
             Ok(speech) => self.speech = Some(speech),
             Err(error) => {
                 self.speech = None;

@@ -224,6 +224,11 @@ Done:
   time, each shown as the game shows it (Space again): character, speed, angry box, sound, text in the Dialogue Line
   box; W/S the portrait's expression, A/D the lines, O takes one off, P adds one after; the folder's
   `data/<song>/dialogue*.json` to load; saved over its file (the one before kept as `.bak`).
+- **Dialogue portrait editor**: from the editors' list: a portrait's file (`images/dialogue/`) edited with the game's
+  dialogue showing it (W/S its expressions, Space the line again, H hides the box): left, center or right; image,
+  position, scale, no antialiasing; on the Animations tab its expressions (name, looping and resting frames' prefixes;
+  add/update, remove), their two frames drawn see-through over each other (H: one alone), WASD and the arrow keys
+  moving their offsets (Shift: ten times); saved over its file (the one before kept as `.bak`).
 - **Gamepads** (Windows): any gamepad plays and goes through the menus with Psych's buttons (D-pad and
   A/B/X/Y for the lanes; D-pad or left stick, A or Start, B, Start, Back for the menus); Lua's gamepad functions.
 
@@ -240,7 +245,7 @@ Not there yet:
   engine's own classes, so mods that use it cannot run here as they are. Custom shaders.
 - **Editors**: the chart editor's File/Edit/View menus and its Data tab, the waveform, the vortex editor, lists to choose characters and stages from, pasted notes following the mouse before they are put down, autosave, a song
   chosen to chart from the editors' list;
-  the character editor's Load Template, ghost highlight and icon colour; the week editor's freeplay view; the stage,
-  dialogue character and note splash editors.
+  the character editor's Load Template, ghost highlight and icon colour; the week editor's freeplay view; the portrait editor's camera; the
+  stage and note splash editors.
 - **Other**: gamepads on Linux and macOS (gilrs needs libudev there); binding a gamepad's buttons on the key binds
   page (Psych's buttons are used as they are).

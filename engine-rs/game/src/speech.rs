@@ -99,11 +99,12 @@ impl Speech {
     /// The dialogue in `file`, with `music` under it (a name in music/, or none). Fails without lines, a bubble or letters.
     pub fn load(paths: &Paths, file: &Path, music: Option<&str>) -> Result<Speech, String> {
         let json: Value = serde_json::from_str(&std::fs::read_to_string(file).map_err(|e| format!("{}: {e}", file.display()))?).map_err(|e| format!("{}: {e}", file.display()))?;
-        Speech::from_json(paths, &json, music).map_err(|error| format!("{}: {error}", file.display()))
+        Speech::from_json(paths, &json, music, None).map_err(|error| format!("{}: {error}", file.display()))
     }
 
-    /// The dialogue a file's JSON holds (the dialogue editor's, as it is edited).
-    pub fn from_json(paths: &Paths, json: &Value, music: Option<&str>) -> Result<Speech, String> {
+    /// The dialogue a file's JSON holds (the dialogue editor's, as it is edited); `own`: a portrait's file as the
+    /// portrait editor has it, in the place of the one of that name.
+    pub fn from_json(paths: &Paths, json: &Value, music: Option<&str>, own: Option<(&str, &Value)>) -> Result<Speech, String> {
         let text = |line: &Value, key: &str| line[key].as_str().unwrap_or_default().to_owned();
         let lines: Vec<Line> = json["dialogue"].as_array().into_iter().flatten().filter(|line| line.is_object()).map(|line| Line {
             portrait: text(line, "portrait"),
@@ -121,7 +122,10 @@ impl Speech {
         let mut portraits = Vec::new();
         for line in &lines {
             if !portraits.iter().any(|portrait: &Portrait| portrait.name == line.portrait) {
-                portraits.push(Portrait::load(paths, &line.portrait)?);
+                portraits.push(match own {
+                    Some((name, json)) if name == line.portrait => Portrait::from_json(paths, name, json)?,
+                    _ => Portrait::load(paths, &line.portrait)?,
+                });
             }
         }
         let mut speech = Speech {
@@ -273,6 +277,20 @@ impl Speech {
         self.music.map(|time| (time / 2.0).min(1.0))
     }
 
+    /// For the portrait editor: a portrait's expression drawn where it rests, its talking (`resting` false) or resting
+    /// frames' first, see-through as asked.
+    pub fn draw_pose(&self, portrait: &str, expression: &str, resting: bool, alpha: f32) {
+        let Some(portrait) = self.portraits.iter().find(|own| own.name == portrait) else { return };
+        let Some((_, shown)) = portrait.expressions.iter().find(|(name, _)| name == expression) else { return };
+        let frames = if resting || shown.talking.is_empty() { &shown.resting } else { &shown.talking };
+        let Some(frame) = frames.first() else { return };
+        let at = match portrait.side {
+            Side::Middle => vec2(portrait.at.x, portrait.resting_at),
+            _ => vec2(portrait.resting_at, portrait.at.y),
+        };
+        flixel(&portrait.sheet.texture, *frame, at, shown.offsets[resting as usize], portrait.origin, portrait.scale, false, Color { a: alpha, ..WHITE });
+    }
+
     /// Whether "Press BACK to Skip" shows.
     pub fn skippable(&self) -> bool {
         !self.ended
@@ -316,6 +334,10 @@ impl Portrait {
     fn load(paths: &Paths, name: &str) -> Result<Portrait, String> {
         let file = paths.find(&format!("images/dialogue/{name}.json")).or_else(|| paths.find("images/dialogue/bf.json")).ok_or("images/dialogue/bf.json: not found")?;
         let json: Value = serde_json::from_str(&std::fs::read_to_string(&file).map_err(|e| format!("{}: {e}", file.display()))?).map_err(|e| format!("{}: {e}", file.display()))?;
+        Portrait::from_json(paths, name, &json)
+    }
+
+    fn from_json(paths: &Paths, name: &str, json: &Value) -> Result<Portrait, String> {
         let image = json["image"].as_str().unwrap_or_default();
         let sheet = Sheet::load(&paths.find(&format!("images/dialogue/{image}.png")).ok_or_else(|| format!("images/dialogue/{image}.png: not found"))?)?;
         let pair = |value: &Value| vec2(value[0].as_f64().unwrap_or(0.0) as f32, value[1].as_f64().unwrap_or(0.0) as f32);

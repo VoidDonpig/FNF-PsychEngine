@@ -23,6 +23,7 @@ mod menu;
 mod menu_character_editor;
 mod options;
 mod pad;
+mod portrait_editor;
 mod props;
 mod scene;
 mod settings;
@@ -1627,6 +1628,7 @@ fn presence(screen: &Screen, weeks: &[funkin_core::content::Week]) -> discord::P
         Screen::WeekEditor(_) => "Week Editor",
         Screen::MenuCharacterEditor(_) => "Menu Character Editor",
         Screen::DialogueEditor(_) => "Dialogue Editor",
+        Screen::PortraitEditor(_) => "Dialogue Character Editor",
         Screen::Options(..) => "Options Menu",
         Screen::Playing(_) => "",
         _ => "In the Menus",
@@ -1694,6 +1696,7 @@ enum Screen {
     WeekEditor(Box<week_editor::WeekEditor>),
     MenuCharacterEditor(Box<menu_character_editor::MenuCharacterEditor>),
     DialogueEditor(Box<dialogue_editor::DialogueEditor>),
+    PortraitEditor(Box<portrait_editor::PortraitEditor>),
     Failed(String),
     /// What a new player is told before anything flashes.
     Warning,
@@ -1926,6 +1929,10 @@ fn main() {
                     Some(entry) => chart_editor::ChartEditor::open(&base, entry, None).inspect(|_| menus.quiet()).map_or_else(Screen::Failed, |editor| Screen::Editor(Box::new(editor))),
                     None => Screen::Menu(page),
                 },
+                Some(Go::PortraitEditor(folder)) => {
+                    menus.quiet();
+                    Screen::PortraitEditor(Box::new(portrait_editor::PortraitEditor::open(&base, &folder)))
+                }
                 Some(Go::DialogueEditor(folder)) => {
                     menus.quiet();
                     Screen::DialogueEditor(Box::new(dialogue_editor::DialogueEditor::open(&base, &folder)))
@@ -2110,6 +2117,17 @@ fn main() {
                 }
                 None => Screen::Menu(Page::Editors),
             },
+            Screen::PortraitEditor(mut editor) => match &skin {
+                Some(skin) => {
+                    let go = editor.update();
+                    editor.draw(skin);
+                    match go {
+                        portrait_editor::Go::Stay => Screen::PortraitEditor(editor),
+                        portrait_editor::Go::Leave => Screen::Menu(Page::Editors),
+                    }
+                }
+                None => Screen::Menu(Page::Editors),
+            },
             Screen::DialogueEditor(mut editor) => match &skin {
                 Some(skin) => {
                     let go = editor.update();
@@ -2290,7 +2308,7 @@ fn main() {
         if mouse_moved() || is_mouse_pressed() {
             pointer_moved = get_time();
         }
-        show_mouse(matches!(screen, Screen::Editor(_) | Screen::CharacterEditor(..) | Screen::WeekEditor(_) | Screen::MenuCharacterEditor(_) | Screen::DialogueEditor(_)) || (matches!(screen, Screen::Menu(_) | Screen::Options(..)) && get_time() - pointer_moved < 2.0));
+        show_mouse(matches!(screen, Screen::Editor(_) | Screen::CharacterEditor(..) | Screen::WeekEditor(_) | Screen::MenuCharacterEditor(_) | Screen::DialogueEditor(_) | Screen::PortraitEditor(_)) || (matches!(screen, Screen::Menu(_) | Screen::Options(..)) && get_time() - pointer_moved < 2.0));
         let showing = match &screen {
             Screen::Playing(playing) => (3, &**playing as *const Playing as usize, playing.paused.is_some(), playing.dead.is_some(), playing.started),
             Screen::Menu(page) => (1, *page as usize, false, false, false),

@@ -54,6 +54,8 @@ pub enum Go {
     MenuCharacterEditor(String),
     /// The dialogue editor, in a mod's folder.
     DialogueEditor(String),
+    /// The dialogue portrait editor, in a mod's folder.
+    PortraitEditor(String),
 }
 
 const UP: Ui = Ui::Up;
@@ -1357,7 +1359,7 @@ impl Menus {
     }
 
     /// The editors in large letters, gliding as the Haxe engine's menu items do, and the mod folder they work in.
-    // shortcut: the stage, dialogue portrait and note splash editors are not here; they say so.
+    // shortcut: the stage and note splash editors are not here; they say so.
     fn editors(&mut self, skin: &Skin) -> Go {
         const EDITORS: [&str; 8] = ["Chart Editor", "Character Editor", "Stage Editor", "Week Editor", "Menu Character Editor", "Dialogue Editor", "Dialogue Portrait Editor", "Note Splash Editor"];
         let dt = get_frame_time().min(0.1);
@@ -1397,6 +1399,7 @@ impl Menus {
                 3 => return Go::WeekEditor(folder.clone()),
                 4 => return Go::MenuCharacterEditor(folder.clone()),
                 5 => return Go::DialogueEditor(folder.clone()),
+                6 => return Go::PortraitEditor(folder.clone()),
                 _ => {}
             }
             self.sound("cancelMenu", 1.0);
