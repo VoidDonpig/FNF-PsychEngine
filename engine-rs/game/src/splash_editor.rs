@@ -45,7 +45,8 @@ impl SplashEditor {
     pub fn open(base: &Path, folder: &str) -> SplashEditor {
         let paths = Paths::new(base, folder, "");
         let mut names: Vec<String> = paths.roots().iter().filter_map(|root| std::fs::read_dir(root.join("images/noteSplashes")).ok()).flatten().flatten()
-            .map(|file| file.path()).filter(|path| path.extension().is_some_and(|ending| ending == "json"))
+            // (a skin with only an old .txt config is listed too: Convert TXT makes its file)
+            .map(|file| file.path()).filter(|path| path.extension().is_some_and(|ending| ending == "json" || ending == "txt") && path.file_stem().is_some_and(|stem| stem != "list"))
             .filter_map(|path| Some(path.file_stem()?.to_string_lossy().into_owned())).collect();
         names.sort();
         names.dedup();
@@ -65,7 +66,7 @@ impl SplashEditor {
     fn load(&mut self, name: &str) {
         let paths = self.paths();
         let read = paths.find(&format!("images/noteSplashes/{name}.json")).and_then(|file| std::fs::read_to_string(file).ok()).and_then(|text| serde_json::from_str::<Value>(&text).ok());
-        let json = read.unwrap_or_else(|| json!({"animations": {}, "scale": 1, "allowRGB": true, "allowPixel": true, "rgb": null}));
+        let json = read.unwrap_or_else(blank);
         self.sheet = paths.find(&format!("images/noteSplashes/{name}.png")).and_then(|path| Sheet::load(&path).ok());
         (self.name, self.json, self.unsaved, self.leaving, self.playing) = (name.to_owned(), json, false, false, None);
         let first = self.animation_names().into_iter().next().unwrap_or_default();
@@ -222,13 +223,31 @@ impl SplashEditor {
                 self.changed();
             }
         }
-        if self.ui.button(properties.x + 10.0, properties.y + 132.0, 80.0, "Save") {
+        if self.ui.button(properties.x + 10.0, properties.y + 132.0, 70.0, "Save") {
             self.save();
+        }
+        if self.ui.button(properties.x + 88.0, properties.y + 132.0, 80.0, "Template") {
+            self.replace_with(blank());
+        }
+        if self.ui.button(properties.x + 176.0, properties.y + 132.0, 100.0, "Convert TXT") {
+            let relative = format!("images/noteSplashes/{}.txt", self.name);
+            match self.paths().find(&relative).and_then(|file| std::fs::read_to_string(file).ok()) {
+                Some(text) => self.replace_with(from_txt(&text)),
+                None => self.say(format!("No {relative} to convert")),
+            }
         }
         if let Some(index) = picked_skin {
             let name = skins[index].clone();
             if self.ui.sure("splash skins", index, self.unsaved) { self.load(&name) } else { self.say(crate::ui::UNSAVED) }
         }
+    }
+
+    /// The skin's config in place of the one edited (Save writes it).
+    fn replace_with(&mut self, json: Value) {
+        self.json = json;
+        self.changed();
+        let first = self.animation_names().into_iter().next().unwrap_or_default();
+        self.choose(&first);
     }
 
     fn add_animation(&mut self) {
@@ -298,5 +317,59 @@ impl SplashEditor {
             }
         }
         self.ui.draw(skin.font.as_ref());
+    }
+}
+
+/// A splash config with no animations (NoteSplash.createConfig).
+fn blank() -> Value {
+    json!({"animations": {}, "scale": 1, "allowRGB": true, "allowPixel": true, "rgb": null})
+}
+
+/// An old splash config (.txt: the animations' prefix, then "<min fps> <max fps>", then an offset "x y" per line) as
+/// the JSON one (NoteSplashEditorState.parseTxt): an animation per lane and offset line, "purple", "blue2"...
+fn from_txt(text: &str) -> Value {
+    let mut config = blank();
+    let lines: Vec<&str> = text.split('\n').collect();
+    if text.trim().is_empty() || lines.len() < 2 || lines[0].trim().is_empty() {
+        return config;
+    }
+    let prefix = lines[0].trim_end();
+    let numbers: Vec<&str> = lines[1].split_whitespace().collect();
+    let fps = [(0, 22), (1, 26)].map(|(at, usual)| numbers.get(at).and_then(|number| number.parse::<i64>().ok()).unwrap_or(usual));
+    let mut offsets: Vec<[f64; 2]> = lines.iter().skip(2).map(|line| line.trim()).filter(|line| !line.is_empty())
+        .map(|line| { let mut parts = line.split(' ').map(|part| part.parse::<f64>().ok().filter(|value| !value.is_nan()).unwrap_or(0.0)); [parts.next().unwrap_or(0.0), parts.next().unwrap_or(0.0)] })
+        .collect();
+    if offsets.is_empty() {
+        offsets.push([0.0, 0.0]);
+    }
+    let (mut index, mut round) = (0, 1);
+    loop {
+        for color in ["purple", "blue", "green", "red"] {
+            let name = if round <= 1 { color.to_owned() } else { format!("{color}{round}") };
+            config["animations"][&name] = json!({"name": name, "noteData": index, "prefix": format!("{prefix} {color} {round}"), "indices": [], "offsets": offsets[index % offsets.len()], "fps": fps});
+            index += 1;
+        }
+        if index >= offsets.len() {
+            return config;
+        }
+        round += 1;
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn old_txt_configs_become_an_animation_per_lane_and_offset() {
+        let config = from_txt("note splash\n24 28\n1 2\n\n3 x\n4 4\n5 5\n6 6\n");
+        let animations = config["animations"].as_object().unwrap();
+        // five offsets: two rounds of four lanes, the offsets taken in turn and round again
+        assert_eq!(animations.len(), 8);
+        assert_eq!(config["animations"]["purple"], json!({"name": "purple", "noteData": 0, "prefix": "note splash purple 1", "indices": [], "offsets": [1.0, 2.0], "fps": [24, 28]}));
+        assert_eq!(config["animations"]["blue"]["offsets"], json!([3.0, 0.0]));
+        assert_eq!(config["animations"]["red2"]["prefix"], json!("note splash red 2"));
+        assert_eq!(config["animations"]["blue2"]["offsets"], json!([1.0, 2.0]));
+        assert_eq!(from_txt("only a name"), blank());
     }
 }
