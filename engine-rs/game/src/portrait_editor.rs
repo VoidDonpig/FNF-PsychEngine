@@ -256,10 +256,7 @@ impl PortraitEditor {
     /// Over its file, the one before kept as `.bak`, or into the folder's images/dialogue/ for a new one.
     fn save(&mut self) {
         let relative = format!("images/dialogue/{}.json", self.name);
-        let path = self.paths().find(&relative).unwrap_or_else(|| {
-            let mods = self.base.join("mods");
-            if self.folder.is_empty() { mods.join(&relative) } else { mods.join(&self.folder).join(&relative) }
-        });
+        let path = crate::chart_editor::save_target(&self.base, &self.folder, &relative, self.paths().find(&relative));
         let done = funkin_core::files::replace(&path, &crate::chart_editor::print(&self.json, 0));
         self.unsaved &= done.is_err();
         self.say(done.unwrap_or_else(|error| error));

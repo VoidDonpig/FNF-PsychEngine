@@ -506,7 +506,8 @@ impl ChartEditor {
             let Picked::Note(section, index) = picked else { continue };
             let note = &mut self.json["notes"][section]["sectionNotes"][index];
             if note.is_array() {
-                note[2] = json!(round((note[2].as_f64().unwrap_or(0.0) + by).max(0.0)));
+                let length = note[2].as_f64().unwrap_or(0.0);
+                *slot(note, 2, &json!(0)) = json!(round((length + by).max(0.0)));
             }
         }
     }
@@ -945,7 +946,7 @@ impl ChartEditor {
             self.ui.label(x, y, "Sustain length:");
             if let Some(length) = self.ui.stepper("sustain", x, y + 18.0, 80.0, note[2].as_f64().unwrap_or(0.0), step / 2.0, 0.0, step * 128.0) {
                 self.remember();
-                self.json["notes"][section]["sectionNotes"][index][2] = json!(round((length / (step / 2.0)).round() * step / 2.0));
+                *slot(&mut self.json["notes"][section]["sectionNotes"][index], 2, &json!(0)) = json!(round((length / (step / 2.0)).round() * step / 2.0));
             }
             self.ui.label(x, y + 46.0, "Strum time (in ms):");
             if let Some(time) = self.ui.input("strum time", x, y + 64.0, 120.0, &plain(&note[0])).and_then(|text| text.trim().parse::<f64>().ok()) {
@@ -992,7 +993,7 @@ impl ChartEditor {
                 self.values[value] = text.clone();
                 if let Some((index, entry)) = picked {
                     self.remember();
-                    self.json["events"][index][1][entry][value + 1] = json!(text);
+                    *slot(&mut self.json["events"][index][1][entry], value + 1, &json!("")) = json!(text);
                 }
             }
         }
@@ -1062,6 +1063,25 @@ impl ChartEditor {
 /// A value of an event as text (they are mostly text, sometimes numbers).
 fn plain(value: &Value) -> String {
     value.as_str().map_or_else(|| if value.is_null() { String::new() } else { value.to_string() }, str::to_owned)
+}
+
+/// Where an editor saves the file `relative` (to a root: "characters/bf.json") it read from `found`: over it, unless
+/// it belongs elsewhere than the mod folder worked in (the game's, or another mod's), which is left alone; then the
+/// file goes into that folder. Working in no mod folder, the file found is saved over, as it is the one in use.
+pub(crate) fn save_target(base: &Path, folder: &str, relative: &str, found: Option<PathBuf>) -> PathBuf {
+    let own = if folder.is_empty() { base.join("mods") } else { base.join("mods").join(folder) };
+    match found {
+        Some(path) if folder.is_empty() || path.starts_with(&own) => path,
+        _ => own.join(relative),
+    }
+}
+
+/// A place of a JSON list, made when the list is shorter (filled with `fill`): files written by hand may leave things off.
+pub(crate) fn slot<'a>(list: &'a mut Value, index: usize, fill: &Value) -> &'a mut Value {
+    if let Some(items) = list.as_array_mut().filter(|items| items.len() <= index) {
+        items.resize(index + 1, fill.clone());
+    }
+    &mut list[index]
 }
 
 /// A key down, or pressed this frame (a modifier pressed and let go of within one frame still counts).
@@ -1190,6 +1210,30 @@ mod tests {
         // the pasted ones are picked: taking them off leaves the chart as it was
         editor.delete_picked();
         assert_eq!(editor.json, original);
+    }
+
+    #[test]
+    fn saves_never_go_over_files_of_another_place_than_the_mod_folder() {
+        let base = Path::new("game");
+        let game_file = base.join("assets/shared/characters/bf.json");
+        let own_file = base.join("mods/Mine/characters/bf.json");
+        // in a mod folder: its own file is saved over; the game's (or another mod's) stays, a copy goes into the folder
+        assert_eq!(save_target(base, "Mine", "characters/bf.json", Some(own_file.clone())), own_file);
+        assert_eq!(save_target(base, "Mine", "characters/bf.json", Some(game_file.clone())), own_file);
+        assert_eq!(save_target(base, "Mine", "characters/bf.json", Some(base.join("mods/Other/characters/bf.json"))), own_file);
+        // in no mod folder the file in use is the one saved over; a new one goes under mods/
+        assert_eq!(save_target(base, "", "characters/bf.json", Some(game_file.clone())), game_file);
+        assert_eq!(save_target(base, "", "characters/new.json", None), base.join("mods/characters/new.json"));
+    }
+
+    #[test]
+    fn short_lists_are_filled_before_writing_into_them() {
+        let mut note = json!([100, 1]);
+        *slot(&mut note, 2, &json!(0)) = json!(250);
+        assert_eq!(note, json!([100, 1, 250]));
+        let mut entry = json!(["Hey!"]);
+        *slot(&mut entry, 2, &json!("")) = json!("0.6");
+        assert_eq!(entry, json!(["Hey!", "", "0.6"]));
     }
 
     #[test]

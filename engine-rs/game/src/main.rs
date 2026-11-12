@@ -1693,8 +1693,8 @@ enum Screen {
     Options(options::OptionsMenu, Page),
     Playing(Box<Playing>),
     Editor(Box<chart_editor::ChartEditor>),
-    /// The character editor, and the song it was opened from (it goes back to it).
-    CharacterEditor(Box<character_editor::CharacterEditor>, Option<SongEntry>),
+    /// The character editor, and the song it was opened from (it goes back to it; a play-test's chart with it).
+    CharacterEditor(Box<character_editor::CharacterEditor>, Option<(SongEntry, Option<String>)>),
     WeekEditor(Box<week_editor::WeekEditor>),
     MenuCharacterEditor(Box<menu_character_editor::MenuCharacterEditor>),
     DialogueEditor(Box<dialogue_editor::DialogueEditor>),
@@ -2034,7 +2034,7 @@ fn main() {
                     Flow::Editor => editor(&playing),
                     Flow::CharacterEditor => {
                         let editor = character_editor::CharacterEditor::open(&base, &playing.entry.source, &playing.play.chart.opponent);
-                        Screen::CharacterEditor(Box::new(editor), Some(playing.entry.clone()))
+                        Screen::CharacterEditor(Box::new(editor), Some((playing.entry.clone(), playing.charting.clone())))
                     }
                     // a play-test goes back to the editor at its end, as the Haxe engine's charting mode
                     Flow::Finished if playing.charting.is_some() => editor(&playing),
@@ -2085,6 +2085,8 @@ fn main() {
                         again.deaths = playing.deaths;
                         Screen::Playing(Box::new(again))
                     }),
+                    // leaving a play-test (or changing its difficulty) goes back to the editor, the edits kept
+                    Flow::Quit | Flow::Difficulty(_) if playing.charting.is_some() => editor(&playing),
                     Flow::Difficulty(name) => match songs.iter().find(|other| other.week == playing.entry.week && other.title == playing.entry.title && other.difficulty == name) {
                         Some(entry) => Playing::open(&base, entry, &songs, &settings, 0.0, false, false, None).map_or_else(Screen::Failed, |p| Screen::Playing(Box::new(p))),
                         None => Screen::Playing(playing),
@@ -2118,7 +2120,7 @@ fn main() {
                     match (go, back) {
                         (character_editor::Go::Stay, back) => Screen::CharacterEditor(editor, back),
                         // (as the Haxe editor: back to the song it came from, else to the editors' list)
-                        (character_editor::Go::Leave, Some(entry)) => Playing::open(&base, &entry, &songs, &settings, 0.0, false, true, None).map_or_else(Screen::Failed, |p| Screen::Playing(Box::new(p))),
+                        (character_editor::Go::Leave, Some((entry, charting))) => Playing::open(&base, &entry, &songs, &settings, 0.0, false, true, charting).map_or_else(Screen::Failed, |p| Screen::Playing(Box::new(p))),
                         (character_editor::Go::Leave, None) => Screen::Menu(Page::Editors),
                     }
                 }

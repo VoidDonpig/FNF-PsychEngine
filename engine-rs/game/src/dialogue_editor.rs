@@ -191,7 +191,7 @@ impl DialogueEditor {
 
     fn load(&mut self, index: usize) {
         let Some(path) = self.files.get(index).cloned() else { return };
-        match std::fs::read_to_string(&path).ok().and_then(|text| serde_json::from_str::<Value>(&text).ok()).filter(|json| json["dialogue"].is_array()) {
+        match std::fs::read_to_string(&path).ok().and_then(|text| serde_json::from_str::<Value>(&text).ok()).filter(|json| json["dialogue"].as_array().is_some_and(|lines| !lines.is_empty())) {
             Some(json) => {
                 (self.path, self.json, self.line, self.unsaved, self.leaving) = (Some(path), json, 0, false, false);
                 self.show();
@@ -202,10 +202,10 @@ impl DialogueEditor {
 
     /// Over its file, the one before kept as `.bak`; a new one into the folder's data/dialogue.json.
     fn save(&mut self) {
-        let path = self.path.clone().unwrap_or_else(|| {
-            let mods = self.base.join("mods");
-            if self.folder.is_empty() { mods.join("data/dialogue.json") } else { mods.join(&self.folder).join("data/dialogue.json") }
-        });
+        // (one from the game or another mod goes into the folder worked in, where it was under its root)
+        let relative = self.path.as_ref().and_then(|path| self.paths().roots().iter().find_map(|root| path.strip_prefix(root).ok().map(Path::to_path_buf)));
+        let relative = relative.map_or("data/dialogue.json".to_owned(), |relative| relative.to_string_lossy().replace('\\', "/"));
+        let path = crate::chart_editor::save_target(&self.base, &self.folder, &relative, self.path.clone());
         let done = funkin_core::files::replace(&path, &crate::chart_editor::print(&self.json, 0));
         if done.is_ok() {
             (self.path, self.unsaved) = (Some(path), false);

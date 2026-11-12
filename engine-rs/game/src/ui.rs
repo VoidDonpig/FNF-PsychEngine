@@ -84,8 +84,9 @@ impl Ui {
         for (index, name) in names.iter().enumerate() {
             let tab = Rect::new(left, area.y - 20.0, wanted[index] * unit, 20.0);
             left += tab.w;
-            if self.click(tab) {
-                chosen = index;
+            if self.click(tab) && index != chosen {
+                // (the controls of the tab left are not asked for again: what was typed there, a list open, go)
+                (chosen, self.focus, self.pending, self.open) = (index, None, None, None);
             }
             let shade = if index == chosen { 0.8 } else if inside(tab, self.mouse) { 0.5 } else { 0.3 };
             self.rect(tab, Color { a: shade, ..BLACK });

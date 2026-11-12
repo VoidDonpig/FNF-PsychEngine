@@ -9,7 +9,7 @@ use crate::ui::Ui;
 use crate::{Skin, HEIGHT, WIDTH};
 use funkin_core::content::Paths;
 use serde_json::{json, Value};
-use std::path::{Path, PathBuf};
+use std::path::Path;
 use std::time::Instant;
 
 /// Where the opponent and the player stand (the Haxe editor's dadPosition and bfPosition).
@@ -482,10 +482,7 @@ impl CharacterEditor {
         self.json["_editor_isPlayer"] = json!(self.player);
         let relative = format!("characters/{}.json", self.name);
         let base = self.paths.roots().iter().find(|root| root.ends_with("mods")).and_then(|mods| mods.parent()).map(Path::to_path_buf).unwrap_or_default();
-        let file = self.paths.find(&relative).unwrap_or_else(|| {
-            let folder: PathBuf = if self.folder.is_empty() { base.join("mods") } else { base.join("mods").join(&self.folder) };
-            folder.join(&relative)
-        });
+        let file = crate::chart_editor::save_target(&base, &self.folder, &relative, self.paths.find(&relative));
         let done = funkin_core::files::replace(&file, &crate::chart_editor::print(&self.json, 0));
         self.unsaved &= done.is_err();
         self.say(done.unwrap_or_else(|error| error));

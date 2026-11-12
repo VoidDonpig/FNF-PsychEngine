@@ -198,13 +198,13 @@ impl WeekEditor {
             if let Some(value) = self.ui.stepper(["song red", "song green", "song blue"][channel], x + 77.0 * channel as f32, y + 64.0, 30.0, value, 20.0, 0.0, 255.0) {
                 let mut color: Vec<Value> = (0..3).map(|other| json!(song[2][other].as_f64().unwrap_or(255.0) as i64)).collect();
                 color[channel] = json!(value.round() as i64);
-                self.json["songs"][self.song][2] = json!(color);
+                *crate::chart_editor::slot(&mut self.json["songs"][self.song], 2, &json!("face")) = json!(color);
                 (self.unsaved, self.leaving) = (true, false);
             }
         }
         self.ui.label(x, y + 92.0, "Selected icon:");
         if let Some(icon) = self.ui.input("song icon", x, y + 110.0, 100.0, song[1].as_str().unwrap_or_default()) {
-            self.json["songs"][self.song][1] = json!(icon);
+            *crate::chart_editor::slot(&mut self.json["songs"][self.song], 1, &json!("face")) = json!(icon);
             (self.unsaved, self.leaving) = (true, false);
         }
         self.ui.label(x + 120.0, y + 92.0, "Color:");
@@ -222,6 +222,9 @@ impl WeekEditor {
             None => self.base.join("mods").join(&self.folder).join("weeks"),
         };
         let path = folder.join(format!("{}.json", self.file));
+        if path.is_file() && Some(&path) != self.path.as_ref() {
+            return self.say(format!("{}.json is another week: choose another Week File name", self.file));
+        }
         let done = funkin_core::files::replace(&path, &crate::chart_editor::print(&self.json, 0));
         if done.is_ok() {
             (self.path, self.unsaved, self.saved) = (Some(path), false, true);
