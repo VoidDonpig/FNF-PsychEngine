@@ -2,7 +2,6 @@
 //! of where the opponent and the player stand, its animations played and stepped through frame by frame, their offsets
 //! moved with the arrow keys or the mouse, and its file's settings in the Haxe editor's boxes; saved over its file, the
 //! one before kept as `.bak`.
-// shortcut: Load Template, the ghost's highlight and the icon's colour picker are not here; add them when asked.
 use crate::gfx::*;
 use crate::scene::Character;
 use crate::ui::Ui;
@@ -53,6 +52,7 @@ pub struct CharacterEditor {
     /// A copy of a pose drawn behind (animation, time, how see-through).
     ghost: Option<(String, f32)>,
     ghost_alpha: f32,
+    highlight: bool,
     silhouettes: bool,
     help: bool,
     unsaved: bool,
@@ -65,6 +65,21 @@ pub struct CharacterEditor {
     /// The Animations tab's form: the animation's name, its prefix (or symbol), indices, speed, looped.
     form: (String, String, String, f64, bool),
     pictures: [Option<Texture2D>; 4],
+}
+
+/// The colour most of the picture's pixels (left `width` of it, the see-through ones and black left out) are, as RGB.
+fn dominant(image: &Image, width: u32) -> [u8; 3] {
+    let mut counts = std::collections::HashMap::new();
+    for x in 0..width.min(image.width as u32) {
+        for y in 0..image.height as u32 {
+            let color = image.get_pixel(x, y);
+            if color.a > 0.05 {
+                *counts.entry([color.r, color.g, color.b].map(|value| (value * 255.0).round() as u8)).or_insert(0) += 1;
+            }
+        }
+    }
+    counts.remove(&[0, 0, 0]);
+    counts.into_iter().max_by_key(|&(color, count)| (count, color)).map_or([0, 0, 0], |(color, _)| color)
 }
 
 /// Whether a character of that name is the opponent's kind (the Haxe editor's guess, for files that do not say).
@@ -98,7 +113,7 @@ impl CharacterEditor {
         characters.retain(|name| seen.insert(name.clone()));
         let mut editor = CharacterEditor {
             paths, folder: folder.to_owned(), name: String::new(), json: Value::Null, character: None, player: false, animation: 0, time: 0.0, still: false,
-            camera: Vec2::ZERO, zoom: 1.0, held: (0.0, 0.0), framing: 0.0, copied: Vec2::ZERO, undo_offset: None, ghost: None, ghost_alpha: 0.6, silhouettes: true,
+            camera: Vec2::ZERO, zoom: 1.0, held: (0.0, 0.0), framing: 0.0, copied: Vec2::ZERO, undo_offset: None, ghost: None, ghost_alpha: 0.6, highlight: false, silhouettes: true,
             help: false, unsaved: false, leaving: false, said: None, mouse: Vec2::ZERO, ui: Ui::default(), tabs: [1, 0], characters,
             form: (String::new(), String::new(), String::new(), 24.0, false), pictures,
         };
@@ -301,6 +316,9 @@ impl CharacterEditor {
                     None => self.current().map(|name| (name, self.time)),
                 };
             }
+            if let Some(on) = self.ui.check(x, y + 60.0, "Highlight Ghost", self.highlight) {
+                self.highlight = on;
+            }
             self.ui.label(x, y + 30.0, "Opacity:");
             if let Some(alpha) = self.ui.stepper("ghost alpha", x + 80.0, y + 32.0, 50.0, self.ghost_alpha as f64, 0.1, 0.0, 1.0) {
                 self.ghost_alpha = alpha as f32;
@@ -317,7 +335,10 @@ impl CharacterEditor {
                 self.changed();
                 self.rebuild();
             }
-            if self.ui.button(x + 140.0, y, 90.0, "Reload Char") {
+            if self.ui.button(x + 128.0, y + 56.0, 112.0, "Load Template") {
+                if self.ui.sure("template", 0, self.unsaved) { self.load_template() } else { self.say(crate::ui::UNSAVED) }
+            }
+            if self.ui.button(x + 128.0, y, 112.0, "Reload Char") {
                 let name = self.name.clone();
                 if self.ui.sure("reload character", 0, self.unsaved) { self.load(&name) } else { self.say(crate::ui::UNSAVED) }
             }
@@ -466,8 +487,40 @@ impl CharacterEditor {
                 self.set("healthbar_colors", json!(colors));
             }
         }
+        if self.ui.button(x, y + 274.0, 110.0, "Get Icon Color") {
+            self.icon_color();
+        }
         if self.ui.button(x + 210.0, y + 44.0 + 230.0, 110.0, "Save Character") {
             self.save();
+        }
+    }
+
+    /// The Haxe editor's template (bf's sheet, its five animations) in place of the file, under the same name.
+    fn load_template(&mut self) {
+        let animation = |anim: &str, name: &str| json!({"offsets": [0, 0], "loop": false, "fps": 24, "anim": anim, "indices": [], "name": name});
+        self.json = json!({
+            "animations": [animation("idle", "BF idle dance"), animation("singLEFT", "BF NOTE LEFT0"), animation("singDOWN", "BF NOTE DOWN0"),
+                animation("singUP", "BF NOTE UP0"), animation("singRIGHT", "BF NOTE RIGHT0")],
+            "no_antialiasing": false, "flip_x": false, "healthicon": "face", "image": "characters/BOYFRIEND", "sing_duration": 4, "scale": 1,
+            "healthbar_colors": [161, 161, 161], "camera_position": [0, 0], "position": [0, 0], "vocals_file": null,
+        });
+        (self.animation, self.time, self.still) = (0, 0.0, false);
+        self.changed();
+        self.rebuild();
+        self.show_form();
+    }
+
+    /// The health bar takes the colour most of the icon's first face is (CoolUtil.dominantColor).
+    fn icon_color(&mut self) {
+        let name = self.json["healthicon"].as_str().unwrap_or("face");
+        let file = ["icons/icon-", "icons/"].iter().find_map(|start| self.paths.find(&format!("images/{start}{name}.png")));
+        let image = file.and_then(|file| std::fs::read(file).ok()).and_then(|bytes| Image::from_file_with_format(&bytes, None).ok());
+        match image {
+            Some(image) => {
+                let faces = (image.width as f32 / image.height as f32).round().max(1.0) as u32;
+                self.set("healthbar_colors", json!(dominant(&image, image.width as u32 / faces)));
+            }
+            None => self.say(format!("No icon picture for {name}")),
         }
     }
 
@@ -511,6 +564,14 @@ impl CharacterEditor {
         if let Some(character) = &self.character {
             if let Some((pose, time)) = &self.ghost {
                 character.draw_faded(pose, *time, self.ghost_alpha);
+                if self.highlight {
+                    // the Haxe editor's colour offset of 125: white, as much, added where the ghost is (not to its pure black)
+                    blend_add(true);
+                    recolor(Some([Vec3::splat(1000.0); 3]));
+                    character.draw_faded(pose, *time, self.ghost_alpha * 125.0 / 255.0);
+                    recolor(None);
+                    blend_add(false);
+                }
             }
             character.draw();
         }
@@ -560,6 +621,19 @@ impl CharacterEditor {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn the_icon_colour_is_its_first_face_s_commonest_not_black() {
+        let mut image = Image::gen_image_color(4, 2, BLACK);
+        image.set_pixel(0, 0, Color::from_rgba(255, 0, 0, 255));
+        image.set_pixel(1, 1, Color::from_rgba(255, 0, 0, 255));
+        image.set_pixel(0, 1, Color::from_rgba(0, 255, 0, 255));
+        // (the second face, all blue, is left out; so is black, the commonest)
+        image.set_pixel(2, 0, Color::from_rgba(0, 0, 255, 255));
+        image.set_pixel(3, 0, Color::from_rgba(0, 0, 255, 255));
+        image.set_pixel(3, 1, Color::from_rgba(0, 0, 255, 255));
+        assert_eq!(dominant(&image, 2), [255, 0, 0]);
+    }
 
     #[test]
     fn saves_over_the_file_it_read_or_into_the_mods_folder() {

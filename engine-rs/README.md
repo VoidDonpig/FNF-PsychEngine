@@ -206,10 +206,10 @@ Done:
   through its frames (held still); the arrow keys (held: on and on) and the mouse with its right button move its
   offset (Shift: ten times), Ctrl+C/V/R/Z copy, paste, reset and undo it; F12 hides the silhouettes, F1 shows the
   help. Its animations listed with their offsets, the frame shown, the zoom, the health bar in its colour and its
-  icon. The boxes: Ghost (a pose kept behind, how see-through), Settings (the characters there are, playable or
-  not, reload), Animations (pick one; name, prefix, indices, framerate, loop; add/update, remove) and Character
+  icon. The boxes: Ghost (a pose kept behind, how see-through, highlighted), Settings (the characters there are, playable or
+  not, reload, the Haxe editor's template), Animations (pick one; name, prefix, indices, framerate, loop; add/update, remove) and Character
   (image, health icon, vocals file, sing duration, scale, flip X, no antialiasing, its place and the camera's, the
-  health bar's colour; save over its file, the one before kept as `.bak`, or into the mod folder's characters/
+  health bar's colour, or the colour most of its icon is; save over its file, the one before kept as `.bak`, or into the mod folder's characters/
   for a new one). Escape asks twice with changes not saved.
 - **Week editor**: from the editors' list, on the mod folder's first week (or a new one): the story menu shows the
   week as it is edited, with its picture where the list would have it; the Haxe editor's Week (songs, the three
@@ -251,7 +251,7 @@ Not there yet:
   engine's own classes, so mods that use it cannot run here as they are. Custom shaders.
 - **Editors**: the chart editor's File/Edit/View menus and its Data tab, the waveform, the vortex editor, lists to choose characters and stages from, pasted notes following the mouse before they are put down, the autosave's time and count settings, a song
   chosen to chart from the editors' list;
-  the character editor's Load Template, ghost highlight and icon colour; the week editor's freeplay view; the portrait editor's camera; the
+  the week editor's freeplay view; the portrait editor's camera; the
   note splash editor's Shader tab, Template and Convert TXT; the stage editor.
 - **Other**: gamepads on Linux and macOS (gilrs needs libudev there); binding a gamepad's buttons on the key binds
   page (Psych's buttons are used as they are).
