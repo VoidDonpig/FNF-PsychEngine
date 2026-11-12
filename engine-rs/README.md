@@ -186,7 +186,13 @@ Done:
   hold shorter or longer, Delete removes it; Left/Right change the beat snap, Z/X the zoom; Ctrl+Z/Y undo and redo;
   Ctrl+S saves over the chart's file, the one before kept as `<file>.bak` (an older chart is saved in the Psych 1.0
   format, its keys where they were); Enter play-tests the chart as it is, and 7 or the song's end come back to it;
-  Escape leaves.
+  Escape leaves (twice with changes not saved). Events are put down, taken off and picked in their column, written
+  beside the grid. The box at the right has the Haxe editor's tabs, on controls of the Haxe engine's kind (PsychUI:
+  buttons, tick boxes, numbers with - and +, typed text, lists that drop down): Song (name, vocals, BPM, scroll speed,
+  the characters and stage, typed; save), Section (must hit, GF, alt animation, change BPM, beats; copy, paste, clear,
+  swap), Note (the picked note's hold and time, the note type for it and new notes, the mods' types too) and Events
+  (the event, its description and values for the picked event and new ones, the mods' events too; the entries of
+  one moment: before, after, taken off, added). Undo covers all of it.
 - **Gamepads** (Windows): any gamepad plays and goes through the menus with Psych's buttons (D-pad and
   A/B/X/Y for the lanes; D-pad or left stick, A or Start, B, Start, Back for the menus); Lua's gamepad functions.
 
@@ -201,8 +207,9 @@ Not there yet:
 - **Scripts**: the rest of Lua's functions (notes' own textures and health, shaders, groups, and getProperty/setProperty
   beyond the camera, health, score, the characters' place and the scripts' sprites); custom events and note types run by scripts. HScript is Haxe code run against the Haxe
   engine's own classes, so mods that use it cannot run here as they are. Custom shaders.
-- **Editors**: the chart editor's menus and tabs (song, section, note and event settings, the waveform, the vortex
-  editor, events placed, copy and paste, selecting many notes, autosave), and the main menu's list of editors (7);
+- **Editors**: the chart editor's File/Edit/View menus and its Charting and Data tabs (the waveform, the vortex
+  editor, hitsounds, metronome), lists to choose characters and stages from, selecting many notes, autosave, and the
+  main menu's list of editors (7);
   the character, stage, week, menu character, dialogue, dialogue character and note splash editors.
 - **Other**: gamepads on Linux and macOS (gilrs needs libudev there); binding a gamepad's buttons on the key binds
   page (Psych's buttons are used as they are).

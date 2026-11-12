@@ -24,6 +24,7 @@ mod props;
 mod scene;
 mod settings;
 mod speech;
+mod ui;
 mod video;
 
 use std::collections::HashMap;

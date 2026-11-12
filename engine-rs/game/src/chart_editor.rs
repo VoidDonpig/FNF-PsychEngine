@@ -1,11 +1,12 @@
 //! The chart editor (states/editors/ChartingState.hx), its first part: the song's notes on the Haxe engine's grid (the
 //! events' column, then the player's four, then the opponent's four), scrolling under a line as the music plays; notes
 //! put down and taken off with the mouse at the chosen beat snap, held longer or shorter with Q and E; undo and redo;
-//! play-testing the chart as it is (Enter) and saving it over its file, the old one kept beside it as `.bak`.
-// shortcut: the File/Edit/View menus and the Charting, Data, Events, Note, Section and Song tabs are not here yet;
-// events are shown but not placed, and Escape leaves (the Haxe editor's File > Exit). Add them with a UI kit of their own.
+//! play-testing the chart as it is (Enter) and saving it over its file, the old one kept beside it as `.bak`. Events
+//! are put down in their column; the box at the right has the Haxe editor's Song, Section, Note and Events tabs.
+// shortcut: the File/Edit/View menus and the Charting and Data tabs are not here, characters and stages are typed
+// rather than chosen from lists, and Escape leaves (the Haxe editor's File > Exit).
 use crate::gfx::*;
-use crate::{audio, Skin, HEIGHT, NOTE_NAMES, WIDTH};
+use crate::{audio, ui::Ui, Skin, HEIGHT, NOTE_NAMES, WIDTH};
 use funkin_core::content::{Paths, SongEntry};
 use serde_json::{json, Value};
 use std::path::{Path, PathBuf};
@@ -23,6 +24,37 @@ pub enum Go {
     /// Play the chart as it is now (its text), from the start.
     Play(String),
     Leave,
+}
+
+/// The Haxe editor's events (ChartingState.defaultEvents), with what their values mean.
+const EVENTS: [(&str, &str); 17] = [
+    ("", "Nothing. Yep, that's right."),
+    ("Dadbattle Spotlight", "Used in Dad Battle,\nValue 1: 0/1 = ON/OFF,\n2 = Target Dad\n3 = Target BF"),
+    ("Hey!", "Plays the \"Hey!\" animation from Bopeebo,\nValue 1: BF = Only Boyfriend, GF = Only Girlfriend,\nSomething else = Both.\nValue 2: Custom animation duration,\nleave it blank for 0.6s"),
+    ("Set GF Speed", "Sets GF head bopping speed,\nValue 1: 1 = Normal speed,\n2 = 1/2 speed, 4 = 1/4 speed etc.\nUsed on Fresh during the beatbox parts.\n\nWarning: Value must be integer!"),
+    ("Philly Glow", "Exclusive to Week 3\nValue 1: 0/1/2 = OFF/ON/Reset Gradient\n \nNo, i won't add it to other weeks."),
+    ("Kill Henchmen", "For Mom's songs, don't use this please, i love them :("),
+    ("Add Camera Zoom", "Used on MILF on that one \"hard\" part\nValue 1: Camera zoom add (Default: 0.015)\nValue 2: UI zoom add (Default: 0.03)\nLeave the values blank if you want to use Default."),
+    ("BG Freaks Expression", "Should be used only in \"school\" Stage!"),
+    ("Trigger BG Ghouls", "Should be used only in \"schoolEvil\" Stage!"),
+    ("Play Animation", "Plays an animation on a Character,\nonce the animation is completed,\nthe animation changes to Idle\n\nValue 1: Animation to play.\nValue 2: Character (Dad, BF, GF)"),
+    ("Camera Follow Pos", "Value 1: X\nValue 2: Y\n\nThe camera won't change the follow point\nafter using this, for getting it back\nto normal, leave both values blank."),
+    ("Alt Idle Animation", "Sets a specified postfix after the idle animation name.\nYou can use this to trigger 'idle-alt' if you set\nValue 2 to -alt\n\nValue 1: Character to set (Dad, BF or GF)\nValue 2: New postfix (Leave it blank to disable)"),
+    ("Screen Shake", "Value 1: Camera shake\nValue 2: HUD shake\n\nEvery value works as the following example: \"1, 0.05\".\nThe first number (1) is the duration.\nThe second number (0.05) is the intensity."),
+    ("Change Character", "Value 1: Character to change (Dad, BF, GF)\nValue 2: New character's name"),
+    ("Change Scroll Speed", "Value 1: Scroll Speed Multiplier (1 is default)\nValue 2: Time it takes to change fully in seconds."),
+    ("Set Property", "Value 1: Variable name\nValue 2: New value"),
+    ("Play Sound", "Value 1: Sound file name\nValue 2: Volume (Default: 1), ranges from 0 to 1"),
+];
+
+/// The Haxe engine's note types (Note.defaultNoteTypes).
+const NOTE_TYPES: [&str; 6] = ["", "Alt Animation", "Hey!", "Hurt Note", "GF Sing", "No Animation"];
+
+/// What is picked: a note (section, place in its notes) or an event (place in the events, which of its entries).
+#[derive(Clone, Copy, Debug, PartialEq)]
+enum Picked {
+    Note(usize, usize),
+    Event(usize, usize),
 }
 
 /// Where a section starts (ms), how many beats it has, at what tempo, and how many grid rows come before it.
@@ -56,8 +88,8 @@ pub struct ChartEditor {
     length: f64,
     zoom: usize,
     quant: usize,
-    /// The note last put down or picked (section, place in its notes).
-    selected: Option<(usize, usize)>,
+    /// The note or event last put down or picked.
+    selected: Option<Picked>,
     undo: Vec<Value>,
     redo: Vec<Value>,
     /// Changed since it was last saved (or brought back from a play-test), and Escape was pressed once already.
@@ -67,6 +99,17 @@ pub struct ChartEditor {
     background: Option<Texture2D>,
     event_icon: Option<Texture2D>,
     icons: [Option<Texture2D>; 2],
+    ui: Ui,
+    tab: usize,
+    /// The note type and event new ones get (and the picked one is set to), as chosen in their tabs; the event's values.
+    note_types: Vec<String>,
+    note_type: usize,
+    events: Vec<String>,
+    abouts: Vec<String>,
+    event: usize,
+    values: [String; 2],
+    /// A section's notes copied (their times from its start).
+    copied: Option<Vec<Value>>,
 }
 
 impl ChartEditor {
@@ -98,9 +141,33 @@ impl ChartEditor {
             picture(&format!("icons/icon-{name}")).or_else(|| picture(&format!("icons/{name}"))).or_else(|| picture("icons/icon-face"))
         };
         let icons = [icon(json["player1"].as_str().unwrap_or("bf")), icon(json["player2"].as_str().unwrap_or("dad"))];
+        // the types and events the mods bring (custom_notetypes/, custom_events/), and those the chart already uses
+        let named = |folder: &str, endings: &[&str]| {
+            let mut names: Vec<String> = paths.roots().iter().filter_map(|root| std::fs::read_dir(root.join(folder)).ok()).flatten().flatten()
+                .filter_map(|file| { let path = file.path(); endings.iter().any(|ending| path.extension().is_some_and(|own| own == *ending)).then(|| path) })
+                .filter_map(|path| path.file_stem().map(|stem| stem.to_string_lossy().into_owned())).collect();
+            names.sort();
+            names.dedup();
+            names
+        };
+        let mut note_types: Vec<String> = NOTE_TYPES.iter().map(|name| name.to_string()).collect();
+        let used = json["notes"].as_array().into_iter().flatten().flat_map(|section| section["sectionNotes"].as_array().into_iter().flatten()).filter_map(|note| note[3].as_str().map(str::to_owned));
+        for name in named("custom_notetypes", &["lua", "hx"]).into_iter().chain(used) {
+            if !note_types.contains(&name) {
+                note_types.push(name);
+            }
+        }
+        let (mut events, mut abouts): (Vec<String>, Vec<String>) = EVENTS.iter().map(|(name, about)| (name.to_string(), about.to_string())).unzip();
+        for name in named("custom_events", &["txt"]) {
+            if !events.contains(&name) {
+                abouts.push(paths.find(&format!("custom_events/{name}.txt")).and_then(|file| std::fs::read_to_string(file).ok()).unwrap_or_default());
+                events.push(name);
+            }
+        }
         let mut editor = ChartEditor {
             entry: entry.clone(), json, spans: Vec::new(), song, playing: false, position: 0.0, length, zoom: 2, quant: 3, selected: None,
             undo: Vec::new(), redo: Vec::new(), unsaved, leaving: false, said: None, background: picture("menuDesat"), event_icon: picture("editors/eventIcon"), icons,
+            ui: Ui::default(), tab: 3, note_types, note_type: 0, events, abouts, event: 0, values: Default::default(), copied: None,
         };
         editor.measure();
         Ok(editor)
@@ -159,7 +226,7 @@ impl ChartEditor {
     /// Keeps the chart as it is, to come back to with undo.
     fn remember(&mut self) {
         (self.unsaved, self.leaving) = (true, false);
-        self.undo.push(self.json["notes"].clone());
+        self.undo.push(self.json.clone());
         // (the last hundred changes)
         if self.undo.len() > 100 {
             self.undo.remove(0);
@@ -181,11 +248,16 @@ impl ChartEditor {
     }
 
     pub fn update(&mut self) -> Go {
+        // (keys typed into a box are not the editor's: what was asked before this frame's controls)
+        let typing = self.ui.typing();
+        self.ui.begin();
+        self.panel();
         let dt = get_frame_time().min(0.1) as f64;
         let (ctrl, shift) = (held(KeyCode::LeftControl) || held(KeyCode::RightControl), held(KeyCode::LeftShift) || held(KeyCode::RightShift));
         let current = self.section_at(self.position);
         let span = self.spans.get(current).copied().unwrap_or(Span { start: 0.0, beats: 4.0, bpm: 100.0, rows_before: 0.0 });
-        if ctrl {
+        if typing {
+        } else if ctrl {
             if is_key_pressed(KeyCode::S) {
                 self.save();
             } else if is_key_pressed(KeyCode::Z) {
@@ -243,10 +315,14 @@ impl ChartEditor {
             let by = span.step_ms() / 2.0 * if shift { 4.0 } else { 1.0 } * if is_key_pressed(KeyCode::Q) { -1.0 } else { 1.0 };
             self.hold_longer(by);
         } else if is_key_pressed(KeyCode::Delete) || is_key_pressed(KeyCode::Backspace) {
-            if let Some((section, index)) = self.selected.take() {
+            if let Some(picked) = self.selected.take() {
                 self.remember();
-                if let Some(notes) = self.json["notes"][section]["sectionNotes"].as_array_mut().filter(|notes| index < notes.len()) {
-                    notes.remove(index);
+                let (list, index) = match picked {
+                    Picked::Note(section, index) => (&mut self.json["notes"][section]["sectionNotes"], index),
+                    Picked::Event(index, _) => (&mut self.json["events"], index),
+                };
+                if let Some(list) = list.as_array_mut().filter(|list| index < list.len()) {
+                    list.remove(index);
                 }
             }
         }
@@ -256,7 +332,7 @@ impl ChartEditor {
                 self.wind(self.length);
             }
         }
-        if is_mouse_pressed() {
+        if is_mouse_pressed() && !self.ui.took_click() {
             self.click(shift);
         }
         Go::Stay
@@ -290,13 +366,13 @@ impl ChartEditor {
     /// snap (with Shift, right where the mouse is).
     fn click(&mut self, shift: bool) {
         let Some((column, snapped, _)) = self.under_mouse(true) else { return };
-        if column == 0 {
-            return self.say("Events are not placed here yet");
-        }
-        let found = self.note_at(column, mouse_position(vec2(WIDTH, HEIGHT)).y);
         let from = if shift { self.under_mouse(false).map_or(snapped, |(_, free, _)| free) } else { snapped };
-        match found {
-            Some(note) if shift => self.selected = Some(note),
+        let y = mouse_position(vec2(WIDTH, HEIGHT)).y;
+        if column == 0 {
+            return self.click_event(y, from, shift);
+        }
+        match self.note_at(column, y) {
+            Some((section, index)) if shift => self.selected = Some(Picked::Note(section, index)),
             Some((section, index)) => {
                 self.remember();
                 if let Some(notes) = self.json["notes"][section]["sectionNotes"].as_array_mut() {
@@ -312,15 +388,69 @@ impl ChartEditor {
                     *notes = json!([]);
                 }
                 let notes = notes.as_array_mut().expect("made an array");
-                notes.push(json!([round(from), column - 1, 0]));
-                self.selected = Some((section, notes.len() - 1));
+                let mut note = json!([round(from), column - 1, 0]);
+                // (with the note type chosen in the Note tab)
+                if let Some(kind) = self.note_types.get(self.note_type).filter(|kind| !kind.is_empty()) {
+                    note.as_array_mut().expect("an array").push(json!(kind));
+                }
+                notes.push(note);
+                self.selected = Some(Picked::Note(section, notes.len() - 1));
             }
         }
     }
 
+    /// The event drawn under a point of the events' column (its place in the events).
+    fn event_at(&self, y: f32) -> Option<usize> {
+        self.json["events"].as_array()?.iter().position(|event| {
+            let top = event[0].as_f64().map_or(f32::MAX, |time| self.y_of(time));
+            (top..top + GRID).contains(&y)
+        })
+    }
+
+    /// A click on the events' column: the event under it is taken off (picked with Shift, its values shown in the
+    /// Events tab), else one is put down with the event and values chosen there.
+    fn click_event(&mut self, y: f32, at: f64, shift: bool) {
+        match self.event_at(y) {
+            Some(index) if shift => {
+                self.selected = Some(Picked::Event(index, 0));
+                self.show_event();
+            }
+            Some(index) => {
+                self.remember();
+                if let Some(events) = self.json["events"].as_array_mut() {
+                    events.remove(index);
+                }
+                self.selected = None;
+            }
+            None => {
+                self.remember();
+                if !self.json["events"].is_array() {
+                    self.json["events"] = json!([]);
+                }
+                let name = self.events.get(self.event).cloned().unwrap_or_default();
+                let events = self.json["events"].as_array_mut().expect("made an array");
+                // (kept in time order)
+                let place = events.iter().position(|event| event[0].as_f64().is_some_and(|time| time > at)).unwrap_or(events.len());
+                events.insert(place, json!([round(at), [[name, self.values[0], self.values[1]]]]));
+                self.selected = Some(Picked::Event(place, 0));
+            }
+        }
+    }
+
+    /// The Events tab shows the picked event's entry: its name and values.
+    fn show_event(&mut self) {
+        let Some(Picked::Event(index, entry)) = self.selected else { return };
+        let entry = &self.json["events"][index][1][entry];
+        let name = entry[0].as_str().unwrap_or_default();
+        if let Some(found) = self.events.iter().position(|known| known == name) {
+            self.event = found;
+        }
+        self.values = [plain(&entry[1]), plain(&entry[2])];
+    }
+
     /// The picked note held longer (or shorter, never below none).
     fn hold_longer(&mut self, by: f64) {
-        let Some((section, index)) = self.selected else { return };
+        let Some(Picked::Note(section, index)) = self.selected else { return };
         self.remember();
         let note = &mut self.json["notes"][section]["sectionNotes"][index];
         if note.is_array() {
@@ -330,8 +460,8 @@ impl ChartEditor {
 
     fn step_history(&mut self, back: bool) {
         let (from, to) = if back { (&mut self.undo, &mut self.redo) } else { (&mut self.redo, &mut self.undo) };
-        let Some(notes) = from.pop() else { return };
-        to.push(std::mem::replace(&mut self.json["notes"], notes));
+        let Some(chart) = from.pop() else { return };
+        to.push(std::mem::replace(&mut self.json, chart));
         (self.unsaved, self.leaving) = (true, false);
         self.selected = None;
         self.measure();
@@ -398,19 +528,29 @@ impl ChartEditor {
                 if end > y + GRID / 2.0 {
                     skin.frame(&format!("{} hold piece0000", NOTE_NAMES[lane]), x, (y + GRID / 2.0 + end) / 2.0, Some(vec2(8.0, end - y - GRID / 2.0)), Some(lane), alpha);
                 }
-                if self.selected == Some((index, place)) {
+                if self.selected == Some(Picked::Note(index, place)) {
                     draw_rectangle(x - GRID / 2.0, y, GRID, GRID, Color { a: 0.5, ..Color::from_hex(0x00FFFF) });
                 }
                 skin.frame(&format!("{}0000", NOTE_NAMES[lane]), x, y + GRID / 2.0, Some(vec2(GRID, GRID)), Some(lane), alpha);
             }
         }
-        // the events: an icon each moment that has some, with how many
-        for event in self.json["events"].as_array().into_iter().flatten() {
+        // the events: an icon each moment that has some, with how many, and what they are written beside the grid
+        for (index, event) in self.json["events"].as_array().into_iter().flatten().enumerate() {
             let Some(time) = event[0].as_f64() else { continue };
             let y = self.y_of(time);
             if !(-GRID..HEIGHT).contains(&y) {
                 continue;
             }
+            if matches!(self.selected, Some(Picked::Event(picked, _)) if picked == index) {
+                draw_rectangle(LEFT, y, GRID, GRID, Color { a: 0.5, ..Color::from_hex(0x00FFFF) });
+            }
+            let entries = event[1].as_array().map_or(&[][..], Vec::as_slice);
+            let words = match entries {
+                [one] => format!("{} - {}, {}", one[0].as_str().unwrap_or_default(), plain(&one[1]), plain(&one[2])),
+                many => format!("{} Events: {}", many.len(), many.iter().map(|entry| entry[0].as_str().unwrap_or_default()).collect::<Vec<_>>().join(", ")),
+            };
+            let width = measure_text(&words, skin.font.as_ref(), 14, 1.0).width;
+            draw_text_ex(&words, LEFT - width - 6.0, y + GRID / 2.0 + 5.0, TextParams { font: skin.font.as_ref(), font_size: 14, color: WHITE, ..Default::default() });
             if let Some(icon) = &self.event_icon {
                 draw_texture_ex(icon, LEFT + 5.0, y + 5.0, WHITE, DrawTextureParams { dest_size: Some(vec2(30.0, 30.0)), ..Default::default() });
             }
@@ -434,6 +574,219 @@ impl ChartEditor {
             draw_texture_ex(icon, x, 50.0, Color { a: 0.6, ..WHITE }, DrawTextureParams { dest_size: Some(size), source: Some(source), ..Default::default() });
         }
         self.draw_info(skin);
+        self.ui.draw(skin.font.as_ref());
+    }
+
+    /// Sets a field of the song (a step to undo), and measures the sections again (the tempo may have changed).
+    fn set(&mut self, field: &str, value: Value) {
+        self.remember();
+        self.json[field] = value;
+        self.measure();
+    }
+
+    fn set_section(&mut self, section: usize, field: &str, value: Value) {
+        self.remember();
+        self.json["notes"][section][field] = value;
+        self.measure();
+    }
+
+    /// The box at the right with the Haxe editor's Song, Section, Note and Events tabs.
+    fn panel(&mut self) {
+        let area = Rect::new(920.0, 60.0, 300.0, 260.0);
+        self.tab = self.ui.tabs(area, &["Events", "Note", "Section", "Song"], self.tab);
+        let (x, y) = (area.x + 10.0, area.y + 10.0);
+        match self.tab {
+            0 => self.events_tab(x, y),
+            1 => self.note_tab(x, y),
+            2 => self.section_tab(x, y),
+            _ => self.song_tab(x, y),
+        }
+    }
+
+    fn song_tab(&mut self, x: f32, y: f32) {
+        let text = |json: &Value, field: &str| json[field].as_str().unwrap_or_default().to_owned();
+        self.ui.label(x, y, "Song Name:");
+        if let Some(name) = self.ui.input("song", x, y + 18.0, 140.0, &text(&self.json, "song")) {
+            self.set("song", json!(name));
+        }
+        if let Some(voices) = self.ui.check(x + 150.0, y + 18.0, "Allow Vocals", self.json["needsVoices"].as_bool().unwrap_or(true)) {
+            self.set("needsVoices", json!(voices));
+        }
+        self.ui.label(x, y + 48.0, "BPM:");
+        let bpm = self.json["bpm"].as_f64().unwrap_or(100.0);
+        if let Some(bpm) = self.ui.stepper("bpm", x, y + 66.0, 70.0, bpm, 1.0, 1.0, 999.0) {
+            self.set("bpm", json!(bpm));
+        }
+        self.ui.label(x + 150.0, y + 48.0, "Scroll Speed:");
+        let speed = self.json["speed"].as_f64().unwrap_or(1.0);
+        if let Some(speed) = self.ui.stepper("speed", x + 150.0, y + 66.0, 70.0, speed, 0.1, 0.1, 10.0) {
+            self.set("speed", json!((speed * 100.0).round() / 100.0));
+        }
+        for (index, (field, words)) in [("player1", "Player:"), ("player2", "Opponent:"), ("gfVersion", "Girlfriend:"), ("stage", "Stage:")].into_iter().enumerate() {
+            let (x, y) = (x + 150.0 * (index % 2) as f32, y + 96.0 + 44.0 * (index / 2) as f32);
+            self.ui.label(x, y, words);
+            if let Some(value) = self.ui.input(field, x, y + 18.0, 130.0, &text(&self.json, field)) {
+                self.set(field, json!(value));
+            }
+        }
+        if self.ui.button(x, y + 200.0, 120.0, "Save (Ctrl+S)") {
+            self.save();
+        }
+    }
+
+    fn section_tab(&mut self, x: f32, y: f32) {
+        let section = self.section_at(self.position);
+        let flag = |json: &Value, field: &str| json["notes"][section][field].as_bool().unwrap_or(false);
+        self.ui.label(x, y, &format!("Section {section}"));
+        for (index, (field, words)) in [("mustHitSection", "Must Hit Section"), ("gfSection", "GF Section"), ("altAnim", "Alt Animation")].into_iter().enumerate() {
+            if let Some(on) = self.ui.check(x, y + 22.0 + 24.0 * index as f32, words, flag(&self.json, field)) {
+                self.set_section(section, field, json!(on));
+            }
+        }
+        if let Some(on) = self.ui.check(x, y + 96.0, "Change BPM", flag(&self.json, "changeBPM")) {
+            self.set_section(section, "changeBPM", json!(on));
+        }
+        let span = self.spans.get(section).copied();
+        let bpm = self.json["notes"][section]["bpm"].as_f64().or(span.map(|span| span.bpm)).unwrap_or(100.0);
+        if let Some(bpm) = self.ui.stepper("section bpm", x + 150.0, y + 96.0, 60.0, bpm, 1.0, 1.0, 999.0) {
+            self.set_section(section, "bpm", json!(bpm));
+        }
+        self.ui.label(x, y + 124.0, "Beats per Section:");
+        if let Some(beats) = self.ui.stepper("beats", x + 150.0, y + 126.0, 60.0, span.map_or(4.0, |span| span.beats), 1.0, 1.0, 16.0) {
+            self.set_section(section, "sectionBeats", json!(beats));
+        }
+        let start = span.map_or(0.0, |span| span.start);
+        if self.ui.button(x, y + 160.0, 130.0, "Copy Section") {
+            let notes = self.json["notes"][section]["sectionNotes"].as_array().cloned().unwrap_or_default();
+            self.copied = Some(notes.into_iter().map(|mut note| {
+                note[0] = json!(round(note[0].as_f64().unwrap_or(0.0) - start));
+                note
+            }).collect());
+        }
+        if self.ui.button(x + 150.0, y + 160.0, 130.0, "Paste Section") {
+            if let Some(copied) = self.copied.clone() {
+                self.remember();
+                let notes = &mut self.json["notes"][section]["sectionNotes"];
+                if !notes.is_array() {
+                    *notes = json!([]);
+                }
+                notes.as_array_mut().expect("made an array").extend(copied.into_iter().map(|mut note| {
+                    note[0] = json!(round(note[0].as_f64().unwrap_or(0.0) + start));
+                    note
+                }));
+            }
+        }
+        if self.ui.button(x, y + 186.0, 130.0, "Clear Notes") {
+            self.selected = None;
+            self.set_section(section, "sectionNotes", json!([]));
+        }
+        // the player's notes become the opponent's and back
+        if self.ui.button(x + 150.0, y + 186.0, 130.0, "Swap Section") {
+            self.remember();
+            for note in self.json["notes"][section]["sectionNotes"].as_array_mut().into_iter().flatten() {
+                if let Some(data) = note[1].as_i64().filter(|data| (0..8).contains(data)) {
+                    note[1] = json!((data + 4) % 8);
+                }
+            }
+        }
+    }
+
+    fn note_tab(&mut self, x: f32, y: f32) {
+        let picked = match self.selected {
+            Some(Picked::Note(section, index)) if self.json["notes"][section]["sectionNotes"][index].is_array() => Some((section, index)),
+            _ => None,
+        };
+        let step = self.spans.get(self.section_at(self.position)).map_or(150.0, |span| span.step_ms());
+        if let Some((section, index)) = picked {
+            let note = self.json["notes"][section]["sectionNotes"][index].clone();
+            self.ui.label(x, y, "Sustain length:");
+            if let Some(length) = self.ui.stepper("sustain", x, y + 18.0, 80.0, note[2].as_f64().unwrap_or(0.0), step / 2.0, 0.0, step * 128.0) {
+                self.remember();
+                self.json["notes"][section]["sectionNotes"][index][2] = json!(round((length / (step / 2.0)).round() * step / 2.0));
+            }
+            self.ui.label(x, y + 46.0, "Strum time (in ms):");
+            if let Some(time) = self.ui.input("strum time", x, y + 64.0, 120.0, &plain(&note[0])).and_then(|text| text.trim().parse::<f64>().ok()) {
+                self.remember();
+                self.json["notes"][section]["sectionNotes"][index][0] = json!(round(time.max(0.0)));
+            }
+        } else {
+            self.ui.label(x, y, "No note picked (Shift+click one).");
+        }
+        self.ui.label(x, y + 92.0, "Note type:");
+        if let Some(kind) = self.ui.dropdown("note type", x, y + 110.0, 200.0, &self.note_types, self.note_type) {
+            self.note_type = kind;
+            if let Some((section, index)) = picked {
+                self.remember();
+                let note = self.json["notes"][section]["sectionNotes"][index].as_array_mut().expect("checked");
+                note.truncate(3);
+                if !self.note_types[kind].is_empty() {
+                    note.push(json!(self.note_types[kind]));
+                }
+            }
+        }
+    }
+
+    fn events_tab(&mut self, x: f32, y: f32) {
+        let picked = match self.selected {
+            Some(Picked::Event(index, entry)) if self.json["events"][index][1][entry].is_array() => Some((index, entry)),
+            _ => None,
+        };
+        self.ui.label(x, y, "Event:");
+        // (the list first: open, it drops down over the values and takes its clicks before they do)
+        if let Some(event) = self.ui.dropdown("event", x, y + 18.0, 140.0, &self.events, self.event) {
+            self.event = event;
+            if let Some((index, entry)) = picked {
+                self.remember();
+                self.json["events"][index][1][entry][0] = json!(self.events[event]);
+            }
+        }
+        let description = self.abouts.get(self.event).cloned().unwrap_or_default();
+        self.ui.label(x, y + 42.0, &description);
+        for (value, words) in [(0, "Value 1:"), (1, "Value 2:")] {
+            let top = y + 160.0 + 40.0 * value as f32;
+            self.ui.label(x, top, words);
+            if let Some(text) = self.ui.input(["value 1", "value 2"][value], x, top + 16.0, 200.0, &self.values[value]) {
+                self.values[value] = text.clone();
+                if let Some((index, entry)) = picked {
+                    self.remember();
+                    self.json["events"][index][1][entry][value + 1] = json!(text);
+                }
+            }
+        }
+        if let Some((index, entry)) = picked {
+            let count = self.json["events"][index][1].as_array().map_or(1, Vec::len);
+            self.ui.label(x + 150.0, y, &format!("Entry {} / {count}", entry + 1));
+            // another entry of the same moment: before, after, taken off, added
+            let mut go = None;
+            for (place, words) in ["<", ">", "-", "+"].into_iter().enumerate() {
+                if self.ui.button(x + 150.0 + 30.0 * place as f32, y + 18.0, 26.0, &format!(" {words}")) {
+                    go = Some(place);
+                }
+            }
+            match go {
+                Some(0) => self.selected = Some(Picked::Event(index, entry.saturating_sub(1))),
+                Some(1) => self.selected = Some(Picked::Event(index, (entry + 1).min(count - 1))),
+                Some(2) if count > 1 => {
+                    self.remember();
+                    if let Some(entries) = self.json["events"][index][1].as_array_mut() {
+                        entries.remove(entry);
+                    }
+                    self.selected = Some(Picked::Event(index, entry.saturating_sub(1)));
+                }
+                Some(3) => {
+                    self.remember();
+                    let name = self.events.get(self.event).cloned().unwrap_or_default();
+                    if let Some(entries) = self.json["events"][index][1].as_array_mut() {
+                        entries.push(json!([name, self.values[0], self.values[1]]));
+                    }
+                    self.selected = Some(Picked::Event(index, count));
+                }
+                _ => {}
+            }
+            if go.is_some() {
+                self.show_event();
+            }
+        }
     }
 
     fn draw_info(&self, skin: &Skin) {
@@ -461,6 +814,11 @@ impl ChartEditor {
             }
         }
     }
+}
+
+/// A value of an event as text (they are mostly text, sometimes numbers).
+fn plain(value: &Value) -> String {
+    value.as_str().map_or_else(|| if value.is_null() { String::new() } else { value.to_string() }, str::to_owned)
 }
 
 /// A key down, or pressed this frame (a modifier pressed and let go of within one frame still counts).
