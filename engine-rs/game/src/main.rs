@@ -2176,7 +2176,10 @@ fn main() {
                     clear_background(BLACK);
                     set_camera(&Camera2D { target: vec2(WIDTH / 2.0, HEIGHT / 2.0), zoom: vec2(2.0 / WIDTH, 2.0 / HEIGHT), ..Default::default() });
                     let week = editor.week();
-                    menus.week_preview(skin, &week, None);
+                    match editor.freeplay() {
+                        Some(song) => menus.freeplay_preview(skin, &week, song),
+                        None => menus.week_preview(skin, &week, None),
+                    }
                     let picture = menus.week_picture(&week);
                     editor.draw(skin, picture.as_ref());
                     // a saved week shows in the menus at once

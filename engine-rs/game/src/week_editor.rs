@@ -66,6 +66,11 @@ impl WeekEditor {
     }
 
     /// The week as the game would read it, for the story menu's view of it.
+    /// The song chosen, while the Freeplay tab shows the week as freeplay does.
+    pub fn freeplay(&self) -> Option<usize> {
+        (self.tab == 0).then_some(self.song)
+    }
+
     pub fn week(&self) -> Week {
         parse_week(&self.file, &self.folder, &self.json)
     }
@@ -83,6 +88,11 @@ impl WeekEditor {
         let typing = self.ui.typing();
         self.ui.begin();
         self.panel();
+        // on the Freeplay tab, Up/Down go through the songs as freeplay does
+        let count = self.json["songs"].as_array().map_or(0, Vec::len);
+        if !typing && self.tab == 0 && count > 0 && is_key_pressed(KeyCode::Up) != is_key_pressed(KeyCode::Down) {
+            self.song = (self.song + if is_key_pressed(KeyCode::Down) { 1 } else { count - 1 }) % count;
+        }
         if !typing && is_key_pressed(KeyCode::Escape) {
             if !self.unsaved || self.leaving {
                 return Go::Leave;
@@ -207,7 +217,6 @@ impl WeekEditor {
             *crate::chart_editor::slot(&mut self.json["songs"][self.song], 1, &json!("face")) = json!(icon);
             (self.unsaved, self.leaving) = (true, false);
         }
-        self.ui.label(x + 120.0, y + 92.0, "Color:");
         if let Some(hidden) = self.ui.check(x, y + 144.0, "Hide Week from Freeplay?", self.json["hideFreeplay"].as_bool().unwrap_or(false)) {
             self.set("hideFreeplay", json!(hidden));
         }
@@ -234,21 +243,18 @@ impl WeekEditor {
     }
 
     /// The editor over the story menu's view of the week (drawn before it): the week's picture where the list would
-    /// show it, the black bar, the box.
+    /// show it, the black bar, the box; on the Freeplay tab, over freeplay's view of it.
     pub fn draw(&self, skin: &Skin, picture: Option<&Texture2D>) {
-        draw_rectangle(0.0, 0.0, WIDTH, 56.0, BLACK);
+        if self.tab != 0 {
+            draw_rectangle(0.0, 0.0, WIDTH, 56.0, BLACK);
+        }
         match picture {
+            _ if self.tab == 0 => {}
             Some(picture) => draw_texture(picture, (WIDTH - picture.width()) / 2.0, 472.0 + picture.height(), WHITE),
             None => {
                 let words = format!("MISSING FILE: images/storymenu/{}.png", self.file);
                 skin.text(&words, (WIDTH - measure_text(&words, skin.font.as_ref(), 24, 1.0).width) / 2.0, 520.0, 24, WHITE);
             }
-        }
-        // the freeplay colour of the song chosen in the Freeplay tab
-        if self.tab == 0 {
-            let song = &self.json["songs"][self.song];
-            let color = Color::from_rgba(song[2][0].as_u64().unwrap_or(255) as u8, song[2][1].as_u64().unwrap_or(255) as u8, song[2][2].as_u64().unwrap_or(255) as u8, 255);
-            draw_rectangle(WIDTH - 110.0, HEIGHT - 355.0 + 116.0, 60.0, 26.0, color);
         }
         if let Some((words, when)) = &self.said {
             if when.elapsed().as_secs_f32() < 3.0 {

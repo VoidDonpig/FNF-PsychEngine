@@ -214,7 +214,8 @@ Done:
 - **Week editor**: from the editors' list, on the mod folder's first week (or a new one): the story menu shows the
   week as it is edited, with its picture where the list would have it; the Haxe editor's Week (songs, the three
   characters, background, display name, week name, week file), Other (locked, hidden until unlocked, the week to
-  finish first, difficulties) and Freeplay (each song's colour and icon, hidden from freeplay) tabs; Load Week (the
+  finish first, difficulties) and Freeplay (each song's colour and icon, hidden from freeplay; the week shown as freeplay shows it, Up/Down
+  through its songs) tabs; Load Week (the
   folder's weeks), New Week, Save Week (over its file, the one before kept as `.bak`, or into the folder's weeks/;
   the menus read it at once); Escape asks twice with changes not saved.
 - **Menu character editor**: from the editors' list: a story menu character's file (`images/menucharacters/`)
@@ -251,7 +252,7 @@ Not there yet:
   engine's own classes, so mods that use it cannot run here as they are. Custom shaders.
 - **Editors**: the chart editor's File/Edit/View menus and its Data tab, the waveform, the vortex editor, lists to choose characters and stages from, pasted notes following the mouse before they are put down, the autosave's time and count settings, a song
   chosen to chart from the editors' list;
-  the week editor's freeplay view; the portrait editor's camera; the
+  the week editor's Copy/Paste Color (no system clipboard here); the portrait editor's camera; the
   note splash editor's Shader tab, Template and Convert TXT; the stage editor.
 - **Other**: gamepads on Linux and macOS (gilrs needs libudev there); binding a gamepad's buttons on the key binds
   page (Psych's buttons are used as they are).

@@ -1115,6 +1115,30 @@ impl Menus {
         }
     }
 
+    /// A row of the freeplay list `away` rows from the chosen one: the title, its icon after it.
+    fn song_row(&mut self, skin: &Skin, title: &str, source: &str, icon: &str, away: f32, chosen: bool) {
+        let (x, y, alpha) = (away * 20.0 + 90.0, away * 156.0 + 320.0, if chosen { 1.0 } else { 0.6 });
+        let width = self.width(skin, title, true);
+        let squeeze = (980.0 / width).min(1.0);
+        self.write(skin, title, true, x, y, squeeze, alpha);
+        let icon = [format!("icons/{icon}"), format!("icons/icon-{icon}"), "icons/icon-face".to_owned()].iter().find_map(|name| self.art.image(source, name));
+        if let Some(icon) = icon {
+            // an icon file holds the normal and the losing face side by side
+            let faces = (icon.width() / icon.height()).round().max(1.0);
+            let source = Rect::new(0.0, 0.0, icon.width() / faces, icon.height());
+            draw_texture_ex(&icon, x + width * squeeze + 12.0, y - 30.0, white(alpha), DrawTextureParams { source: Some(source), ..Default::default() });
+        }
+    }
+
+    /// What freeplay shows of a week's songs, `chosen` in the middle (the week editor's Freeplay view).
+    pub fn freeplay_preview(&mut self, skin: &Skin, week: &Week, chosen: usize) {
+        let color = week.songs.get(chosen).map_or([255; 3], |(_, _, color)| *color);
+        self.backdrop(Vec3::from(color.map(|c| c as f32 / 255.0)), get_frame_time().min(0.1));
+        for (index, (title, icon, _)) in week.songs.iter().enumerate() {
+            self.song_row(skin, title, &week.source, icon, index as f32 - chosen as f32, index == chosen);
+        }
+    }
+
     /// What the story menu shows of a week above its list (also the week editor's view): the yellow band, the week's
     /// background and characters (`since` it was chosen: their confirm poses), its tracks, its name.
     pub fn week_preview(&mut self, skin: &Skin, week: &Week, since: Option<f32>) {
@@ -1196,23 +1220,13 @@ impl Menus {
         // the background takes the colour of the selected song
         let chosen = row.entries[difficulty];
         self.backdrop(Vec3::from(row.color.map(|c| c as f32 / 255.0)), dt);
-        let row = &self.rows[self.song];
         self.song_scroll += (self.song as f32 - self.song_scroll) * (1.0 - (-dt * 9.6).exp());
         let near = |row: f32| (row.round().max(0.0) as usize).min(self.rows.len());
         for index in near(self.song_scroll - 4.0)..near(self.song_scroll + 4.0) {
-            let (row, away) = (&self.rows[index], index as f32 - self.song_scroll);
-            let (x, y, alpha) = (away * 20.0 + 90.0, away * 156.0 + 320.0, if index == self.song { 1.0 } else { 0.6 });
-            let width = self.width(skin, &row.title, true);
-            let squeeze = (980.0 / width).min(1.0);
-            self.write(skin, &row.title, true, x, y, squeeze, alpha);
-            let icon = [format!("icons/{}", row.icon), format!("icons/icon-{}", row.icon), "icons/icon-face".to_owned()].iter().find_map(|name| self.art.image(&row.source, name));
-            if let Some(icon) = icon {
-                // an icon file holds the normal and the losing face side by side
-                let faces = (icon.width() / icon.height()).round().max(1.0);
-                let source = Rect::new(0.0, 0.0, icon.width() / faces, icon.height());
-                draw_texture_ex(&icon, x + width * squeeze + 12.0, y - 30.0, white(alpha), DrawTextureParams { source: Some(source), ..Default::default() });
-            }
+            let (title, source, icon) = { let row = &self.rows[index]; (row.title.clone(), row.source.clone(), row.icon.clone()) };
+            self.song_row(skin, &title, &source, &icon, index as f32 - self.song_scroll, index == self.song);
         }
+        let row = &self.rows[self.song];
 
         let clock = |ms: f64| format!("{}:{:02}", ms as u32 / 60000, ms as u32 / 1000 % 60);
         let wide = |text: &str, size: u16| measure_text(text, skin.font.as_ref(), size, 1.0).width;
