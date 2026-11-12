@@ -2019,7 +2019,8 @@ fn main() {
                         }
                     }
                     // a retry goes straight to the song: the talk was heard
-                    Flow::Restart => Playing::open(&base, &playing.entry, &songs, &settings, 0.0, story.is_some(), true, None).map_or_else(Screen::Failed, |mut again| {
+                    // (a play-test's retry plays the editor's chart again, not the file's)
+                    Flow::Restart => Playing::open(&base, &playing.entry, &songs, &settings, 0.0, story.is_some(), true, playing.charting.clone()).map_or_else(Screen::Failed, |mut again| {
                         again.deaths = playing.deaths;
                         Screen::Playing(Box::new(again))
                     }),

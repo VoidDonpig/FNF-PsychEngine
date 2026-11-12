@@ -60,6 +60,9 @@ pub struct ChartEditor {
     selected: Option<(usize, usize)>,
     undo: Vec<Value>,
     redo: Vec<Value>,
+    /// Changed since it was last saved (or brought back from a play-test), and Escape was pressed once already.
+    unsaved: bool,
+    leaving: bool,
     said: Option<(String, f64)>,
     background: Option<Texture2D>,
     event_icon: Option<Texture2D>,
@@ -69,6 +72,8 @@ pub struct ChartEditor {
 impl ChartEditor {
     /// The chart of `entry`; `text` is the chart as last edited (back from a play-test), else its file is read.
     pub fn open(base: &Path, entry: &SongEntry, text: Option<String>) -> Result<ChartEditor, String> {
+        // (back from a play-test, the chart may hold changes not saved)
+        let unsaved = text.is_some();
         let text = match text {
             Some(text) => text,
             None => std::fs::read_to_string(&entry.chart).map_err(|e| format!("{}: {e}", entry.chart.display()))?,
@@ -95,7 +100,7 @@ impl ChartEditor {
         let icons = [icon(json["player1"].as_str().unwrap_or("bf")), icon(json["player2"].as_str().unwrap_or("dad"))];
         let mut editor = ChartEditor {
             entry: entry.clone(), json, spans: Vec::new(), song, playing: false, position: 0.0, length, zoom: 2, quant: 3, selected: None,
-            undo: Vec::new(), redo: Vec::new(), said: None, background: picture("menuDesat"), event_icon: picture("editors/eventIcon"), icons,
+            undo: Vec::new(), redo: Vec::new(), unsaved, leaving: false, said: None, background: picture("menuDesat"), event_icon: picture("editors/eventIcon"), icons,
         };
         editor.measure();
         Ok(editor)
@@ -153,6 +158,7 @@ impl ChartEditor {
 
     /// Keeps the chart as it is, to come back to with undo.
     fn remember(&mut self) {
+        (self.unsaved, self.leaving) = (true, false);
         self.undo.push(self.json["notes"].clone());
         // (the last hundred changes)
         if self.undo.len() > 100 {
@@ -191,8 +197,13 @@ impl ChartEditor {
             self.stop();
             return Go::Play(self.text());
         } else if is_key_pressed(KeyCode::Escape) {
-            self.stop();
-            return Go::Leave;
+            // changes not saved: a second Escape is needed
+            if !self.unsaved || self.leaving {
+                self.stop();
+                return Go::Leave;
+            }
+            self.leaving = true;
+            self.say("Unsaved changes: Escape again to leave, Ctrl+S to save");
         } else if is_key_pressed(KeyCode::A) != is_key_pressed(KeyCode::D) {
             let by = if shift { 4 } else { 1 };
             let to = if is_key_pressed(KeyCode::A) { current.saturating_sub(by) } else { (current + by).min(self.spans.len().saturating_sub(1)) };
@@ -264,19 +275,26 @@ impl ChartEditor {
         (row >= 0.0).then(|| (column as usize, self.ms_of(row), self.ms_of(row + if snapped { snap } else { 0.0 })))
     }
 
-    /// A click on the grid: a note there is taken off (picked with Shift), else one is put down.
+    /// The note drawn under a point of a column (section, place in its notes): the Haxe editor picks by the note's box.
+    fn note_at(&self, column: usize, y: f32) -> Option<(usize, usize)> {
+        let data = column.checked_sub(1)? as f64;
+        self.sections().iter().enumerate().find_map(|(section, value)| {
+            value["sectionNotes"].as_array()?.iter().position(|note| {
+                let top = note[0].as_f64().map_or(f32::MAX, |time| self.y_of(time));
+                note[1].as_f64() == Some(data) && (top..top + GRID).contains(&y)
+            }).map(|index| (section, index))
+        })
+    }
+
+    /// A click on the grid: the note under it is taken off (picked with Shift), else one is put down at the beat
+    /// snap (with Shift, right where the mouse is).
     fn click(&mut self, shift: bool) {
-        let Some((column, from, until)) = self.under_mouse(true) else { return };
+        let Some((column, snapped, _)) = self.under_mouse(true) else { return };
         if column == 0 {
             return self.say("Events are not placed here yet");
         }
-        let data = (column - 1) as f64;
-        let found = self.sections().iter().enumerate().find_map(|(section, value)| {
-            value["sectionNotes"].as_array()?.iter().position(|note| {
-                let time = note[0].as_f64().unwrap_or(f64::MIN);
-                note[1].as_f64() == Some(data) && time >= from - 1.0 && time < until.max(from + 1.0)
-            }).map(|index| (section, index))
-        });
+        let found = self.note_at(column, mouse_position(vec2(WIDTH, HEIGHT)).y);
+        let from = if shift { self.under_mouse(false).map_or(snapped, |(_, free, _)| free) } else { snapped };
         match found {
             Some(note) if shift => self.selected = Some(note),
             Some((section, index)) => {
@@ -314,6 +332,7 @@ impl ChartEditor {
         let (from, to) = if back { (&mut self.undo, &mut self.redo) } else { (&mut self.redo, &mut self.undo) };
         let Some(notes) = from.pop() else { return };
         to.push(std::mem::replace(&mut self.json["notes"], notes));
+        (self.unsaved, self.leaving) = (true, false);
         self.selected = None;
         self.measure();
         self.say(if back { "Undone" } else { "Redone" });
@@ -325,6 +344,7 @@ impl ChartEditor {
         let backup = PathBuf::from(format!("{}.bak", file.display()));
         let kept = !file.is_file() || std::fs::copy(file, &backup).is_ok();
         let written = kept && funkin_core::files::write(file, &self.text()).is_ok();
+        self.unsaved &= !written;
         self.say(match (kept, written) {
             (true, true) => format!("Saved {}", file.file_name().map_or(String::new(), |name| name.to_string_lossy().into_owned())),
             (false, _) => format!("Could not keep a copy of {}; not saved", file.display()),
@@ -529,6 +549,24 @@ fn print(value: &Value, depth: usize) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_click_finds_the_note_drawn_under_it() {
+        // 120 beats a minute: a sixteenth is 125 ms, 40 px at the usual zoom, now at the middle line (360)
+        let text = r#"{"bpm": 120, "format": "psych_v1", "notes": [{"sectionNotes": [[0, 1, 0], [125, 1, 0], [125, 2, 0]], "sectionBeats": 4}]}"#;
+        let missing = PathBuf::from("no such folder");
+        let entry = SongEntry {
+            title: "T".to_owned(), difficulty: "Hard".to_owned(), source: String::new(), week: 0, icon: String::new(), color: [0; 3],
+            chart: missing.join("t.json"), inst: missing.join("Inst.ogg"), voices_player: None, voices_opponent: None,
+        };
+        let editor = ChartEditor::open(&missing, &entry, Some(text.to_owned())).unwrap();
+        // a sixteenth apart in one column: each is found by its own box, even where one beat snap holds both
+        assert_eq!(editor.note_at(2, 370.0), Some((0, 0)));
+        assert_eq!(editor.note_at(2, 410.0), Some((0, 1)));
+        assert_eq!(editor.note_at(3, 410.0), Some((0, 2)));
+        assert_eq!([editor.note_at(2, 450.0), editor.note_at(0, 370.0)], [None, None]);
+        assert!(editor.unsaved, "back from a play-test, it may hold changes");
+    }
 
     #[test]
     fn old_charts_get_absolute_columns_and_their_events_moved() {
