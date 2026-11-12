@@ -24,6 +24,7 @@ pub struct SongEntry {
 #[derive(Clone)]
 pub struct Paths {
     roots: Vec<PathBuf>,
+    assets: PathBuf,
 }
 
 impl Paths {
@@ -41,7 +42,14 @@ impl Paths {
         if !directory.is_empty() {
             roots.extend([assets.join(directory), assets.join("base_game").join(directory)]);
         }
-        Paths { roots }
+        Paths { roots, assets }
+    }
+
+    /// A video by name (Paths.video): `videos/<name>.mp4` of the mods, else of the game, whose videos are not shared by
+    /// the weeks' folders.
+    pub fn video(&self, name: &str) -> Option<PathBuf> {
+        let file = format!("videos/{name}.mp4");
+        self.find(&file).or_else(|| [self.assets.join(&file), self.assets.join("base_game").join(&file)].into_iter().find(|path| path.is_file()))
     }
 
     /// First existing file for a path such as "images/characters/BOYFRIEND.png".

@@ -256,6 +256,11 @@ impl Texture2D {
         self.0.filter.set(filter);
     }
 
+    /// Puts new pixels (RGBA, as many as it has) into the picture, in place: a video's next frame.
+    pub fn update(&self, pixels: &[u8]) {
+        with(|context| context.write(&self.0.texture, 0, 0, self.0.width, self.0.height, pixels));
+    }
+
     /// No copy of it is held anywhere else.
     pub fn alone(&self) -> bool {
         Rc::strong_count(&self.0) == 1
@@ -1014,9 +1019,14 @@ pub fn draw_texture_ex(picture: &Texture2D, x: f32, y: f32, color: Color, params
 }
 
 pub fn draw_rectangle(x: f32, y: f32, width: f32, height: f32, color: Color) {
+    draw_rectangle_turned(x, y, width, height, 0.0, color);
+}
+
+/// The same, turned around its middle by `rotation` radians.
+pub fn draw_rectangle_turned(x: f32, y: f32, width: f32, height: f32, rotation: f32, color: Color) {
     with(|context| {
         let (white, was) = (context.white.clone().expect("opened"), context.recolor.take());
-        context.texture(&white, x, y, color, &DrawTextureParams { dest_size: Some(vec2(width, height)), ..Default::default() });
+        context.texture(&white, x, y, color, &DrawTextureParams { dest_size: Some(vec2(width, height)), rotation, ..Default::default() });
         context.recolor = was;
     });
 }

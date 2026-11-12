@@ -36,6 +36,10 @@ pub enum Request {
     Score { field: &'static str, value: f64, add: bool },
     /// A field of a chart note (by its number) set: ignoreNote, hitCausesMiss, noAnimation, gfNote...
     Note { index: usize, field: String, value: serde_json::Value },
+    /// A video (its file): skippable, over black with the game waiting (else over the song, which goes on), looped.
+    Video { path: PathBuf, skippable: bool, cover: bool, looped: bool },
+    /// The countdown asked for again (onStartCountdown is called again first), as startCountdown() does.
+    StartCountdown,
     EndSong,
     RestartSong,
     ExitSong,
@@ -666,6 +670,17 @@ impl Scripts {
         }
         request!("characterDance", |args: String| Request::Dance { who: args });
         request!("endSong", |_args: ()| Request::EndSong);
+        request!("startCountdown", |_args: ()| Request::StartCountdown);
+        // shortcut: playOnLoad false plays it at once all the same; keep it waiting for a play call if a mod needs that
+        function!("startVideo", |_lua, shared, args: (String, Option<bool>, Option<bool>, Option<bool>, Option<bool>)| {
+            let mut shared = shared.borrow_mut();
+            let Some(path) = shared.paths.as_ref().and_then(|paths| paths.video(&args.0)) else {
+                shared.printed.push((format!("startVideo: Video file not found: {}", args.0), crate::gfx::get_time()));
+                return Ok(false);
+            };
+            shared.requests.push(Request::Video { path, skippable: args.1.unwrap_or(true), cover: !args.2.unwrap_or(false), looped: args.3.unwrap_or(false) });
+            Ok(true)
+        });
         request!("restartSong", |_args: Option<bool>| Request::RestartSong);
         request!("exitSong", |_args: Option<bool>| Request::ExitSong);
         function!("setProperty", |_lua, shared, args: (String, Value)| {

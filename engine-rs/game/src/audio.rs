@@ -152,6 +152,26 @@ impl Song {
         let _ = (path, volume, looped);
     }
 
+    /// Plays sound already decoded (stereo, 16 bits a sample, `rate` frames a second) on top of the song: a video's.
+    pub fn play_samples(&self, samples: std::sync::Arc<Vec<i16>>, rate: u32, looped: bool) {
+        #[cfg(feature = "audio")]
+        if let Some(output) = &self.output {
+            output.play_samples(samples, rate, 1.0, looped);
+        }
+        #[cfg(not(feature = "audio"))]
+        let _ = (samples, rate, looped);
+    }
+
+    /// Stops what `play_samples` began with these samples.
+    pub fn stop_samples(&self, samples: &std::sync::Arc<Vec<i16>>) {
+        #[cfg(feature = "audio")]
+        if let Some(output) = &self.output {
+            output.sounds.lock().unwrap().retain(|voice| !std::sync::Arc::ptr_eq(voice.samples(), samples));
+        }
+        #[cfg(not(feature = "audio"))]
+        let _ = samples;
+    }
+
     /// How loud the music playing on top of the song (the looped sounds) is from now on.
     pub fn set_music_volume(&self, volume: f32) {
         #[cfg(feature = "audio")]
@@ -293,6 +313,12 @@ mod output {
         })
     }
 
+    impl Voice {
+        pub fn samples(&self) -> &Arc<Vec<i16>> {
+            &self.samples
+        }
+    }
+
     impl Output {
         pub fn open(tracks: &[&Path], speed: f64) -> Result<Output, String> {
             let mut decoded = tracks_of(tracks).into_iter();
@@ -388,9 +414,13 @@ mod output {
 
         pub fn play_sound(&self, path: &Path, volume: f32, looped: bool) {
             match decoded(path, false) {
-                Ok((samples, rate)) => self.sounds.lock().unwrap().push(Voice { samples, step: rate as f64 / self.device_rate, cursor: 0.0, volume, looped }),
+                Ok((samples, rate)) => self.play_samples(samples, rate, volume, looped),
                 Err(error) => eprintln!("Sound: {error}"),
             }
+        }
+
+        pub fn play_samples(&self, samples: Arc<Vec<i16>>, rate: u32, volume: f32, looped: bool) {
+            self.sounds.lock().unwrap().push(Voice { samples, step: rate as f64 / self.device_rate, cursor: 0.0, volume, looped });
         }
 
         /// Stops the sound; `heard_ms` is what the position stays at until it plays again.

@@ -22,6 +22,7 @@ mod pad;
 mod props;
 mod scene;
 mod settings;
+mod video;
 
 use funkin_core::content::{songs as find_songs, weeks as find_weeks, Paths, SongEntry};
 use funkin_core::achievements::{earned, Run, ROADKILL};
@@ -281,6 +282,12 @@ struct Playing {
     lua_created: bool,
     end_asked: bool,
     end_held: bool,
+    /// A video playing, and the one the song ends with (Weekend 1's in story mode).
+    video: Option<video::Video>,
+    end_video: Option<PathBuf>,
+    /// Whether the scripts were asked about the countdown (onStartCountdown), and hold it back.
+    countdown_asked: bool,
+    countdown_held: bool,
     /// The song is over and the stage plays a scene of its own before the next.
     bowing: bool,
     /// The stage's music is playing.
@@ -389,7 +396,17 @@ impl Playing {
         let mut scene = scene;
         let staged = story && start_at <= 0.0 && !seen && scene.as_mut().is_some_and(|scene| scene.open_with(&funkin_core::content::song_path(&entry.title), 60.0 / play.chart.bpm as f32));
         let lua = start_scripts(base, &paths, entry, &play.chart, settings, story, seen);
-        Ok(Playing { entry: entry.clone(), play, song, player_voice, own_skin: None, music_fade: None, lua, looks: Default::default(), renamed: Default::default(), strums: strums(settings), flash: None, lua_step: i64::MIN, lua_section: usize::MAX, lua_created: false, end_asked: false, end_held: false, base: base.to_path_buf(), staged, bowing: false, tune: false, paused_at: 0.0, pause_scroll: 0.0, deaths: 0, scene, waited: 0.0, clock: Default::default(), ticked: std::time::Instant::now(), started: false, paused: None, choosing: None, difficulties, story, taunt_until: None, start_at, position: -lead_in, settings: settings.clone(), held_keys: Vec::new(), flash_until: [[f64::MIN; 4]; 2], judgement: None, last_hit: f64::MIN, lanes_used: [false; 4], idled: false, idle_for: 0.0, sang_for: 0.0,
+        // the Weekend 1 stages' videos in story mode (PhillyStreets.hx, PhillyBlazin.hx): Darnell's before its song (once),
+        // 2hot's and Blazin's after theirs
+        let (opening, closing) = match (play.chart.stage.as_str(), funkin_core::content::song_path(&entry.title).as_str()) {
+            ("phillyStreets", "darnell") if story && start_at <= 0.0 && !seen => (Some("darnellCutscene"), None),
+            ("phillyStreets", "2hot") if story => (None, Some("2hotCutscene")),
+            ("phillyBlazin", "blazin") if story => (None, Some("blazinCutscene")),
+            _ => (None, None),
+        };
+        let video = opening.and_then(|name| paths.video(name)).and_then(|path| video::Video::open(&path, true, true, false, false).map_err(|error| eprintln!("{error}")).ok());
+        let end_video = closing.and_then(|name| paths.video(name));
+        Ok(Playing { video, end_video, countdown_asked: false, countdown_held: false, entry: entry.clone(), play, song, player_voice, own_skin: None, music_fade: None, lua, looks: Default::default(), renamed: Default::default(), strums: strums(settings), flash: None, lua_step: i64::MIN, lua_section: usize::MAX, lua_created: false, end_asked: false, end_held: false, base: base.to_path_buf(), staged, bowing: false, tune: false, paused_at: 0.0, pause_scroll: 0.0, deaths: 0, scene, waited: 0.0, clock: Default::default(), ticked: std::time::Instant::now(), started: false, paused: None, choosing: None, difficulties, story, taunt_until: None, start_at, position: -lead_in, settings: settings.clone(), held_keys: Vec::new(), flash_until: [[f64::MIN; 4]; 2], judgement: None, last_hit: f64::MIN, lanes_used: [false; 4], idled: false, idle_for: 0.0, sang_for: 0.0,
             paths, cutscene, lead_in, counted: i64::MIN, popups: Vec::new(), splashes: Vec::new(), dead: None, next_event: 0, speed, speed_change: None }.with(settings))
     }
 
@@ -532,6 +549,19 @@ impl Playing {
                 self.music_fade = None;
             }
         }
+        if let Some(video) = &mut self.video {
+            if video.update(&self.song, get_frame_time().min(0.1), controls::down(Ui::Accept)) {
+                let (cover, ending) = (video.cover, video.ending);
+                self.video = None;
+                if ending {
+                    return Flow::Finished;
+                }
+                // the end of a cutscene starts the countdown, asking the scripts again (startAndEnd)
+                self.countdown_asked &= !cover;
+            } else if video.cover {
+                return Flow::Continue;
+            }
+        }
         if let Some(talk) = &mut self.cutscene {
             let (accept, back) = (controls::pressed(Ui::Accept), controls::pressed(Ui::Back));
             let (cues, over) = talk.update(get_frame_time().min(0.1), accept, back);
@@ -556,6 +586,19 @@ impl Playing {
             }
             self.stage_sounds();
             return Flow::Continue;
+        }
+        if !self.started && !std::mem::replace(&mut self.countdown_asked, true) {
+            self.countdown_held = lua::Scripts::stopped(&self.lua.call("onStartCountdown", ()));
+        }
+        if self.countdown_held {
+            // a script holds the countdown back (onStartCountdown answering Function_Stop) until it starts it or a video
+            let dt = get_frame_time().min(0.1);
+            if let Some(scene) = &mut self.scene {
+                scene.update(dt, self.position, &self.play.chart, &[], [[false; 4]; 2]);
+            }
+            self.stage_sounds();
+            self.lua.call("onUpdatePost", dt);
+            return self.apply_lua().unwrap_or(Flow::Continue);
         }
         if let Some(row) = self.paused {
             // the pause music creeps up to half loudness, a hundredth a second, as in the Haxe engine
@@ -801,7 +844,20 @@ impl Playing {
         if !std::mem::replace(&mut self.end_asked, true) {
             self.end_held = lua::Scripts::stopped(&self.lua.call("onEndSong", ()));
         }
-        if self.end_held { Flow::Continue } else { Flow::Finished }
+        if self.end_held {
+            return Flow::Continue;
+        }
+        match self.end_video.take().map(|path| video::Video::open(&path, true, true, false, true)) {
+            Some(Ok(video)) => {
+                self.video = Some(video);
+                Flow::Continue
+            }
+            Some(Err(error)) => {
+                eprintln!("{error}");
+                Flow::Finished
+            }
+            None => Flow::Finished,
+        }
     }
 
     /// A chart event (or one a script triggered) takes place; scripts hear of it (onEvent).
@@ -983,6 +1039,11 @@ impl Playing {
                         _ => eprintln!("Lua: {field} of a note is not used here"),
                     }
                 }
+                lua::Request::Video { path, skippable, cover, looped } => match video::Video::open(&path, skippable, cover, looped, cover && self.end_asked) {
+                    Ok(video) => self.video = Some(video),
+                    Err(error) => eprintln!("{error}"),
+                },
+                lua::Request::StartCountdown => (self.countdown_asked, self.countdown_held) = (false, false),
                 lua::Request::EndSong => return Some(Flow::Finished),
                 lua::Request::RestartSong => return Some(Flow::Restart),
                 lua::Request::ExitSong => return Some(Flow::Quit),
@@ -1046,6 +1107,11 @@ impl Playing {
     /// `letters` writes in the menus' bold letters: words, left and top, opacity.
     fn draw(&self, skin: &Skin, letters: &dyn Fn(&str, f32, f32, f32)) {
         let (settings, position) = (&self.settings, self.judged());
+        // a cutscene's video hides all the rest
+        if let Some(video) = self.video.as_ref().filter(|video| video.cover) {
+            set_camera(&Camera2D { target: vec2(WIDTH / 2.0, HEIGHT / 2.0), zoom: vec2(2.0 / WIDTH, 2.0 / HEIGHT), ..Default::default() });
+            return video.draw();
+        }
         // the stage through its own moving camera, then notes and the rest of the HUD on top
         // (what scripts faded or hid: a camera, or a piece of the HUD)
         let look = |name: &str| self.looks.get(name).copied().unwrap_or(1.0);
@@ -1287,6 +1353,9 @@ impl Playing {
         fade(1.0);
         self.lua.draw(lua::Cam::Other, false, Vec2::ZERO);
         flash(lua::Cam::Other);
+        if let Some(video) = &self.video {
+            video.draw();
+        }
         set_camera(&Camera2D { target: vec2(WIDTH / 2.0, HEIGHT / 2.0) + hud_shake, zoom: vec2(2.0 / WIDTH, 2.0 / HEIGHT) * hud_zoom, ..Default::default() });
 
         if let Some(talk) = &self.cutscene {

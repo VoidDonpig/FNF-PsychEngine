@@ -160,7 +160,11 @@ Done:
   notes: their time, lane, side, type, state; ignoreNote, hitCausesMiss, noAnimation, gfNote, visible, multAlpha).
   getProperty/setProperty (and tweens) on the cameras' and the HUD's pieces (camHUD, camGame, iconP1, iconP2,
   healthBar, scoreTxt, timeBar, timeTxt, botplayTxt: alpha and visible), songSpeed, camFollow,
-  isCameraOnForcedPos and the characters' visible.
+  isCameraOnForcedPos and the characters' visible. Videos: weekend 1's in story mode (before Darnell, after 2hot
+  and Blazin), and Lua's startVideo (as a cutscene the countdown or the end waits for, or over the song);
+  mp4 files with H.264 pictures and AAC sound, decoded by OpenH264 (built in) and symphonia; holding Accept for
+  a second skips one, the Haxe engine's ring filling meanwhile. onStartCountdown holds the countdown back until
+  startCountdown() or the end of a video.
 - **Gamepads** (Windows): any gamepad plays and goes through the menus with Psych's buttons (D-pad and
   A/B/X/Y for the lanes; D-pad or left stick, A or Start, B, Start, Back for the menus); Lua's gamepad functions.
 
@@ -171,8 +175,8 @@ Not there yet:
   colour shift) is drawn as falling streaks, growing heavier through the song, not with the Haxe engine's shader; the charting mode entries of the pause menu.
 - **Menus**: achievements of mods; the note colours' copy and paste buttons (no clipboard here); the key binds' gamepad
   side and debug keys (no editors yet); the GPU Caching switch (nothing to switch here); update check.
-- **Cutscenes**: videos (so weekend 1's video before Darnell and after 2hot; the scene with the can after the
-  first is there); dialogue from a song's `dialogue.json` (the kind scripts start).
+- **Cutscenes**: dialogue from a song's `dialogue.json` (the kind scripts start); a video during the song does
+  not stop for the pause menu, and its playOnLoad is not kept waiting.
 - **Scripts**: the rest of Lua's functions (notes' own textures and health, shaders, groups, and getProperty/setProperty
   beyond the camera, health, score, the characters' place and the scripts' sprites); custom events and note types run by scripts. HScript is Haxe code run against the Haxe
   engine's own classes, so mods that use it cannot run here as they are. Custom shaders.
