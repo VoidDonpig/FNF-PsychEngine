@@ -744,6 +744,14 @@ impl Scripts {
         for (name, state) in [("keyboardJustPressed", is_key_pressed as fn(KeyCode) -> bool), ("keyboardPressed", is_key_down), ("keyboardReleased", is_key_released)] {
             g.set(name, lua.create_function(move |_, args: String| Ok(crate::controls::key_named(&args).is_some_and(state)))?)?;
         }
+        // gamepads, any of them, by Flixel's names for their buttons (the first argument of gamepad*Pressed, the pad's number,
+        // is taken as any pad)
+        for (name, state) in [("anyGamepadJustPressed", crate::pad::pressed as fn(crate::pad::Button) -> bool), ("anyGamepadPressed", crate::pad::down), ("anyGamepadReleased", crate::pad::released)] {
+            g.set(name, lua.create_function(move |_, args: String| Ok(crate::pad::named(&args).is_some_and(state)))?)?;
+        }
+        for (name, state) in [("gamepadJustPressed", crate::pad::pressed as fn(crate::pad::Button) -> bool), ("gamepadPressed", crate::pad::down), ("gamepadReleased", crate::pad::released)] {
+            g.set(name, lua.create_function(move |_, args: (Value, String)| Ok(crate::pad::named(&args.1).is_some_and(state)))?)?;
+        }
         g.set("mouseClicked", lua.create_function(|_, _args: Option<String>| Ok(is_mouse_pressed()))?)?;
         g.set("mousePressed", lua.create_function(|_, _args: Option<String>| Ok(is_mouse_down()))?)?;
         g.set("getMouseX", lua.create_function(|_, _args: Option<String>| Ok(mouse_position(vec2(1280.0, 720.0)).x as f64))?)?;

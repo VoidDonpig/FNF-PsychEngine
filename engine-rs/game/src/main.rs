@@ -18,6 +18,7 @@ mod input;
 mod lua;
 mod menu;
 mod options;
+mod pad;
 mod props;
 mod scene;
 mod settings;
@@ -673,6 +674,16 @@ impl Playing {
                 }
             }
         }
+        // a gamepad's lane buttons, timed by the frame
+        for lane in 0..4 {
+            let buttons = pad::LANES[lane];
+            if buttons.iter().any(|&button| pad::pressed(button)) && !self.play.botplay {
+                self.lanes_used[lane] = true;
+                events.extend(self.play.press(lane, judged));
+            } else if buttons.iter().any(|&button| pad::released(button)) && !self.lane_held(lane) {
+                self.play.release(lane);
+            }
+        }
         events.extend(self.play.update(judged));
         if !self.lua.is_empty() {
             for &event in &events {
@@ -1029,7 +1040,7 @@ impl Playing {
     }
 
     fn lane_held(&self, lane: usize) -> bool {
-        self.held_keys.iter().any(|&key| self.settings.lane_of(key) == Some(lane))
+        self.held_keys.iter().any(|&key| self.settings.lane_of(key) == Some(lane)) || pad::LANES[lane].iter().any(|&button| pad::down(button))
     }
 
     /// `letters` writes in the menus' bold letters: words, left and top, opacity.
@@ -1620,6 +1631,7 @@ fn main() {
         clear_background(BLACK);
         // read every frame, also outside songs, so that a song never starts with old key presses queued
         let key_events = keyboard.poll();
+        pad::update();
         let plain = |text: &str, x: f32, y: f32, size: u16, color: Color| match &skin {
             Some(skin) => skin.text(text, x, y, size, color),
             None => drop(draw_text(text, x, y, size as f32, color)),

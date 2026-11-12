@@ -47,12 +47,13 @@ pub fn keys(action: Ui) -> [Option<KeyCode>; 2] {
     if bound == [None, None] { defaults()[action as usize] } else { bound }
 }
 
+/// Pressed this frame: by one of its keys, or one of its gamepad buttons.
 pub fn pressed(action: Ui) -> bool {
-    keys(action).into_iter().flatten().any(is_key_pressed)
+    keys(action).into_iter().flatten().any(is_key_pressed) || crate::pad::action(action as usize).iter().any(|&button| crate::pad::pressed(button))
 }
 
 pub fn down(action: Ui) -> bool {
-    keys(action).into_iter().flatten().any(is_key_down)
+    keys(action).into_iter().flatten().any(is_key_down) || crate::pad::action(action as usize).iter().any(|&button| crate::pad::down(button))
 }
 
 #[cfg(test)]

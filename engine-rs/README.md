@@ -161,6 +161,8 @@ Done:
   getProperty/setProperty (and tweens) on the cameras' and the HUD's pieces (camHUD, camGame, iconP1, iconP2,
   healthBar, scoreTxt, timeBar, timeTxt, botplayTxt: alpha and visible), songSpeed, camFollow,
   isCameraOnForcedPos and the characters' visible.
+- **Gamepads** (Windows): any gamepad plays and goes through the menus with Psych's buttons (D-pad and
+  A/B/X/Y for the lanes; D-pad or left stick, A or Start, B, Start, Back for the menus); Lua's gamepad functions.
 
 Not there yet:
 
@@ -168,11 +170,12 @@ Not there yet:
   ones); the rain of weekend 1 (on the streets and in the fight; the Shaders switch turns it off with the title's
   colour shift) is drawn as falling streaks, growing heavier through the song, not with the Haxe engine's shader; the charting mode entries of the pause menu.
 - **Menus**: achievements of mods; the note colours' copy and paste buttons (no clipboard here); the key binds' gamepad
-  side (no gamepads yet) and debug keys (no editors yet); the GPU Caching switch (nothing to switch here); update check.
+  side and debug keys (no editors yet); the GPU Caching switch (nothing to switch here); update check.
 - **Cutscenes**: videos (so weekend 1's video before Darnell and after 2hot; the scene with the can after the
   first is there); dialogue from a song's `dialogue.json` (the kind scripts start).
 - **Scripts**: the rest of Lua's functions (notes' own textures and health, shaders, groups, and getProperty/setProperty
   beyond the camera, health, score, the characters' place and the scripts' sprites); custom events and note types run by scripts. HScript is Haxe code run against the Haxe
   engine's own classes, so mods that use it cannot run here as they are. Custom shaders.
 - **Editors**: chart, character, stage, week, menu character, dialogue, dialogue character, note splash.
-- **Other**: gamepads.
+- **Other**: gamepads on Linux and macOS (gilrs needs libudev there); binding a gamepad's buttons on the key binds
+  page (Psych's buttons are used as they are).
