@@ -545,7 +545,16 @@ pub fn open(conf: Conf) -> Result<(String, Option<String>), String> {
     let mut event_loop = winit::event_loop::EventLoop::new().map_err(|error| error.to_string())?;
     // key presses are timed by the game's own raw input thread, and Windows hands raw input to one listener only
     event_loop.listen_device_events(winit::event_loop::DeviceEvents::Never);
-    let attributes = winit::window::Window::default_attributes().with_title(conf.title).with_inner_size(winit::dpi::LogicalSize::new(conf.width, conf.height));
+    let mut attributes = winit::window::Window::default_attributes().with_title(conf.title).with_inner_size(winit::dpi::LogicalSize::new(conf.width, conf.height));
+    // the game's icon on the window and, on Windows, in the taskbar and Alt+Tab (the .exe's own is in its resources)
+    let icon = Image::from_file_with_format(include_bytes!("../../../art/icons/icon64.png"), None).ok()
+        .and_then(|image| winit::window::Icon::from_rgba(image.bytes, image.width as u32, image.height as u32).ok());
+    #[cfg(windows)]
+    {
+        use winit::platform::windows::WindowAttributesExtWindows;
+        attributes = attributes.with_taskbar_icon(icon.clone());
+    }
+    attributes = attributes.with_window_icon(icon);
     let mut app = App { attributes, window: None, events: Vec::new() };
     for _ in 0..100 {
         if app.window.is_some() {

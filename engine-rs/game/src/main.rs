@@ -6,6 +6,20 @@
 //! opens the options, and `--shot <file.png>` saves the picture after a few frames (or `--after <seconds>`, or
 //! once the song has reached `--when <seconds>`) and quits.
 mod adjust;
+
+// Asked for by laptops' graphics drivers (NVIDIA Optimus, AMD PowerXpress): run it on the fast graphics card, as a game
+// (exported by build.rs).
+#[cfg(windows)]
+#[no_mangle]
+#[used]
+#[allow(non_upper_case_globals)]
+pub static NvOptimusEnablement: u32 = 1;
+#[cfg(windows)]
+#[no_mangle]
+#[used]
+#[allow(non_upper_case_globals)]
+pub static AmdPowerXpressRequestHighPerformance: i32 = 1;
+
 mod character_editor;
 mod chart_editor;
 mod animate;

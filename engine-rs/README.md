@@ -23,6 +23,11 @@ F11 switches fullscreen. `--opengl` draws with OpenGL whatever the Graphics API 
 the chosen one shows nothing). When the chosen graphics API is not there and another is used instead, why is
 written to `funkin-rs-graphics.log`.
 
+On Windows `funkin.exe` says what it is (build.rs, `game/windows.manifest`, `game/icon.ico`): the game's icon, name
+and version in its resources (Explorer, Task Manager and the Game Bar show "Friday Night Funkin': Psych Engine"),
+a manifest (Windows 10/11, per-monitor DPI, long paths, UTF-8), and the NVIDIA Optimus / AMD PowerXpress exports
+that have laptops run it on the fast graphics card. The window has the game's icon on every system.
+
 Without ALSA headers (Linux): add `--no-default-features` to build without sound. On Linux the window needs
 `libxkbcommon-x11`, and drawing needs Vulkan or EGL.
 
