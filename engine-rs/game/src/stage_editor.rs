@@ -2,8 +2,7 @@
 //! from its objects, with the three characters where it puts them; its objects listed, picked (in the list or with a click)
 //! and moved (arrow keys, right mouse button), their settings and the stage's in the Haxe editor's boxes; saved over its
 //! file, the one before kept as `.bak`.
-// shortcut: no animated sprites are made here (the Haxe editor's animation box), nor are images picked from a file dialog;
-// add them when asked.
+// shortcut: images are typed, not picked from a file dialog; add one when asked.
 use crate::gfx::*;
 use crate::scene::Scene;
 use crate::ui::Ui;
@@ -21,6 +20,9 @@ pub enum Go {
 
 /// The characters' entries in a stage's objects, and their places in its file (its keys for where they stand).
 const CHARACTERS: [(&str, &str); 3] = [("dad", "opponent"), ("boyfriend", "boyfriend"), ("gf", "girlfriend")];
+
+/// The sprite list's rows shown at once.
+const ROWS: usize = 9;
 
 /// A stage the Haxe editor starts a new one as.
 fn new_stage() -> Value {
@@ -53,6 +55,10 @@ pub struct StageEditor {
     help: bool,
     ui: Ui,
     tab: usize,
+    /// The Animation tab: the animation of an animated sprite shown (the object's place, the animation), and the form
+    /// (name, prefix, indices, framerate, looped).
+    shown: Option<(usize, String)>,
+    form: (String, String, String, f64, bool),
     unsaved: bool,
     leaving: bool,
     said: Option<(String, Instant)>,
@@ -73,7 +79,7 @@ impl StageEditor {
         let first = own.or_else(|| names.iter().find(|name| *name == "stage").or(names.first()).cloned()).unwrap_or_else(|| "stage".to_owned());
         let mut editor = StageEditor {
             base: base.to_path_buf(), folder: folder.to_owned(), names, name: String::new(), json: Value::Null, scene: None, picked: None,
-            camera: Vec2::ZERO, zoom: 1.0, mouse: Vec2::ZERO, scroll: 0, boxes: true, help: false, ui: Ui::default(), tab: 1,
+            camera: Vec2::ZERO, zoom: 1.0, mouse: Vec2::ZERO, scroll: 0, boxes: true, help: false, ui: Ui::default(), tab: 1, shown: None, form: (String::new(), String::new(), String::new(), 24.0, false),
             unsaved: false, leaving: false, said: None,
         };
         editor.load(&first);
@@ -113,7 +119,7 @@ impl StageEditor {
         let chart = Chart { stage: self.name.clone(), opponent: meta("dad", "dad"), gf: meta("gf", "gf"), player: meta("boyfriend", "bf"), ..Default::default() };
         match Scene::load(&self.base, &self.folder, &chart, false, false, false) {
             Ok(mut scene) => {
-                scene.restage(&self.json);
+                scene.restage(&self.shown_json());
                 self.scene = Some(scene);
             }
             Err(error) => self.say(format!("Could not show it: {error}")),
@@ -122,9 +128,21 @@ impl StageEditor {
 
     /// The stage drawn again from its file as it now is (the characters kept).
     fn restage(&mut self) {
+        let json = self.shown_json();
         if let Some(scene) = &mut self.scene {
-            scene.restage(&self.json);
+            scene.restage(&json);
         }
+    }
+
+    /// The file as shown: the animated sprite whose animation is looked at in the Animation tab plays that one.
+    fn shown_json(&self) -> Value {
+        let mut json = self.json.clone();
+        if let Some((index, name)) = &self.shown {
+            if json["objects"][*index]["type"] == "animatedSprite" {
+                json["objects"][*index]["firstAnimation"] = json!(name);
+            }
+        }
+        json
     }
 
     fn objects(&self) -> &[Value] {
@@ -268,6 +286,7 @@ impl StageEditor {
         let name = (1..).map(|number| format!("{kind}{number}")).find(|name| !names.contains(name)).unwrap_or_default();
         let at = self.camera;
         let object = match kind {
+            "animatedSprite" => json!({"type": "animatedSprite", "name": name, "image": "", "x": at.x.round(), "y": at.y.round(), "scale": [1, 1], "scroll": [1, 1], "color": "FFFFFF", "alpha": 1, "angle": 0, "antialiasing": true, "flipX": false, "flipY": false, "filters": 3, "animations": [], "firstAnimation": null}),
             "square" => json!({"type": "square", "name": name, "x": at.x.round(), "y": at.y.round(), "scale": [100, 100], "scroll": [1, 1], "color": "FFFFFF", "alpha": 1, "angle": 0, "filters": 3}),
             _ => json!({"type": "sprite", "name": name, "image": "", "x": at.x.round(), "y": at.y.round(), "scale": [1, 1], "scroll": [1, 1], "color": "FFFFFF", "alpha": 1, "angle": 0, "antialiasing": true, "flipX": false, "flipY": false, "filters": 3}),
         };
@@ -275,8 +294,8 @@ impl StageEditor {
         if let Some(objects) = self.json["objects"].as_array_mut() {
             objects.insert(place.min(objects.len()), object);
         }
-        self.picked = Some(place);
-        self.tab = 2;
+        (self.picked, self.scroll) = (Some(place), self.scroll.max(place.saturating_sub(ROWS - 1)));
+        self.tab = 2 + (kind == "animatedSprite") as usize;
         self.changed();
         self.restage();
     }
@@ -298,7 +317,6 @@ impl StageEditor {
         let list = Rect::new(25.0, 60.0, 250.0, 240.0);
         self.ui.tabs(list, &["Sprite List"], 0);
         let titles: Vec<String> = self.objects().iter().map(StageEditor::title).collect();
-        const ROWS: usize = 9;
         self.scroll = self.scroll.min(titles.len().saturating_sub(ROWS));
         for (row, index) in (self.scroll..titles.len()).take(ROWS).enumerate() {
             let words = if Some(index) == self.picked { format!("> {}", titles[index]) } else { titles[index].clone() };
@@ -318,13 +336,12 @@ impl StageEditor {
         if self.ui.button(list.x + 200.0, list.y + 78.0, 40.0, "Down") {
             self.shift(true);
         }
-        if self.ui.button(list.x + 10.0, low, 70.0, "Sprite") {
-            self.add("sprite");
+        for (left, width, words, kind) in [(10.0, 50.0, "Sprite", "sprite"), (64.0, 55.0, "Square", "square"), (123.0, 50.0, "Anim.", "animatedSprite")] {
+            if self.ui.button(list.x + left, low, width, words) {
+                self.add(kind);
+            }
         }
-        if self.ui.button(list.x + 85.0, low, 70.0, "Square") {
-            self.add("square");
-        }
-        if self.ui.button(list.x + 160.0, low, 80.0, "Delete") {
+        if self.ui.button(list.x + 177.0, low, 60.0, "Delete") {
             self.delete();
         }
 
@@ -351,12 +368,98 @@ impl StageEditor {
         }
 
         let area = Rect::new(WIDTH - 305.0, 140.0, 280.0, 400.0);
-        self.tab = self.ui.tabs(area, &["Meta", "Data", "Object"], self.tab);
+        self.tab = self.ui.tabs(area, &["Meta", "Data", "Object", "Animation"], self.tab);
         let (x, y) = (area.x + 10.0, area.y + 10.0);
         match self.tab {
             0 => self.meta_tab(x, y),
             1 => self.data_tab(x, y),
-            _ => self.object_tab(x, y),
+            2 => self.object_tab(x, y),
+            _ => self.animation_tab(x, y),
+        }
+    }
+
+    /// An animated sprite's animations (the Haxe editor's animation box): picked to look at, made its main one (what it
+    /// starts on), added, updated, taken off; their offsets.
+    fn animation_tab(&mut self, x: f32, y: f32) {
+        let Some(index) = self.picked.filter(|index| self.objects().get(*index).is_some_and(|object| object["type"] == "animatedSprite")) else {
+            return self.ui.label(x, y, "Pick an animated sprite (\"Anim.\" in\nthe Sprite List makes one).");
+        };
+        let object = self.objects()[index].clone();
+        let animations = object["animations"].as_array().cloned().unwrap_or_default();
+        let names: Vec<String> = animations.iter().map(|animation| animation["anim"].as_str().unwrap_or_default().to_owned()).collect();
+        // (the list first: open, it drops down over the form)
+        self.ui.label(x, y, "Animations:");
+        let chosen = names.iter().position(|name| *name == self.form.0).unwrap_or(usize::MAX);
+        if let Some(picked) = self.ui.dropdown("stage animations", x, y + 18.0, 130.0, &names, chosen) {
+            let animation = &animations[picked];
+            let indices = animation["indices"].as_array().map_or(String::new(), |list| list.iter().map(Value::to_string).collect::<Vec<_>>().join(","));
+            self.form = (names[picked].clone(), animation["name"].as_str().unwrap_or_default().to_owned(), indices, animation["fps"].as_f64().unwrap_or(24.0), animation["loop"] == true);
+            self.shown = Some((index, names[picked].clone()));
+            self.restage();
+        }
+        let main = object["firstAnimation"].as_str().map(str::to_owned).or_else(|| names.first().cloned()).unwrap_or_default();
+        self.ui.label(x + 140.0, y, &format!("Main Anim.: {main}"));
+        if self.ui.button(x + 140.0, y + 18.0, 120.0, "Main Animation") && names.contains(&self.form.0) {
+            self.json["objects"][index]["firstAnimation"] = json!(self.form.0);
+            self.changed();
+        }
+        let form = &mut self.form;
+        self.ui.label(x, y + 46.0, "Animation name:");
+        if let Some(name) = self.ui.input("stage anim name", x, y + 64.0, 110.0, &form.0) {
+            form.0 = name.trim().to_owned();
+        }
+        self.ui.label(x + 140.0, y + 46.0, "Framerate:");
+        if let Some(fps) = self.ui.stepper("stage anim fps", x + 140.0, y + 64.0, 40.0, form.3, 1.0, 0.0, 240.0) {
+            form.3 = fps;
+        }
+        self.ui.label(x, y + 90.0, "Animation Symbol Name/Tag:");
+        if let Some(prefix) = self.ui.input("stage anim prefix", x, y + 108.0, 130.0, &form.1) {
+            form.1 = prefix;
+        }
+        if let Some(looped) = self.ui.check(x + 140.0, y + 108.0, "Should it Loop?", form.4) {
+            form.4 = looped;
+        }
+        self.ui.label(x, y + 134.0, "ADVANCED - Animation Indices:");
+        if let Some(indices) = self.ui.input("stage anim indices", x, y + 152.0, 250.0, &form.2) {
+            form.2 = indices;
+        }
+        // the offsets of the animation looked at, as it is in the file
+        if let Some(place) = names.iter().position(|name| *name == self.form.0) {
+            self.ui.label(x, y + 178.0, "Offset X/Y:");
+            for axis in 0..2 {
+                let value = animations[place]["offsets"][axis].as_f64().unwrap_or(0.0);
+                if let Some(value) = self.ui.stepper(["stage anim x", "stage anim y"][axis], x + 120.0 * axis as f32, y + 196.0, 50.0, value, 1.0, -10000.0, 10000.0) {
+                    let offsets = &mut self.json["objects"][index]["animations"][place]["offsets"];
+                    let mut both = [offsets[0].as_f64().unwrap_or(0.0), offsets[1].as_f64().unwrap_or(0.0)];
+                    both[axis] = value.round();
+                    *offsets = json!(both);
+                    self.changed();
+                    self.restage();
+                }
+            }
+        }
+        if self.ui.button(x, y + 226.0, 110.0, "Add/Update") {
+            self.add_animation(index);
+        }
+        if self.ui.button(x + 140.0, y + 226.0, 110.0, "Remove") {
+            self.remove_animation(index);
+        }
+    }
+
+    fn add_animation(&mut self, index: usize) {
+        if !put_animation(&mut self.json["objects"][index], &self.form) {
+            return self.say("An animation needs a name and a prefix");
+        }
+        self.shown = Some((index, self.form.0.clone()));
+        self.changed();
+        self.restage();
+    }
+
+    fn remove_animation(&mut self, index: usize) {
+        if take_animation(&mut self.json["objects"][index], &self.form.0) {
+            self.shown = None;
+            self.changed();
+            self.restage();
         }
     }
 
@@ -570,8 +673,61 @@ impl StageEditor {
     }
 }
 
+/// An animation of the form (name, prefix, indices, framerate, looped) into an animated sprite: in place of the one of
+/// that name (its offsets kept), else added; the first becomes its main one. False when it lacks a name or prefix.
+fn put_animation(object: &mut Value, (name, prefix, indices, fps, looped): &(String, String, String, f64, bool)) -> bool {
+    if name.is_empty() || prefix.trim().is_empty() {
+        return false;
+    }
+    if !object["animations"].is_array() {
+        object["animations"] = json!([]);
+    }
+    let list = object["animations"].as_array_mut().expect("made a list");
+    let place = list.iter().position(|animation| animation["anim"] == name.as_str());
+    let offsets = place.map_or(json!([0, 0]), |place| list[place]["offsets"].clone());
+    let indices: Vec<i64> = indices.split(',').filter_map(|index| index.trim().parse().ok()).collect();
+    let animation = json!({"anim": name, "name": prefix, "fps": fps, "loop": looped, "indices": indices, "offsets": offsets});
+    match place {
+        Some(place) => list[place] = animation,
+        None => list.push(animation),
+    }
+    if !object["firstAnimation"].is_string() {
+        object["firstAnimation"] = json!(name);
+    }
+    true
+}
+
+/// Takes an animated sprite's animation off (the main one: the first left takes its place); false when it had none so.
+fn take_animation(object: &mut Value, name: &str) -> bool {
+    let Some(list) = object["animations"].as_array_mut() else { return false };
+    let before = list.len();
+    list.retain(|animation| animation["anim"] != name);
+    if list.len() == before {
+        return false;
+    }
+    let first = list.first().map_or(Value::Null, |animation| animation["anim"].clone());
+    if object["firstAnimation"] == name {
+        object["firstAnimation"] = first;
+    }
+    true
+}
+
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn animations_are_added_updated_and_taken_off() {
+        let mut object = json!({"type": "animatedSprite", "firstAnimation": null});
+        let form = |name: &str, fps: f64| (name.to_owned(), format!("{name} prefix"), "1, 2,x".to_owned(), fps, true);
+        assert!(!put_animation(&mut object, &("idle".to_owned(), " ".to_owned(), String::new(), 24.0, false)));
+        assert!(put_animation(&mut object, &form("idle", 24.0)) && put_animation(&mut object, &form("bop", 12.0)));
+        assert_eq!(object["firstAnimation"], "idle");
+        object["animations"][0]["offsets"] = json!([5, 6]);
+        assert!(put_animation(&mut object, &form("idle", 30.0)));
+        assert_eq!(object["animations"][0], json!({"anim": "idle", "name": "idle prefix", "fps": 30.0, "loop": true, "indices": [1, 2], "offsets": [5, 6]}));
+        assert!(take_animation(&mut object, "idle") && !take_animation(&mut object, "idle"));
+        assert_eq!((object["firstAnimation"].as_str(), object["animations"].as_array().map(Vec::len)), (Some("bop"), Some(1)));
+    }
+
     use super::*;
 
     #[test]
