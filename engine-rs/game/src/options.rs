@@ -680,7 +680,30 @@ impl OptionsMenu {
             }
         }
 
-        if clicked {
+        // the Haxe engine's copy and paste buttons: the colour's code to and from the clipboard
+        let mut used = false;
+        for (index, (name, at)) in [("noteColorMenu/copy", vec2(760.0, 50.0)), ("noteColorMenu/paste", vec2(1180.0, 50.0))].into_iter().enumerate() {
+            let Some(picture) = menus.picture(name) else { continue };
+            let over = on(at, picture.size());
+            draw_texture(&picture, at.x, at.y, Color::new(1.0, 1.0, 1.0, if over { 1.0 } else { 0.6 }));
+            if over && clicked {
+                (used, self.typing) = (true, None);
+                if index == 0 {
+                    crate::clipboard::set(&code);
+                    menus.sound("scrollMenu", 0.6);
+                    continue;
+                }
+                let pasted = crate::clipboard::get().trim().to_uppercase().replace('#', "").replace("0X", "");
+                match u32::from_str_radix(&pasted, 16).ok().filter(|_| pasted.len() == 6) {
+                    Some(color) => {
+                        (colors[lane][part], self.stored) = (color, color);
+                        menus.sound("scrollMenu", 0.6);
+                    }
+                    None => menus.sound("cancelMenu", 0.6),
+                }
+            }
+        }
+        if clicked && !used {
             self.typing = None;
             let part_at = (0..3).find(|&part| on(vec2(230.0 + 100.0 * part as f32, 100.0), vec2(85.0, 85.0)));
             let lane_at = (0..4).find(|&lane| on(vec2(150.0 + 120.0 * lane as f32, 200.0), vec2(102.0, 102.0)));

@@ -28,6 +28,9 @@ and version in its resources (Explorer, Task Manager and the Game Bar show "Frid
 a manifest (Windows 10/11, per-monitor DPI, long paths, UTF-8), and the NVIDIA Optimus / AMD PowerXpress exports
 that have laptops run it on the fast graphics card. The window has the game's icon on every system.
 
+Copying and pasting (the note colours' copy and paste buttons, the week editor's Copy/Paste Color, Ctrl+C/V in the
+editors' text boxes) goes through the system clipboard on Windows.
+
 Without ALSA headers (Linux): add `--no-default-features` to build without sound. On Linux the window needs
 `libxkbcommon-x11`, and drawing needs Vulkan or EGL.
 
@@ -267,13 +270,13 @@ Not there yet:
 - **Play screen**: the events and note types that belong to scripts (Set Property beyond the camera, custom
   ones); the rain of weekend 1 (on the streets and in the fight; the Shaders switch turns it off with the title's
   colour shift) is drawn as falling streaks, growing heavier through the song, not with the Haxe engine's shader.
-- **Menus**: achievements of mods; the note colours' copy and paste buttons (no clipboard here); the GPU Caching switch (nothing to switch here); update check.
+- **Menus**: achievements of mods; the GPU Caching switch (nothing to switch here); update check.
 - **Cutscenes**: a video's playOnLoad is not kept waiting.
 - **Scripts**: the rest of Lua's functions (notes' own textures and health, shaders, groups, and getProperty/setProperty
   beyond the camera, health, score, the characters' place and the scripts' sprites); custom events and note types run by scripts. HScript is Haxe code run against the Haxe
   engine's own classes, so mods that use it cannot run here as they are. Custom shaders.
 - **Editors**: the chart editor's File/Edit/View menus, the vortex editor's strums lighting up, lists to choose characters and stages from, pasted notes following the mouse before they are put down, the autosave's time and count settings, a song
   chosen to chart from the editors' list;
-  the week editor's Copy/Paste Color (no system clipboard here); the
+  the system clipboard off Windows (the game keeps its own there); the
   note splash editor's Shader tab; the stage editor's image file picker.
 - **Other**: gamepads on Linux and macOS (gilrs needs libudev there).

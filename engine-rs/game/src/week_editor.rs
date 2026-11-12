@@ -220,6 +220,20 @@ impl WeekEditor {
         if let Some(hidden) = self.ui.check(x, y + 144.0, "Hide Week from Freeplay?", self.json["hideFreeplay"].as_bool().unwrap_or(false)) {
             self.set("hideFreeplay", json!(hidden));
         }
+        // the colour as "r,g,b" (the Haxe editor's), to and from the clipboard
+        let color: Vec<i64> = (0..3).map(|channel| song[2][channel].as_f64().unwrap_or(255.0) as i64).collect();
+        if self.ui.button(x, y + 172.0, 110.0, "Copy Color") {
+            crate::clipboard::set(&format!("{},{},{}", color[0], color[1], color[2]));
+        }
+        if self.ui.button(x + 120.0, y + 172.0, 110.0, "Paste Color") {
+            match pasted_color(&crate::clipboard::get()) {
+                Some(color) => {
+                    *crate::chart_editor::slot(&mut self.json["songs"][self.song], 2, &json!("face")) = json!(color);
+                    (self.unsaved, self.leaving) = (true, false);
+                }
+                None => self.say("The clipboard holds no colour (r,g,b)"),
+            }
+        }
     }
 
     /// Over the week's file (renamed as the Week File field says), the one before kept as `.bak`; a new week goes into
@@ -265,9 +279,23 @@ impl WeekEditor {
     }
 }
 
+/// A colour pasted as the Haxe editor reads one: numbers split by commas, the first three of them (over 255: 255, under
+/// 0: the other way round).
+fn pasted_color(text: &str) -> Option<[i64; 3]> {
+    let numbers: Vec<i64> = text.trim().split(',').filter_map(|part| part.trim().parse::<i64>().ok()).map(|number| number.abs().min(255)).collect();
+    (numbers.len() >= 3).then(|| [numbers[0], numbers[1], numbers[2]])
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn pasted_colours_are_read_as_the_haxe_editor_reads_them() {
+        assert_eq!(pasted_color(" 146, 113,-253 "), Some([146, 113, 253]));
+        assert_eq!(pasted_color("300,x,0,1"), Some([255, 0, 1]));
+        assert_eq!(pasted_color("1,2"), None);
+    }
 
     #[test]
     fn a_new_week_is_saved_into_the_folder_and_read_back_as_the_game_reads_weeks() {

@@ -147,6 +147,14 @@ impl Ui {
             if is_key_pressed(KeyCode::Backspace) {
                 text.pop();
             }
+            // Ctrl+C copies all of it, Ctrl+V pastes at the end (its first line)
+            if is_key_down(KeyCode::LeftControl) || is_key_down(KeyCode::RightControl) {
+                if is_key_pressed(KeyCode::C) {
+                    crate::clipboard::set(text);
+                } else if is_key_pressed(KeyCode::V) {
+                    text.extend(crate::clipboard::get().lines().next().unwrap_or_default().chars().filter(|letter| !letter.is_control()));
+                }
+            }
             if is_key_pressed(KeyCode::Escape) {
                 self.focus = None;
             } else if is_key_pressed(KeyCode::Enter) || (self.clicked && !inside(area, self.mouse)) {

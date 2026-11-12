@@ -21,6 +21,7 @@ pub static NvOptimusEnablement: u32 = 1;
 pub static AmdPowerXpressRequestHighPerformance: i32 = 1;
 
 mod character_editor;
+mod clipboard;
 mod chart_editor;
 mod animate;
 mod atlas;
