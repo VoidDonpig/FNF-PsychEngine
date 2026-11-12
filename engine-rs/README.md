@@ -220,6 +220,10 @@ Done:
   edited where it stands (opponent, boyfriend or girlfriend; the two others faded): image, scale, idle and confirm
   animations, flip X, antialiasing; the arrow keys move its offset (Shift: ten times), Space plays its cheer; the
   folder's menu characters to load; saved over its file (the one before kept as `.bak`).
+- **Dialogue editor**: from the editors' list: a dialogue file's lines (the kind startDialogue plays) edited one at a
+  time, each shown as the game shows it (Space again): character, speed, angry box, sound, text in the Dialogue Line
+  box; W/S the portrait's expression, A/D the lines, O takes one off, P adds one after; the folder's
+  `data/<song>/dialogue*.json` to load; saved over its file (the one before kept as `.bak`).
 - **Gamepads** (Windows): any gamepad plays and goes through the menus with Psych's buttons (D-pad and
   A/B/X/Y for the lanes; D-pad or left stick, A or Start, B, Start, Back for the menus); Lua's gamepad functions.
 
@@ -237,6 +241,6 @@ Not there yet:
 - **Editors**: the chart editor's File/Edit/View menus and its Data tab, the waveform, the vortex editor, lists to choose characters and stages from, pasted notes following the mouse before they are put down, autosave, a song
   chosen to chart from the editors' list;
   the character editor's Load Template, ghost highlight and icon colour; the week editor's freeplay view; the stage,
-  dialogue, dialogue character and note splash editors.
+  dialogue character and note splash editors.
 - **Other**: gamepads on Linux and macOS (gilrs needs libudev there); binding a gamepad's buttons on the key binds
   page (Psych's buttons are used as they are).

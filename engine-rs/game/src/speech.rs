@@ -99,6 +99,11 @@ impl Speech {
     /// The dialogue in `file`, with `music` under it (a name in music/, or none). Fails without lines, a bubble or letters.
     pub fn load(paths: &Paths, file: &Path, music: Option<&str>) -> Result<Speech, String> {
         let json: Value = serde_json::from_str(&std::fs::read_to_string(file).map_err(|e| format!("{}: {e}", file.display()))?).map_err(|e| format!("{}: {e}", file.display()))?;
+        Speech::from_json(paths, &json, music).map_err(|error| format!("{}: {error}", file.display()))
+    }
+
+    /// The dialogue a file's JSON holds (the dialogue editor's, as it is edited).
+    pub fn from_json(paths: &Paths, json: &Value, music: Option<&str>) -> Result<Speech, String> {
         let text = |line: &Value, key: &str| line[key].as_str().unwrap_or_default().to_owned();
         let lines: Vec<Line> = json["dialogue"].as_array().into_iter().flatten().filter(|line| line.is_object()).map(|line| Line {
             portrait: text(line, "portrait"),
@@ -109,7 +114,7 @@ impl Speech {
             sound: Some(text(line, "sound")).filter(|sound| !sound.trim().is_empty()).unwrap_or_else(|| "dialogue".to_owned()),
         }).collect();
         if lines.is_empty() {
-            return Err(format!("{}: badly formatted, no lines", file.display()));
+            return Err("badly formatted, no lines".to_owned());
         }
         let bubble = Sheet::load(&paths.find("images/speech_bubble.png").ok_or("images/speech_bubble.png: not found")?)?;
         let alphabet = Alphabet::load(paths).ok_or("images/alphabet: not found")?;
