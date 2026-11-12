@@ -130,6 +130,8 @@ pub struct ChartEditor {
     /// player's voice, opponent's voice); where the music was last frame, for the sounds on the way.
     rate: f64,
     wheel_snaps: bool,
+    /// The Vortex Editor: keys 1 to 8 put down (or take off) notes of their column at the line, on the beat snap.
+    vortex: bool,
     hitsounds: [f32; 3],
     volumes: [f32; 3],
     muted: [bool; 3],
@@ -201,7 +203,7 @@ impl ChartEditor {
         let mut editor = ChartEditor {
             entry: entry.clone(), json, spans: Vec::new(), song, playing: false, position: 0.0, length, zoom: 2, quant: 3, selected: Vec::new(), boxing: None, clipboard: Vec::new(),
             undo: Vec::new(), redo: Vec::new(), unsaved, leaving: false, said: None, background: picture("menuDesat"), event_icon: picture("editors/eventIcon"), icons,
-            rate: 1.0, wheel_snaps: true, hitsounds: [0.0; 3], volumes: [0.6, 1.0, 1.0], muted: [false; 3], heard: 0.0, voice_tracks,
+            rate: 1.0, wheel_snaps: true, vortex: false, hitsounds: [0.0; 3], volumes: [0.6, 1.0, 1.0], muted: [false; 3], heard: 0.0, voice_tracks,
             sounds: [paths.find("sounds/hitsound.ogg"), paths.find("sounds/Metronome_Tick.ogg")],
             ui: Ui::default(), tab: 5, note_types, note_type: 0, events, abouts, event: 0, values: Default::default(), copied: None,
             base: base.to_path_buf(), autosaved: (std::time::Instant::now(), String::new()), waveform: (0, Peaks::default()),
@@ -298,6 +300,24 @@ impl ChartEditor {
         let (ctrl, shift) = (held(KeyCode::LeftControl) || held(KeyCode::RightControl), held(KeyCode::LeftShift) || held(KeyCode::RightShift));
         let current = self.section_at(self.position);
         let span = self.spans.get(current).copied().unwrap_or(Span { start: 0.0, beats: 4.0, bpm: 100.0, rows_before: 0.0 });
+        // the Vortex Editor's keys work while the music plays
+        let digits = [KeyCode::Key1, KeyCode::Key2, KeyCode::Key3, KeyCode::Key4, KeyCode::Key5, KeyCode::Key6, KeyCode::Key7, KeyCode::Key8];
+        let columns: Vec<usize> = digits.iter().enumerate().filter(|(_, key)| is_key_pressed(**key)).map(|(column, _)| column).collect();
+        if self.vortex && !typing && !ctrl && !columns.is_empty() {
+            // on the beat snap, counted from the section's start (the Haxe editor's)
+            let snap = span.step_ms() * 16.0 / QUANTS[self.quant] as f64;
+            let at = round(span.start + ((self.position - span.start) / snap).floor() * snap);
+            self.remember();
+            let kind = self.note_types.get(self.note_type).filter(|kind| !kind.is_empty()).cloned();
+            let notes = &mut self.json["notes"][current]["sectionNotes"];
+            if !notes.is_array() {
+                *notes = json!([]);
+            }
+            for column in columns {
+                vortex(notes.as_array_mut().expect("made an array"), at, column, kind.as_deref());
+            }
+            self.selected.clear();
+        }
         if typing {
         } else if ctrl {
             if is_key_pressed(KeyCode::S) {
@@ -771,6 +791,10 @@ impl ChartEditor {
                 for column in 0..COLUMNS {
                     draw_rectangle(LEFT + column as f32 * GRID, y, GRID, row_height.min(bottom - y), colors[(row + column) % 2]);
                 }
+                // the Vortex Editor's line on each beat
+                if self.vortex && row % 4 == 0 {
+                    draw_rectangle(LEFT + GRID, y - 1.0, GRID * (COLUMNS - 1) as f32, 2.0, Color::new(0.0, 0.0, 0.0, 0.6));
+                }
             }
             // the stripes between the events and each side
             for column in [1.0, 5.0] {
@@ -899,6 +923,9 @@ impl ChartEditor {
         if let Some(track) = self.ui.dropdown("waveform", x + 238.0, y + 56.0, 102.0, &tracks, self.waveform.0) {
             let path = [None, Some(&self.entry.inst), self.entry.voices_player.as_ref(), self.entry.voices_opponent.as_ref()][track].cloned();
             self.waveform = (track, path.and_then(|path| audio::samples(&path)).map_or_else(Peaks::default, |(samples, rate)| Peaks::of(&samples, rate)));
+        }
+        if let Some(on) = self.ui.check(x + 258.0, y + 228.0, "Vortex", self.vortex) {
+            self.vortex = on;
         }
         if let Some(snaps) = self.ui.check(x, y + 66.0, "Mouse Scroll Snap", self.wheel_snaps) {
             self.wheel_snaps = snaps;
@@ -1233,6 +1260,20 @@ impl Peaks {
     }
 }
 
+/// The Vortex Editor's key for a column: a note of it at `at` (ms, within a millisecond) is taken off, else one is put
+/// down there (of the note type chosen).
+fn vortex(notes: &mut Vec<Value>, at: f64, column: usize, kind: Option<&str>) {
+    match notes.iter().position(|note| note[1].as_u64() == Some(column as u64) && note[0].as_f64().is_some_and(|time| (time - at).abs() < 1.0)) {
+        Some(place) => {
+            notes.remove(place);
+        }
+        None => notes.push(match kind {
+            Some(kind) => json!([at, column, 0, kind]),
+            None => json!([at, column, 0]),
+        }),
+    }
+}
+
 /// The Haxe editor's autosave defaults: every two minutes, the ten newest kept.
 const AUTOSAVE_SECONDS: u64 = 120;
 const BACKUP_LIMIT: usize = 10;
@@ -1358,6 +1399,16 @@ pub(crate) fn print(value: &Value, depth: usize) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn vortex_keys_put_notes_down_and_take_them_off() {
+        let mut notes = vec![json!([1000.0, 2, 0])];
+        vortex(&mut notes, 1000.4, 2, None);
+        assert!(notes.is_empty());
+        vortex(&mut notes, 500.0, 5, Some("Hurt Note"));
+        vortex(&mut notes, 500.0, 6, None);
+        assert_eq!(notes, vec![json!([500.0, 5, 0, "Hurt Note"]), json!([500.0, 6, 0])]);
+    }
 
     #[test]
     fn waveform_peaks_are_the_loudest_swings_of_each_millisecond() {
