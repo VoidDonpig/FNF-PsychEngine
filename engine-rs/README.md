@@ -229,6 +229,11 @@ Done:
   position, scale, no antialiasing; on the Animations tab its expressions (name, looping and resting frames' prefixes;
   add/update, remove), their two frames drawn see-through over each other (H: one alone), WASD and the arrow keys
   moving their offsets (Shift: ten times); saved over its file (the one before kept as `.bak`).
+- **Note splash editor**: from the editors' list: a splash skin's file (`images/noteSplashes/`) edited, its animations
+  played over four strums where Psych's splashes go (Space, or a click on a strum): name, prefix, note data, indices,
+  frame rate range (add/update, remove); scale, allow RGB, allow pixel; the arrow keys move an animation's offset
+  (Shift: ten times), Ctrl+C/V/R copy, paste and reset it; the folder's skins to load; saved over its file (the one
+  before kept as `.bak`).
 - **Gamepads** (Windows): any gamepad plays and goes through the menus with Psych's buttons (D-pad and
   A/B/X/Y for the lanes; D-pad or left stick, A or Start, B, Start, Back for the menus); Lua's gamepad functions.
 
@@ -246,6 +251,6 @@ Not there yet:
 - **Editors**: the chart editor's File/Edit/View menus and its Data tab, the waveform, the vortex editor, lists to choose characters and stages from, pasted notes following the mouse before they are put down, autosave, a song
   chosen to chart from the editors' list;
   the character editor's Load Template, ghost highlight and icon colour; the week editor's freeplay view; the portrait editor's camera; the
-  stage and note splash editors.
+  note splash editor's Shader tab, Template and Convert TXT; the stage editor.
 - **Other**: gamepads on Linux and macOS (gilrs needs libudev there); binding a gamepad's buttons on the key binds
   page (Psych's buttons are used as they are).

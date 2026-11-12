@@ -28,6 +28,7 @@ mod props;
 mod scene;
 mod settings;
 mod speech;
+mod splash_editor;
 mod ui;
 mod video;
 mod week_editor;
@@ -1629,6 +1630,7 @@ fn presence(screen: &Screen, weeks: &[funkin_core::content::Week]) -> discord::P
         Screen::MenuCharacterEditor(_) => "Menu Character Editor",
         Screen::DialogueEditor(_) => "Dialogue Editor",
         Screen::PortraitEditor(_) => "Dialogue Character Editor",
+        Screen::SplashEditor(_) => "Note Splash Editor",
         Screen::Options(..) => "Options Menu",
         Screen::Playing(_) => "",
         _ => "In the Menus",
@@ -1697,6 +1699,7 @@ enum Screen {
     MenuCharacterEditor(Box<menu_character_editor::MenuCharacterEditor>),
     DialogueEditor(Box<dialogue_editor::DialogueEditor>),
     PortraitEditor(Box<portrait_editor::PortraitEditor>),
+    SplashEditor(Box<splash_editor::SplashEditor>),
     Failed(String),
     /// What a new player is told before anything flashes.
     Warning,
@@ -1929,6 +1932,10 @@ fn main() {
                     Some(entry) => chart_editor::ChartEditor::open(&base, entry, None).inspect(|_| menus.quiet()).map_or_else(Screen::Failed, |editor| Screen::Editor(Box::new(editor))),
                     None => Screen::Menu(page),
                 },
+                Some(Go::SplashEditor(folder)) => {
+                    menus.quiet();
+                    Screen::SplashEditor(Box::new(splash_editor::SplashEditor::open(&base, &folder)))
+                }
                 Some(Go::PortraitEditor(folder)) => {
                     menus.quiet();
                     Screen::PortraitEditor(Box::new(portrait_editor::PortraitEditor::open(&base, &folder)))
@@ -2113,6 +2120,17 @@ fn main() {
                         // (as the Haxe editor: back to the song it came from, else to the editors' list)
                         (character_editor::Go::Leave, Some(entry)) => Playing::open(&base, &entry, &songs, &settings, 0.0, false, true, None).map_or_else(Screen::Failed, |p| Screen::Playing(Box::new(p))),
                         (character_editor::Go::Leave, None) => Screen::Menu(Page::Editors),
+                    }
+                }
+                None => Screen::Menu(Page::Editors),
+            },
+            Screen::SplashEditor(mut editor) => match &skin {
+                Some(skin) => {
+                    let go = editor.update();
+                    editor.draw(skin);
+                    match go {
+                        splash_editor::Go::Stay => Screen::SplashEditor(editor),
+                        splash_editor::Go::Leave => Screen::Menu(Page::Editors),
                     }
                 }
                 None => Screen::Menu(Page::Editors),
@@ -2308,7 +2326,7 @@ fn main() {
         if mouse_moved() || is_mouse_pressed() {
             pointer_moved = get_time();
         }
-        show_mouse(matches!(screen, Screen::Editor(_) | Screen::CharacterEditor(..) | Screen::WeekEditor(_) | Screen::MenuCharacterEditor(_) | Screen::DialogueEditor(_) | Screen::PortraitEditor(_)) || (matches!(screen, Screen::Menu(_) | Screen::Options(..)) && get_time() - pointer_moved < 2.0));
+        show_mouse(matches!(screen, Screen::Editor(_) | Screen::CharacterEditor(..) | Screen::WeekEditor(_) | Screen::MenuCharacterEditor(_) | Screen::DialogueEditor(_) | Screen::PortraitEditor(_) | Screen::SplashEditor(_)) || (matches!(screen, Screen::Menu(_) | Screen::Options(..)) && get_time() - pointer_moved < 2.0));
         let showing = match &screen {
             Screen::Playing(playing) => (3, &**playing as *const Playing as usize, playing.paused.is_some(), playing.dead.is_some(), playing.started),
             Screen::Menu(page) => (1, *page as usize, false, false, false),
