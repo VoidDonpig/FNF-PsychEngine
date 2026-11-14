@@ -28,6 +28,10 @@ and version in its resources (Explorer, Task Manager and the Game Bar show "Frid
 a manifest (Windows 10/11, per-monitor DPI, long paths, UTF-8), and the NVIDIA Optimus / AMD PowerXpress exports
 that have laptops run it on the fast graphics card. The window has the game's icon on every system.
 
+So that a busy computer (a recording being encoded, say) does not make frames and sound late, the game runs above
+normal priority and its sound thread above everything (on Linux the game asks for a nice of -10, which works where the
+user may set it).
+
 Copying and pasting (the note colours' copy and paste buttons, the week editor's Copy/Paste Color, Ctrl+C/V in the
 editors' text boxes) goes through the system clipboard on Windows.
 

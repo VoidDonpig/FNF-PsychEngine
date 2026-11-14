@@ -38,6 +38,7 @@ mod menu;
 mod menu_character_editor;
 mod options;
 mod pad;
+mod priority;
 mod portrait_editor;
 mod props;
 mod scene;
@@ -1831,6 +1832,8 @@ fn base_dir() -> PathBuf {
 }
 
 fn main() {
+    // (first, so that every thread started after takes it on)
+    priority::raise_game();
     // what went wrong, where a player can find it; then the usual message
     let usual = std::panic::take_hook();
     std::panic::set_hook(Box::new(move |panic| {

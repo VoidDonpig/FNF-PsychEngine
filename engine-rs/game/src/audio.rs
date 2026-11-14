@@ -422,9 +422,13 @@ mod output {
             let for_sounds = sounds.clone();
             let device_rate = config.sample_rate().0 as f64;
             let mut cursor = 0.0f64;
+            let mut raised = false;
             let stream = device.build_output_stream(
                 &config.into(),
                 move |data: &mut [f32], info: &cpal::OutputCallbackInfo| {
+                    if !std::mem::replace(&mut raised, true) {
+                        crate::priority::raise_sound_thread();
+                    }
                     data.fill(0.0);
                     if for_callback.playing.load(Ordering::Relaxed) {
                         let time = info.timestamp();
