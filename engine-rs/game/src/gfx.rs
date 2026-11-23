@@ -596,7 +596,11 @@ pub fn open(conf: Conf) -> Result<(String, Option<String>), String> {
     }
     let Some((instance, surface, adapter)) = found else { return Err(why.unwrap_or_default()) };
     let note = why.filter(|_| wanted.is_some()).map(|why| format!("{} could not be used as asked ({why})", conf.api));
-    let device = wgpu::DeviceDescriptor { required_limits: adapter.limits(), ..Default::default() };
+    // pictures are put on the card in small blocks, the large ones each in a block of its own: with wgpu's usual blocks (128
+    // to 256 MB, given back only once nothing at all is left in one) a menu picture sharing a block with a song's kept
+    // the whole block after the song, and a few hundred megabytes more stayed with each song played
+    let memory_hints = wgpu::MemoryHints::Manual { suballocated_device_memory_block_size: 4 << 20..8 << 20 };
+    let device = wgpu::DeviceDescriptor { required_limits: adapter.limits(), memory_hints, ..Default::default() };
     let (device, queue) = pollster::block_on(adapter.request_device(&device)).map_err(|error| error.to_string())?;
 
     let size = window.inner_size();

@@ -1834,6 +1834,18 @@ fn base_dir() -> PathBuf {
 fn main() {
     // (first, so that every thread started after takes it on)
     priority::raise_game();
+    // glibc keeps what was freed for itself once large blocks have come and gone (a song's decoded pictures and tracks:
+    // hundreds of megabytes after a few songs). With the limit set by hand, every block of a megabyte or more is asked of
+    // the system and given back to it when freed.
+    #[cfg(all(target_os = "linux", target_env = "gnu"))]
+    {
+        extern "C" {
+            fn mallopt(param: i32, value: i32) -> i32;
+        }
+        const M_MMAP_THRESHOLD: i32 = -3;
+        // SAFETY: mallopt takes two numbers and sets an allocator option; nothing has been allocated in other threads yet.
+        unsafe { mallopt(M_MMAP_THRESHOLD, 1 << 20) };
+    }
     // what went wrong, where a player can find it; then the usual message
     let usual = std::panic::take_hook();
     std::panic::set_hook(Box::new(move |panic| {
