@@ -118,7 +118,7 @@ impl Adjust {
             self.scene.iter_mut().for_each(|scene| scene.event(&bump));
         }
         if let Some(scene) = &mut self.scene {
-            scene.update(dt, position, &self.chart, &[], [[false; 4]; 2]);
+            scene.update(dt, position, &self.chart, &[]);
             scene.draw(&|_, _| {});
         }
         set_camera(&Camera2D { target: vec2(WIDTH / 2.0, HEIGHT / 2.0), zoom: vec2(2.0 / WIDTH, 2.0 / HEIGHT), ..Default::default() });

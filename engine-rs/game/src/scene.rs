@@ -1765,9 +1765,9 @@ impl Scene {
         }
     }
 
-    /// Advances by `dt` seconds to song position `position` (ms). (`_held` is no longer looked at: a hold is sung on
-    /// through the hits of its pieces, `Event::PieceHit`, as the Haxe engine sings it.)
-    pub fn update(&mut self, dt: f32, position: f64, chart: &Chart, events: &[Event], _held: [[bool; 4]; 2]) {
+    /// Advances by `dt` seconds to song position `position` (ms). (A hold is sung on through the hits of its pieces,
+    /// `Event::PieceHit`, as the Haxe engine sings it.)
+    pub fn update(&mut self, dt: f32, position: f64, chart: &Chart, events: &[Event]) {
         self.position = position;
         self.trail_in -= dt;
         if let (Some(spirit), true) = (&self.opponent, self.stage == "schoolEvil" && !self.low && self.trail_in <= 0.0) {

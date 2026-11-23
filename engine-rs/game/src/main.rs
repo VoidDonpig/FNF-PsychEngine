@@ -670,7 +670,7 @@ impl Playing {
             // the stage's own scene: the song waits, the stage goes on
             let dt = get_frame_time().min(0.1);
             if let Some(scene) = &mut self.scene {
-                scene.update(dt, self.position, &self.play.chart, &[], [[false; 4]; 2]);
+                scene.update(dt, self.position, &self.play.chart, &[]);
                 self.staged = !scene.stunt(dt, controls::down(Ui::Accept));
             }
             self.stage_sounds();
@@ -683,7 +683,7 @@ impl Playing {
             // a script holds the countdown back (onStartCountdown answering Function_Stop) until it starts it or a video
             let dt = get_frame_time().min(0.1);
             if let Some(scene) = &mut self.scene {
-                scene.update(dt, self.position, &self.play.chart, &[], [[false; 4]; 2]);
+                scene.update(dt, self.position, &self.play.chart, &[]);
             }
             self.stage_sounds();
             self.lua.call("onUpdatePost", dt);
@@ -946,7 +946,7 @@ impl Playing {
             }
             (scene.health, scene.combo, scene.practice) = (self.play.health, self.play.combo, self.settings.practice);
             scene.progress = (judged / length) as f32;
-            scene.update(dt * rate as f32, judged, &self.play.chart, &events, [[false; 4]; 2]);
+            scene.update(dt * rate as f32, judged, &self.play.chart, &events);
         }
         self.stage_sounds();
         if self.started {
@@ -1331,9 +1331,17 @@ impl Playing {
     /// Keys let go of while the song did not listen (paused, in the options) are let go of now.
     fn forget_released(&mut self) {
         self.held_keys.retain(|key| is_key_down(*key));
+        // (and those pressed meanwhile and still down hold on, as the Haxe engine reads its keys as they are)
+        for key in self.settings.keys.into_iter().flatten().flatten().filter(|key| is_key_down(*key)) {
+            if !self.held_keys.contains(&key) {
+                self.held_keys.push(key);
+            }
+        }
         let now = self.judged();
         for lane in 0..4 {
-            if !self.lane_held(lane) {
+            if self.lane_held(lane) {
+                self.play.hold(lane, now);
+            } else {
                 // (the song stood still meanwhile: every piece up to now was judged while the key was down)
                 self.play.release(lane, now);
             }

@@ -215,6 +215,14 @@ impl Play {
         Some(self.hit(lane, pos - time, index))
     }
 
+    /// A key found down at `pos` whose press was not seen (it went down while the song was paused): it holds pieces from
+    /// then on and hits no note, as the Haxe engine's held keys, which it reads as they are.
+    pub fn hold(&mut self, lane: usize, pos: f64) {
+        if !self.held[lane] {
+            (self.held[lane], self.pressed_at[lane]) = (true, pos);
+        }
+    }
+
     /// A key went up at song position `pos` (ms). It was down until then, so it still hits the pieces that came before,
     /// however long ago the last frame was (the Haxe engine's keyReleaseTime).
     pub fn release(&mut self, lane: usize, pos: f64) -> Vec<Event> {
@@ -582,6 +590,18 @@ mod tests {
         // a note that got away costs ten points, as a stray press does
         assert_eq!((p.misses, p.combo, p.accuracy(), p.finished(), p.score), (1, 0, Some(0.0), true, -10));
         assert!(p.health < 1.0);
+    }
+
+    #[test]
+    fn a_key_found_down_after_a_pause_holds_on_and_hits_nothing() {
+        // let go and pressed again while the song stood still at 300: the hold goes on, the tap just after is not hit
+        let mut p = play(&[(0.0, 3, true, 1000.0), (350.0, 3, true, 0.0)], false);
+        p.press(3, 0.0);
+        p.update(300.0);
+        p.release(3, 300.0);
+        p.hold(3, 300.0);
+        p.update(1200.0);
+        assert_eq!((p.misses, p.state[0], p.state[1]), (1, NoteState::Done, NoteState::Missed), "only the tap got away");
     }
 
     #[test]
