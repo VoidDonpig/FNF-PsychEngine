@@ -1041,6 +1041,20 @@ impl Character {
         self.since_note = 0.0;
     }
 
+    /// A piece of a hold, sung as the Haxe engine sings one: with the character's pose for holding ("singLEFT-hold"), left
+    /// to play on (or its "-loop") once it runs; without one, the sing pose started over on every piece.
+    fn sing_piece(&mut self, lane: usize, alt: bool) {
+        let alt_pose = format!("{}-alt", SING[lane]);
+        let pose = if alt && self.animations.contains_key(&alt_pose) { alt_pose } else { SING[lane].to_owned() };
+        let hold = format!("{pose}-hold");
+        if !self.animations.contains_key(&hold) {
+            self.play(&pose);
+        } else if self.current != hold && self.current != format!("{hold}-loop") {
+            self.play(&hold);
+        }
+        self.since_note = 0.0;
+    }
+
     /// The idle move, restarted on the beat.
     fn dance(&mut self) {
         if self.special.is_some() || self.skip_dance {
@@ -1463,6 +1477,24 @@ impl Scene {
         }
     }
 
+    /// A piece of chart note `note`'s hold was hit on `side` (0: the opponent, 1: the player): its singer sings on, and
+    /// the opponent's keep the camera bumping. Stunts and the fist fight move for the notes themselves, not their holds.
+    fn piece_sung(&mut self, lane: usize, note: usize, side: usize, chart: &Chart) {
+        let note = &chart.notes[note];
+        self.bumping |= side == 0 && !self.tutorial;
+        let alt = note.kind == NoteKind::Alt || (side == 0 && chart.section_at(note.time).is_some_and(|s| s.alt));
+        match note.kind {
+            _ if self.fight.is_some() => {}
+            NoteKind::NoAnimation | NoteKind::LightCan | NoteKind::KickCan | NoteKind::KneeCan | NoteKind::CockGun | NoteKind::FireGun | NoteKind::Fight(_) => {}
+            NoteKind::Hey => {
+                self.singer(side).into_iter().for_each(|c| c.pose("hey", Some(0.6)));
+                self.gf.iter_mut().for_each(|c| c.pose("cheer", Some(0.6)));
+            }
+            NoteKind::GfSing if self.gf.is_some() => self.gf.iter_mut().for_each(|c| c.sing_piece(lane, alt)),
+            _ => self.singer(side).into_iter().for_each(|c| c.sing_piece(lane, alt)),
+        }
+    }
+
     fn singer(&mut self, who: usize) -> Option<&mut Character> {
         [&mut self.opponent, &mut self.player, &mut self.gf][who].as_mut()
     }
@@ -1733,8 +1765,9 @@ impl Scene {
         }
     }
 
-    /// Advances by `dt` seconds to song position `position` (ms). `held` says which lanes have a hold running, per side.
-    pub fn update(&mut self, dt: f32, position: f64, chart: &Chart, events: &[Event], held: [[bool; 4]; 2]) {
+    /// Advances by `dt` seconds to song position `position` (ms). (`_held` is no longer looked at: a hold is sung on
+    /// through the hits of its pieces, `Event::PieceHit`, as the Haxe engine sings it.)
+    pub fn update(&mut self, dt: f32, position: f64, chart: &Chart, events: &[Event], _held: [[bool; 4]; 2]) {
         self.position = position;
         self.trail_in -= dt;
         if let (Some(spirit), true) = (&self.opponent, self.stage == "schoolEvil" && !self.low && self.trail_in <= 0.0) {
@@ -1755,11 +1788,16 @@ impl Scene {
             }
         }
         for event in events {
+            if let Event::PieceHit { lane, note, player } = *event {
+                self.piece_sung(lane, note, player as usize, chart);
+                continue;
+            }
             // the note decides who moves and how; a stray press has no note and is the player's plain miss
             let (lane, note, side, missed, broken, rating) = match *event {
                 Event::Hit { lane, note, rating, .. } => (lane, Some(note), 1, false, 0, Some(rating)),
-                Event::Miss { lane, note, combo } => (lane, note, 1, true, combo, None),
+                Event::Miss { lane, note, combo, .. } => (lane, note, 1, true, combo, None),
                 Event::OpponentHit { lane, note } => (lane, Some(note), 0, false, 0, None),
+                Event::PieceHit { .. } => continue,
             };
             self.bumping |= side == 0 && !self.tutorial;
             let note = note.map(|index| &chart.notes[index]);
@@ -1866,17 +1904,8 @@ impl Scene {
             }
         }
         let rest_after = chart.step_ms(position) as f32 * 0.0011;
-        for (side, character) in [&mut self.opponent, &mut self.player].into_iter().enumerate() {
+        for character in [&mut self.opponent, &mut self.player] {
             if let Some(character) = character {
-                if held[side].contains(&true) {
-                    character.since_note = 0.0; // still singing the hold
-                    // with a pose of its own for holding ("singLEFT-hold"), that one
-                    let holding = (0..4).any(|lane| held[side][lane] && character.current.starts_with(SING[lane]));
-                    if holding && !character.current.contains("-hold") {
-                        let hold = format!("{}-hold", character.current);
-                        character.play(&hold);
-                    }
-                }
                 // a miss pose plays through and gives way at once; a sung one is held a while after the last note
                 let missed = character.current.ends_with("miss");
                 if (missed && character.finished()) || (!missed && character.singing() && character.since_note >= rest_after * character.sing_steps) {

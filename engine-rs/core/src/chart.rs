@@ -146,6 +146,15 @@ impl Chart {
         15000.0 / bpm.max(1.0)
     }
 
+    /// The times of a hold's pieces, as the Haxe engine cuts a hold up when it loads the song: one per 16th note at the
+    /// tempo where the hold starts, the first at the head, as many as the length holds when rounded. A hold shorter than
+    /// half a 16th has none, and plays as a tap.
+    pub fn hold_pieces(&self, note: &Note) -> Vec<f64> {
+        let step = self.step_ms(note.time);
+        let count = (note.sustain / step).round().max(0.0) as usize; // (NaN, from a broken chart, gives none)
+        (0..count).map(|k| note.time + k as f64 * step).collect()
+    }
+
     pub fn section_at(&self, ms: f64) -> Option<&Section> {
         self.sections.iter().rev().find(|s| s.start <= ms).or(self.sections.first())
     }

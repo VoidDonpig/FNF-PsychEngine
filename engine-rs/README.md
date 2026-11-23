@@ -44,7 +44,10 @@ Done:
 
 - **Songs**: found through the week files of the base game and of mods, custom difficulties included.
 - **Play**: `psych_v1` and older charts, the stock timing windows, score, accuracy, misses, health, holds,
-  Hurt Notes, botplay, tempo changes, sections.
+  Hurt Notes, botplay, tempo changes, sections. Holds are cut into 16th-note pieces as the Haxe engine cuts them: each
+  is hit while its key is down from its time to the safe zone after it (so letting go and pressing again in time
+  keeps the hold), gives no score or combo, makes the strum light up and the singer sing again, and is eaten up at
+  the strum while held.
 - **Stage**: characters from their `characters/*.json` (Sparrow sheets, idle on the beat, sing and miss
   poses, frames stored rotated, pixel art), the camera following the singer and bumping on the beat,
   health icons and bar colours, pause menu, results.
@@ -115,7 +118,7 @@ Done:
   taken off).
 
 - **Since**: rating names and full-combo grades in the score line; the pause menu's Change Difficulty and
-  Options; "Sustains as One Note" (off: holds judged sixteenth by sixteenth); arrows dropping in at the start;
+  Options; "Sustains as One Note" (on: a hold is one note, lost whole as one miss; off: every piece gives health or is a miss of its own); arrows dropping in at the start;
   a chart's `offset`; a character's own voice file (`vocals_file`); menu and volume keys that can be bound;
   volume keys and display; auto pause; the flashing lights warning at first start; Alt+Enter; memory in the FPS
   counter; note skins and note splash skins; stages of mods built from the `objects` of their stage file; the

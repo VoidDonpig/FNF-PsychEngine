@@ -835,19 +835,21 @@ impl Playing {
         let mut events = Vec::new();
         for key in keys {
             let Some(lane) = self.settings.lane_of(key.key) else { continue };
+            // judged where the song was when the key went down or up, not where it is this frame; and, if asked, where the
+            // picture on screen was, which is behind the song
+            let lag = if self.settings.display_lag_correction { display_lag() } else { 0.0 };
+            let at = judged - (key.age_ms + lag) * self.settings.playback_rate;
             if key.pressed && !self.held_keys.contains(&key.key) {
                 self.held_keys.push(key.key);
                 if !self.play.botplay {
                     self.lanes_used[lane] = true;
-                    // judged where the song was when the key went down, not where it is this frame; and, if asked, where the
-                    // picture on screen was, which is behind the song
-                    let lag = if self.settings.display_lag_correction { display_lag() } else { 0.0 };
-                    events.extend(self.play.press(lane, judged - (key.age_ms + lag) * self.settings.playback_rate));
+                    events.extend(self.play.press(lane, at));
                 }
             } else if !key.pressed {
                 self.held_keys.retain(|held| *held != key.key);
                 if !self.lane_held(lane) {
-                    self.play.release(lane);
+                    // (the pieces of a hold that came before it was let go of are still hit)
+                    events.extend(self.play.release(lane, at));
                 }
             }
         }
@@ -858,17 +860,20 @@ impl Playing {
                 self.lanes_used[lane] = true;
                 events.extend(self.play.press(lane, judged));
             } else if buttons.into_iter().flatten().any(pad::released) && !self.lane_held(lane) {
-                self.play.release(lane);
+                events.extend(self.play.release(lane, judged));
             }
         }
         events.extend(self.play.update(judged));
         if !self.lua.is_empty() {
             for &event in &events {
                 let kind = |note: usize| self.renamed.get(&note).cloned().unwrap_or_else(|| self.play.chart.notes.get(note).map_or(String::new(), |note| self.play.chart.type_name(note.kind)));
+                // (a hold's pieces are called back as its note, as sustain notes)
                 match event {
                     Event::Hit { lane, note, .. } => self.lua.call("goodNoteHit", (note, lane, kind(note), false)),
                     Event::OpponentHit { lane, note } => self.lua.call("opponentNoteHit", (note, lane, kind(note), false)),
-                    Event::Miss { lane, note: Some(note), .. } => self.lua.call("noteMiss", (note, lane, kind(note), false)),
+                    Event::PieceHit { lane, note, player: true } => self.lua.call("goodNoteHit", (note, lane, kind(note), true)),
+                    Event::PieceHit { lane, note, player: false } => self.lua.call("opponentNoteHit", (note, lane, kind(note), true)),
+                    Event::Miss { lane, note: Some(note), piece, .. } => self.lua.call("noteMiss", (note, lane, kind(note), piece)),
                     Event::Miss { lane, note: None, .. } => self.lua.call("noteMissPress", lane),
                 };
             }
@@ -922,19 +927,26 @@ impl Playing {
                     self.sound(["missnote1", "missnote2", "missnote3"][self.play.misses as usize % 3], 0.15, false);
                 }
                 Event::OpponentHit { lane, .. } => self.flash_until[0][lane] = judged + 120.0,
+                Event::PieceHit { lane, player, .. } => {
+                    // the strum lights up again for every piece, for a 16th and a quarter, as the Haxe engine's does
+                    let side = player as usize;
+                    self.flash_until[side][lane] = self.flash_until[side][lane].max(judged + self.play.chart.step_ms(judged) * 1.25);
+                    if player {
+                        self.player_voice.iter().for_each(|&track| self.song.set_volume(track, 1.0));
+                    }
+                }
             }
         }
 
         let length = self.length();
         if let Some(scene) = &mut self.scene {
-            let held = self.play.holding(judged);
             // (only the speaker of weekend 1 shows them; working them out takes thousands of sines a frame)
             if scene.shows_levels() {
                 scene.levels = self.song.levels();
             }
             (scene.health, scene.combo, scene.practice) = (self.play.health, self.play.combo, self.settings.practice);
             scene.progress = (judged / length) as f32;
-            scene.update(dt * rate as f32, judged, &self.play.chart, &events, held);
+            scene.update(dt * rate as f32, judged, &self.play.chart, &events, [[false; 4]; 2]);
         }
         self.stage_sounds();
         if self.started {
@@ -1319,9 +1331,11 @@ impl Playing {
     /// Keys let go of while the song did not listen (paused, in the options) are let go of now.
     fn forget_released(&mut self) {
         self.held_keys.retain(|key| is_key_down(*key));
+        let now = self.judged();
         for lane in 0..4 {
             if !self.lane_held(lane) {
-                self.play.release(lane);
+                // (the song stood still meanwhile: every piece up to now was judged while the key was down)
+                self.play.release(lane, now);
             }
         }
     }
@@ -1439,20 +1453,41 @@ impl Playing {
                 let (centre, turn) = (middle(strum), strum.direction.to_radians());
                 let x = centre.x + turn.cos() * (y_at(note.time) - strum_y);
                 let along = |time: f64| centre.y + turn.sin() * (y_at(time) - strum_y);
-                let alpha = if state == NoteState::Missed { 0.3 } else { 1.0 } * strum.alpha * look(index, "multAlpha").and_then(|alpha| alpha.as_f64()).unwrap_or(1.0) as f32;
-                if pass == 0 && note.sustain > 0.0 && state != NoteState::Done {
+                let faint = strum.alpha * look(index, "multAlpha").and_then(|alpha| alpha.as_f64()).unwrap_or(1.0) as f32;
+                let alpha = if state == NoteState::Missed { 0.3 } else { 1.0 } * faint;
+                let pieces = self.play.pieces(index);
+                if pass == 0 && !pieces.is_empty() {
                     // shortcut: holds stay upright whatever the strum's direction; turn them with it if a mod's chart shows it
-                    let head = if state == NoteState::Held { centre.y } else { along(note.time) };
-                    let tail = along(note.time + note.sustain);
-                    let (top, bottom) = (head.min(tail), head.max(tail));
-                    // a held hold ends at the strum: nothing left once its tail has passed it
-                    if (tail - head) * direction > 0.0 && bottom > 0.0 && top < HEIGHT {
-                        // the last stretch is the rounded end cap (turned over when notes come from above)
-                        let cap = skin.hold.y.min(bottom - top);
-                        let cap_y = tail - direction * cap / 2.0;
-                        let size = vec2(skin.hold.x, bottom - top - cap);
-                        skin.frame(&format!("{} hold piece0000", NOTE_NAMES[note.lane]), x, (head + tail - direction * cap) / 2.0, Some(size), Some(note.lane), 0.6 * alpha);
-                        skin.frame(&format!("{} hold end0000", NOTE_NAMES[note.lane]), x, cap_y, Some(vec2(skin.hold.x, cap * direction)), Some(note.lane), 0.6 * alpha);
+                    // `way`: where later times lie on screen
+                    let way = direction * if turn.sin() < 0.0 { -1.0 } else { 1.0 };
+                    let (first, last) = (along(pieces[0].time), along(pieces[pieces.len() - 1].time) + way * skin.hold.y);
+                    if first.max(last) < 0.0 || first.min(last) > HEIGHT {
+                        continue;
+                    }
+                    // Drawn piece by piece, as the Haxe engine draws a hold: a body from each piece to the next, and the
+                    // rounded end cap (turned over when notes come from above) from the last on, so a hold is as long as
+                    // its pieces. A piece hit, and the one after a hit one while it cannot be hit, are cut off at the
+                    // strum's middle (clipToStrumNote): a hold held is eaten up there, and what got away goes on past it.
+                    // Missed pieces are not drawn fainter: the Haxe engine sets their alpha, but every note takes its
+                    // strum's again (followStrumNote) before it is drawn.
+                    let mut after_hit = state == NoteState::Held;
+                    for (k, piece) in pieces.iter().enumerate() {
+                        let hit = piece.state == NoteState::Done;
+                        let open = note.player && piece.time < position && piece.time > position - self.play.timing.safe;
+                        let clipped = hit || (after_hit && !open);
+                        after_hit = hit;
+                        let end = k + 1 == pieces.len();
+                        let mut from = along(piece.time);
+                        let to = if end { from + way * skin.hold.y } else { along(pieces[k + 1].time) };
+                        if clipped && (from - centre.y) * way < 0.0 {
+                            from = centre.y;
+                        }
+                        let length = (to - from) * way;
+                        if length <= 0.0 || from.max(to) < 0.0 || from.min(to) > HEIGHT {
+                            continue;
+                        }
+                        let (name, height) = if end { ("hold end", length * way) } else { ("hold piece", length) };
+                        skin.frame(&format!("{} {name}0000", NOTE_NAMES[note.lane]), x, (from + to) / 2.0, Some(vec2(skin.hold.x, height)), Some(note.lane), 0.6 * faint);
                     }
                 }
                 if pass == 1 && matches!(state, NoteState::Pending | NoteState::Missed) && on_screen(along(note.time)) {
