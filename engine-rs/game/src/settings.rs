@@ -5,6 +5,9 @@ use std::path::Path;
 
 const FILE: &str = "funkin-rs-settings.json";
 
+/// The Framerate option's value one step above its top: no cap at all. Stored as this number in the same `framerate` setting, so the file and the scripts see a plain number.
+pub const UNLIMITED_FPS: f64 = 1001.0;
+
 /// Keys that can be bound, with the Windows key code raw input reports them under (where it does).
 pub fn bindable() -> Vec<(KeyCode, Option<i32>)> {
     use KeyCode::*;
@@ -127,7 +130,7 @@ pub const OPTIONS: &[Opt] = &[
     Opt { page: 4, key: "low_quality", name: "Low Quality", about: "If checked, disables some background details, decreases loading times and improves performance.", kind: Kind::Flag(|s| &mut s.low_quality) },
     Opt { page: 4, key: "antialiasing", name: "Anti-Aliasing", about: "If unchecked, disables anti-aliasing, increases performance at the cost of sharper visuals.", kind: Kind::Flag(|s| &mut s.antialiasing) },
     Opt { page: 4, key: "shaders", name: "Shaders", about: "If unchecked, disables shaders.\nIt's used for some visual effects, and also CPU intensive for weaker PCs.", kind: Kind::Flag(|s| &mut s.shaders) },
-    Opt { page: 4, key: "framerate", name: "Framerate", about: "Pretty self explanatory, isn't it? Enter sets it to what the display shows.", kind: Kind::Number(|s| &mut s.framerate, 60.0, 1000.0, 1.0, "FPS") },
+    Opt { page: 4, key: "framerate", name: "Framerate", about: "Pretty self explanatory, isn't it? Enter sets it to what the display shows.", kind: Kind::Number(|s| &mut s.framerate, 60.0, UNLIMITED_FPS, 1.0, "FPS") },
     Opt { page: 4, key: "graphics_api", name: "Graphics API", about: "What the game is drawn with: DirectX (12, Windows only), Vulkan or OpenGL. One this machine does not have is replaced by one it has. Restart the game to apply.", kind: Kind::Choice(|s| &mut s.graphics_api, || &GRAPHICS_APIS) },
     Opt { page: 4, key: "fullscreen", name: "Fullscreen", about: "The game takes the whole screen. F11 switches it at any time.", kind: Kind::Flag(|s| &mut s.fullscreen) },
     Opt { page: 4, key: "exclusive_fullscreen", name: "Exclusive Fullscreen", about: "If checked, fullscreen takes the whole display for the game alone. If unchecked, fullscreen is a borderless window.", kind: Kind::Flag(|s| &mut s.exclusive_fullscreen) },
@@ -389,6 +392,9 @@ mod tests {
         settings.bind(3, 1, None);
         settings.pad[0] = [Some(crate::pad::Button::LeftTrigger), None];
         assert_eq!(Settings::from_json(&settings.to_json()), settings);
+        let unlimited = Settings { framerate: UNLIMITED_FPS, ..Default::default() };
+        assert_eq!(Settings::from_json(&unlimited.to_json()).framerate, UNLIMITED_FPS, "one above the top of the range is kept, not clamped to 1000");
+        assert_eq!(Settings::from_json(r#"{"framerate":5000}"#).framerate, UNLIMITED_FPS);
         assert_eq!(Settings::from_json("not json"), Settings::default());
         assert_eq!(Settings::from_json(r#"{"downscroll":true,"keys":"?","offset_ms":9999,"note_colors":[["red","+12345","12345"]]}"#), Settings { downscroll: true, offset_ms: 500.0, ..Default::default() });
         assert_eq!((hex("#c24b99"), hex("C24B99"), hex("C24B9"), hex("C24B99F")), (Some(0xC24B99), Some(0xC24B99), None, None));

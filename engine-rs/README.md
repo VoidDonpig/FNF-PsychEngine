@@ -111,7 +111,7 @@ Done:
 - **Graphics API** (an option, applied at the next start): what the game is drawn with. DirectX 12
   (Windows, where it is the one chosen at first), Vulkan (chosen at first elsewhere) or OpenGL. One the
   machine does not have is replaced by one it has. Frames are shown as soon as they are done; the
-  Framerate option limits them. Fullscreen is a window without borders over the screen, or, with the
+  Framerate option limits them (up to 1000 FPS, or Unlimited: no waiting at all). Fullscreen is a window without borders over the screen, or, with the
   Exclusive Fullscreen option, the display taken for the game alone.
 - **Input**: on Windows key presses are timed by the raw input thread of `native/psych_input`; the Haxe
   fork's Display Lag Correction (presses judged against the picture on screen, the time frames take to be shown

@@ -534,8 +534,11 @@ pub struct Conf {
 }
 
 /// When the next frame may start, for `fps` frames a second at most: `last` is when this one was due.
-/// A frame that ran late does not make the following ones hurry.
+/// A frame that ran late does not make the following ones hurry. Unlimited is due at once, so nothing waits for it.
 fn next_due(last: Instant, now: Instant, fps: f64) -> Instant {
+    if fps >= crate::settings::UNLIMITED_FPS {
+        return now;
+    }
     let frame = Duration::from_secs_f64(1.0 / fps.max(1.0));
     (last + frame).max(now.checked_sub(frame).unwrap_or(now))
 }
@@ -1188,6 +1191,7 @@ mod tests {
     fn frames_are_spaced_evenly_and_a_late_one_is_not_made_up_for() {
         let start = Instant::now();
         let ms = Duration::from_millis;
+        assert_eq!(next_due(start, start + ms(3), crate::settings::UNLIMITED_FPS), start + ms(3), "unlimited: due at once, whatever was due before");
         // on time: exactly one frame after the last one was due, whenever within the frame it was asked
         assert_eq!(next_due(start, start + ms(3), 100.0), start + ms(10));
         assert_eq!(next_due(start, start + ms(10), 100.0), start + ms(10));

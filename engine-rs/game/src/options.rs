@@ -233,6 +233,7 @@ fn shown(kind: &Kind, settings: &mut Settings) -> String {
     match *kind {
         Kind::Flag(get) => if *get(settings) { "ON" } else { "off" }.to_owned(),
         Kind::Number(get, .., "%") => format!("{:.0}%", *get(settings) * 100.0),
+        Kind::Number(get, .., "FPS") if *get(settings) >= crate::settings::UNLIMITED_FPS => "Unlimited".to_owned(),
         Kind::Number(get, low, _, step, unit) => {
             // only what can go below zero shows its sign
             let (decimals, value) = (if step >= 1.0 { 0 } else if step >= 0.1 { 1 } else { 2 }, *get(settings));
@@ -980,6 +981,14 @@ mod tests {
         assert_eq!(settings.time_bar, 0);
         change(option("playback_rate"), &mut settings, 10.0);
         assert_eq!(shown(option("playback_rate"), &mut settings), "1.50X");
+        settings.framerate = 1000.0;
+        assert_eq!(shown(option("framerate"), &mut settings), "1000 FPS");
+        change(option("framerate"), &mut settings, 1.0);
+        assert_eq!((settings.framerate, shown(option("framerate"), &mut settings).as_str()), (crate::settings::UNLIMITED_FPS, "Unlimited"));
+        change(option("framerate"), &mut settings, 1.0); // there is nothing above it
+        assert_eq!(settings.framerate, crate::settings::UNLIMITED_FPS);
+        change(option("framerate"), &mut settings, -1.0);
+        assert_eq!(settings.framerate, 1000.0);
         change(option("rating_y"), &mut settings, -2.0);
         assert_eq!((settings.combo_offset, shown(option("rating_y"), &mut settings).as_str()), ([0.0, -10.0, 0.0, 0.0], "-10 px"));
     }
