@@ -265,6 +265,8 @@ pub struct Shared {
     pub notes_window: (usize, usize),
     /// How many of the stage file's objects lie behind all the characters, between the first and second, between the second and third, and in front.
     pub stage_objects: [usize; 4],
+    /// The strums (0-7) taken out of strumLineNotes, opponentStrums and playerStrums: the members after them move down in number.
+    pub strum_cut: [Vec<usize>; 3],
     /// The keys of the four lanes, which keyPressed("left") and the like ask about.
     pub note_keys: [[Option<KeyCode>; 2]; 4],
     /// Where the scripts' own saves are kept, and those open (by name).
@@ -1245,6 +1247,17 @@ impl Shared {
 
     /// The key of a picture the game draws itself, by the name scripts reach it with (`strumLineNotes.members[2]`,
     /// `notes[0]`, `grpNoteSplashes`, `comboGroup.members[1]`); a group named without a number means all its members.
+    /// The strum (0-7) that is member `index` of a strum group now: the members array is shorter by those taken out.
+    fn strum_slot(&self, group: &str, index: usize) -> Option<usize> {
+        let (list, slots) = match group {
+            "strumLineNotes" => (0, 0..8),
+            "opponentStrums" => (1, 0..4),
+            "playerStrums" => (2, 4..8),
+            _ => return None,
+        };
+        slots.filter(|slot| !self.strum_cut[list].contains(slot)).nth(index)
+    }
+
     fn game_object(&self, object: &str) -> Option<String> {
         let object = object.replace(".members[", "[");
         let (group, index) = match object.split_once('[') {
@@ -1252,9 +1265,7 @@ impl Shared {
             None => (object.as_str(), None),
         };
         Some(match (group, index) {
-            ("strumLineNotes", Some(index)) if index < 8 => format!("strum{index}"),
-            ("opponentStrums", Some(index)) if index < 4 => format!("strum{index}"),
-            ("playerStrums", Some(index)) if index < 4 => format!("strum{}", index + 4),
+            ("strumLineNotes" | "opponentStrums" | "playerStrums", Some(index)) => format!("strum{}", self.strum_slot(group, index)?),
             ("strumLineNotes", None) => "strums".to_owned(),
             ("unspawnNotes", Some(index)) => format!("note{index}"),
             ("notes", Some(index)) if index < self.notes_window.1 => format!("note{}", self.notes_window.0 + index),
@@ -2079,14 +2090,7 @@ impl Scripts {
         });
 
         // the strums, by their group and number (strumLineNotes: the opponent's 0-3, the player's 4-7)
-        let strum = |group: &str, index: usize| -> Option<usize> {
-            match group {
-                "strumLineNotes" if index < 8 => Some(index),
-                "opponentStrums" if index < 4 => Some(index),
-                "playerStrums" if index < 4 => Some(index + 4),
-                _ => None,
-            }
-        };
+        let strum: fn(&Shared, &str, usize) -> Option<usize> = |shared, group, index| shared.strum_slot(group, index);
         // the notes: all of the chart's (unspawnNotes), or those on their way now (notes), by their number
         let note = |shared: &Shared, group: &str, index: usize| -> Option<usize> {
             match group {
@@ -2102,7 +2106,8 @@ impl Scripts {
                 return from_json(lua, &shared_now.notes[index].get(&args.2, position));
             }
             drop(shared_now);
-            let value = strum(&args.0, args.1).and_then(|index| shared.borrow().props.get(&format!("strum{index}.{}", args.2)).cloned()).or_else(|| {
+            let slot = strum(&shared.borrow(), &args.0, args.1);
+            let value = slot.and_then(|index| shared.borrow().props.get(&format!("strum{index}.{}", args.2)).cloned()).or_else(|| {
                 // (a sprite of a group the scripts made)
                 let mut shared = shared.borrow_mut();
                 let tag = shared.groups.get(&args.0)?.members.get(args.1)?.clone();
@@ -2122,7 +2127,8 @@ impl Scripts {
                 return Ok(());
             }
             drop(shared_now);
-            match strum(&args.0, args.1) {
+            let found = strum(&shared.borrow(), &args.0, args.1);
+            match found {
                 Some(index) => shared.borrow_mut().requests.push(Request::SetProperty { name: format!("strum{index}.{}", args.2), value: to_json(&args.3) }),
                 None => {
                     let mut shared = shared.borrow_mut();
@@ -2508,7 +2514,7 @@ impl Scripts {
 
     /// The custom substate's functions (CustomSubstate.hx), the groups' and instances' (ReflectionFunctions.hx) and the
     /// atlas sprites' (FlxAnimateFunctions.hx).
-    fn register_more(shared: &Rc<RefCell<Shared>>, lua: &Lua, g: &mlua::Table, strum: fn(&str, usize) -> Option<usize>, note: fn(&Shared, &str, usize) -> Option<usize>) -> mlua::Result<()> {
+    fn register_more(shared: &Rc<RefCell<Shared>>, lua: &Lua, g: &mlua::Table, strum: fn(&Shared, &str, usize) -> Option<usize>, note: fn(&Shared, &str, usize) -> Option<usize>) -> mlua::Result<()> {
         macro_rules! function {
             ($name:expr, |$lua:ident, $shared:ident, $args:ident : $ty:ty| $body:expr) => {{
                 let $shared = shared.clone();
@@ -2596,8 +2602,8 @@ impl Scripts {
                     Some(tag) => shared.sprite(&tag).iter_mut().for_each(|sprite| (sprite.added, sprite.among) = (false, None)),
                     // a note taken out of the notes' group (or the array it spawns from) is out of play: it is not drawn, hit or
                     // missed any more; a strum out of strumLineNotes is not drawn (its notes still come along it), one taken out
-                    // of its side's group too when destroyed. (The numbers of the strums after it stay, not shifting as the
-                    // Haxe engine's members do.)
+                    // of its side's group too when destroyed. (The strums after it move down in number, as the Haxe
+                    // engine's members array shrinks; the notes keep following their own strum.)
                     None => {
                         let index = usize::try_from(index).unwrap_or(usize::MAX);
                         if let Some(at) = note(shared, &args.0, index) {
@@ -2605,8 +2611,15 @@ impl Scripts {
                                 shared.notes[at].fields.insert(field.to_owned(), serde_json::json!(value));
                                 shared.requests.push(Request::Note { index: at, field: field.to_owned(), value: serde_json::json!(value) });
                             }
-                        } else if let Some(at) = strum(&args.0, index).filter(|_| destroy || args.0 == "strumLineNotes") {
-                            shared.requests.push(Request::SetProperty { name: format!("strum{at}.removed"), value: serde_json::json!(true) });
+                        } else if let Some(at) = strum(shared, &args.0, index) {
+                            // out of its own group's list (and out of all of them when destroyed); the strums after it count one less
+                            let lists = if destroy { 0..3 } else { ["strumLineNotes", "opponentStrums", "playerStrums"].iter().position(|name| *name == args.0).map_or(0..0, |list| list..list + 1) };
+                            for list in lists {
+                                shared.strum_cut[list].push(at);
+                            }
+                            if destroy || args.0 == "strumLineNotes" {
+                                shared.requests.push(Request::SetProperty { name: format!("strum{at}.removed"), value: serde_json::json!(true) });
+                            }
                         }
                     }
                 }
@@ -2625,7 +2638,7 @@ impl Scripts {
                 // unless a script set scale.x/scale.y), the offset keeping the corner in place
                 (None, group) if GAME_GROUPS.contains(&group) => {
                     let index = usize::try_from(args.1).unwrap_or(usize::MAX);
-                    let target = note(&shared, group, index).map(|at| (Some(at), None)).or_else(|| strum(group, index).map(|at| (None, Some(at))));
+                    let target = note(&shared, group, index).map(|at| (Some(at), None)).or_else(|| strum(&shared, group, index).map(|at| (None, Some(at))));
                     if let Some((note_at, strum_at)) = target {
                         const FRAME: f64 = 152.0;
                         let read = |shared: &Shared, field: &str| match (note_at, strum_at) {
@@ -3262,7 +3275,11 @@ mod tests {
         assert_eq!([among(&scripts, "a"), among(&scripts, "b"), among(&scripts, "c")], [(Some((0, 2)), true), (Some((1, -1)), true), (None, false)]);
         // only a strum out of the strums' group, or one destroyed, is hidden
         let names: Vec<String> = scripts.requests().into_iter().filter_map(|request| match request { Request::SetProperty { name, .. } => Some(name), _ => None }).collect();
-        assert_eq!(names, ["strum3.removed", "strum6.removed"]);
+        // (the second removal from playerStrums counts the strum taken out before: its member 2 is strum 7 now)
+        assert_eq!(names, ["strum3.removed", "strum7.removed"]);
+        // the strums after a removed one move down in number, in their own group's list only (7 was destroyed: out of all three)
+        let shared = scripts.shared.borrow();
+        assert_eq!([shared.strum_slot("strumLineNotes", 2), shared.strum_slot("strumLineNotes", 3), shared.strum_slot("strumLineNotes", 5), shared.strum_slot("strumLineNotes", 6)], [Some(2), Some(4), Some(6), None]);
     }
 
     #[test]
