@@ -202,7 +202,8 @@ Done:
   getPropertyFromClass/setPropertyFromClass for the options (`ClientPrefs.data`, the gameplay ones writable), the song
   and the play screen (PlayState: SONG, story mode, deaths, its `instance`), the Conductor, FlxG (size, time, music,
   volume, camera, mouse, the keys' `justPressed`/`pressed`/`justReleased`, fullscreen), the game over's character,
-  sounds and delay (GameOverSubstate), the window's title (`openfl.Lib`) and FlxTransitionableState's skips;
+  sounds and delay (GameOverSubstate), the window's title (`openfl.Lib`) and FlxTransitionableState's skips (FlxG.camera's x, y and angle
+  move and turn the game's view);
   callMethod on the characters, sprites, cameras and the play screen by their path (playAnim with reversed and a start
   frame, dance, shake, flash, fade, setPosition, screenCenter, updateHitbox, setGraphicSize, kill, revive, KillNotes,
   endSong, triggerEvent and the like); getObjectOrder/setObjectOrder among the scripts' sprites, between the
@@ -216,7 +217,7 @@ Done:
   closeCustomSubstate, insertToCustomSubstate, the onCustomSubstate* callbacks; one opened with pauseGame holds the
   song and the play screen still, its sprites drawn through the cameras they were given); sprites, texts, groups,
   cameras of their own (over camOther: zoom, alpha, angle, place), health icons, characters, FlxBackdrops and FlxBars
-  built with createInstance/addInstance and groups filled with addToGroup/removeFromGroup; Adobe Animate atlas sprites (makeFlxAnimateSprite, loadAnimateAtlas,
+  (with the border createFilledBar asks for) built with createInstance/addInstance (a nil in an argument table keeps its place) and groups filled with addToGroup/removeFromGroup; Adobe Animate atlas sprites (makeFlxAnimateSprite, loadAnimateAtlas,
   addAnimationBySymbol, addAnimationBySymbolIndices); callMethodFromClass for FlxG's camera shake, flash and fade, its random numbers and
   sound.play, openURL (and CoolUtil.browserLoad), FlxMath, CoolUtil, Std and Math; Discord's large picture and changeDiscordClientID; on pixel stages a note's own texture from
   `images/pixelUI/<texture>.png` and `<texture>ENDS.png`. The HScript functions say, once, that HScript is not
