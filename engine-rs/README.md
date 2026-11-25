@@ -14,6 +14,8 @@ From a folder that holds the game's `assets` (and `mods`), such as an existing b
 cargo run --release --manifest-path engine-rs/Cargo.toml
 ```
 
+On Linux, building needs the ALSA and udev headers (Debian/Ubuntu: `libasound2-dev libudev-dev`).
+
 `--base <folder>` points it at another folder, `--bot` plays by itself, `--play <text>` starts the first
 song whose name contains the text, `--story <week file>` a whole week,
 `--menu <main|story|freeplay|mods|credits|achievements>` opens at that menu, `--options [page]` at the options. Keys: A S W D or the arrows, Enter or Space, Esc or Backspace. The options are kept in
@@ -33,7 +35,9 @@ normal priority and its sound thread above everything (on Linux the game asks fo
 user may set it).
 
 Copying and pasting (the note colours' copy and paste buttons, the week editor's Copy/Paste Color, Ctrl+C/V in the
-editors' text boxes) goes through the system clipboard on Windows.
+editors' text boxes) goes through the system clipboard: on Windows directly, on macOS through pbcopy/pbpaste, on
+Linux through wl-copy/wl-paste (Wayland) or xclip or xsel; with none of those installed the game keeps the text inside
+itself.
 
 Without ALSA headers (Linux): add `--no-default-features` to build without sound. On Linux the window needs
 `libxkbcommon-x11`, and drawing needs Vulkan or EGL.
@@ -283,14 +287,15 @@ Done:
   J/K/L/I move the view,
   E/Q zoom, R back to the stage's zoom, F12 hides the boxes, F1 the help; saved over its file or under a new name (the
   one before kept as `.bak`). The game's own stages draw theirs in code, so only their characters show, as in the Haxe
-  editor.
+  editor. An object's image can be typed or picked from a Browse list of the PNGs under the mod folder's and the
+  game's `images/` folders (subfolders included, shown as the name the file stores).
 - **Note splash editor**: from the editors' list: a splash skin's file (`images/noteSplashes/`) edited, its animations
   played over four strums where Psych's splashes go (Space, or a click on a strum): name, prefix, note data, indices,
   frame rate range (add/update, remove); scale, allow RGB, allow pixel; the arrow keys move an animation's offset
   (Shift: ten times), Ctrl+C/V/R copy, paste and reset it; the folder's skins to load; Template starts it empty,
   Convert TXT turns the skin's old `.txt` config into the JSON one; the Shader box sets the colours put in place of
   the note's (its "rgb", which the game's splashes follow, and Allow RGB off keeps their own); saved over its file (the one before kept as `.bak`).
-- **Gamepads** (Windows): any gamepad plays and goes through the menus with Psych's buttons (D-pad and
+- **Gamepads** (Windows, Linux and macOS, through gilrs): any gamepad plays and goes through the menus with Psych's buttons (D-pad and
   A/B/X/Y for the lanes; D-pad or left stick, A or Start, B, Start, Back for the menus); Lua's gamepad functions. The key binds page shows and binds
   them after Ctrl (or a shoulder button), as Psych's: the lanes and the menus' actions, kept in the settings.
 
@@ -303,5 +308,4 @@ Not there yet:
   beyond the camera, health, score, the characters' place and the scripts' sprites). HScript is Haxe code run against the Haxe
   engine's own classes, so mods that use it cannot run here as they are. Custom shaders.
 - **Editors**: the chart editor's menu entries that need a file dialog or another format (New, Open Events, Save As,
-  the V-Slice ones), its themes; the system clipboard off Windows (the game keeps its own there); the stage editor's image file picker.
-- **Other**: gamepads on Linux and macOS (gilrs needs libudev there).
+  the V-Slice ones), its themes; a system file dialog (the stage editor lists the images instead).

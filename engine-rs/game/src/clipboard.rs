@@ -1,9 +1,11 @@
-//! Text copied and pasted (the Haxe engine's lime Clipboard): on Windows the system's clipboard, so codes go between the
-//! game and other programs; elsewhere one kept inside the game.
-// shortcut: no system clipboard off Windows (X11 and Wayland hand it over through the window); add one when asked.
+//! Text copied and pasted (the Haxe engine's lime Clipboard): the system's clipboard, so codes go between the game and
+//! other programs: on Windows directly, on macOS and Linux through the system's own tools (pbcopy and pbpaste; wl-copy and
+//! wl-paste, xclip or xsel). With none of them at hand a copy kept inside the game is used.
 
 thread_local! {
     static KEPT: std::cell::RefCell<String> = const { std::cell::RefCell::new(String::new()) };
+    /// When the game last copied something.
+    static COPIED: std::cell::Cell<Option<std::time::Instant>> = const { std::cell::Cell::new(None) };
 }
 
 /// What was last copied.
@@ -12,13 +14,120 @@ pub fn get() -> String {
     if let Some(text) = windows::get() {
         return text;
     }
+    // (a tool takes a moment to own the clipboard: what the game copied a moment ago is what it pastes)
+    #[cfg(not(windows))]
+    if COPIED.get().is_none_or(|at| at.elapsed() > std::time::Duration::from_secs(1)) {
+        if let Some(text) = tools::get() {
+            return text;
+        }
+    }
     KEPT.with(|kept| kept.borrow().clone())
 }
 
 pub fn set(text: &str) {
     KEPT.with(|kept| *kept.borrow_mut() = text.to_owned());
+    COPIED.set(Some(std::time::Instant::now()));
     #[cfg(windows)]
     windows::set(text);
+    #[cfg(not(windows))]
+    tools::set(text);
+}
+
+/// The command lines (program and arguments) that copy and paste, best first, for a system and whether Wayland is in use.
+#[cfg(not(windows))]
+fn tools_for(macos: bool, wayland: bool) -> Vec<([&'static str; 3], [&'static str; 3])> {
+    // (copy, paste), unused arguments left empty
+    if macos {
+        vec![(["pbcopy", "", ""], ["pbpaste", "", ""])]
+    } else {
+        let mut tools = Vec::new();
+        if wayland {
+            tools.push((["wl-copy", "", ""], ["wl-paste", "--no-newline", ""]));
+        }
+        tools.push((["xclip", "-selection", "clipboard"], ["xclip", "-selection", "clipboard"]));
+        tools.push((["xsel", "--clipboard", ""], ["xsel", "--clipboard", ""]));
+        tools
+    }
+}
+
+/// The system's tools, found and run without ever waiting long for them.
+#[cfg(not(windows))]
+mod tools {
+    use std::io::{Read, Write};
+    use std::process::{Command, Stdio};
+    use std::time::{Duration, Instant};
+
+    const WAIT: Duration = Duration::from_millis(300);
+
+    fn tools() -> Vec<([&'static str; 3], [&'static str; 3])> {
+        super::tools_for(cfg!(target_os = "macos"), std::env::var_os("WAYLAND_DISPLAY").is_some_and(|display| !display.is_empty()))
+    }
+
+    fn command(line: &[&str; 3], paste: bool) -> Command {
+        let mut command = Command::new(line[0]);
+        command.args(line[1..].iter().filter(|argument| !argument.is_empty()));
+        // xclip and xsel read with -o; the others have their own paste program
+        if paste && matches!(line[0], "xclip" | "xsel") {
+            command.arg("-o");
+        } else if !paste && line[0] == "xsel" {
+            command.arg("-i");
+        }
+        command.stderr(Stdio::null());
+        command
+    }
+
+    pub fn get() -> Option<String> {
+        for (_, line) in tools() {
+            let Ok(mut child) = command(&line, true).stdin(Stdio::null()).stdout(Stdio::piped()).spawn() else { continue };
+            let mut out = child.stdout.take()?;
+            // read on a helper thread, so a tool that hangs costs at most the wait
+            let (send, receive) = std::sync::mpsc::channel();
+            std::thread::spawn(move || {
+                let mut bytes = Vec::new();
+                let _ = send.send(out.read_to_end(&mut bytes).ok().map(|_| bytes));
+            });
+            let bytes = receive.recv_timeout(WAIT).ok().flatten();
+            let ok = bytes.is_some() && wait(&mut child);
+            if !ok {
+                let _ = child.kill();
+                let _ = child.wait();
+            }
+            if let Some(bytes) = bytes.filter(|_| ok) {
+                return Some(String::from_utf8_lossy(&bytes).into_owned());
+            }
+        }
+        None
+    }
+
+    /// Whether the tool ended well within the wait.
+    fn wait(child: &mut std::process::Child) -> bool {
+        let start = Instant::now();
+        while start.elapsed() < WAIT {
+            match child.try_wait() {
+                Ok(Some(status)) => return status.success(),
+                Ok(None) => std::thread::sleep(Duration::from_millis(2)),
+                Err(_) => return false,
+            }
+        }
+        false
+    }
+
+    pub fn set(text: &str) {
+        for (line, _) in tools() {
+            let Ok(mut child) = command(&line, false).stdin(Stdio::piped()).stdout(Stdio::null()).spawn() else { continue };
+            // the text goes in from a helper thread (a full pipe must not block the frame); the tool is left running when it
+            // keeps serving the selection (wl-copy, xclip, xsel)
+            let Some(mut stdin) = child.stdin.take() else { continue };
+            let text = text.to_owned();
+            std::thread::spawn(move || {
+                let _ = stdin.write_all(text.as_bytes());
+                drop(stdin);
+                // reaped here, so it does not stay a zombie once it ends
+                let _ = child.wait();
+            });
+            return;
+        }
+    }
 }
 
 #[cfg(windows)]
@@ -92,6 +201,15 @@ mod windows {
 
 #[cfg(test)]
 mod tests {
+    #[cfg(not(windows))]
+    #[test]
+    fn the_tool_depends_on_the_system() {
+        let first = |macos, wayland| super::tools_for(macos, wayland).iter().map(|(copy, _)| copy[0]).collect::<Vec<_>>();
+        assert_eq!(first(true, false), ["pbcopy"]);
+        assert_eq!(first(false, true), ["wl-copy", "xclip", "xsel"]);
+        assert_eq!(first(false, false), ["xclip", "xsel"]);
+    }
+
     #[test]
     fn what_is_copied_is_pasted() {
         super::set("1,2,3");

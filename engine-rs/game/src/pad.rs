@@ -1,12 +1,11 @@
 //! Gamepads, as the Haxe engine takes them: any gamepad's buttons, and its left stick as four more buttons. Read once a
-//! frame (`update`); then `down`, `pressed` (this frame) and `released`. On Windows through gilrs (XInput and Windows'
-//! own gamepads); elsewhere none are seen.
-// shortcut: Windows only; gilrs needs libudev on Linux. Add it there behind the same functions when a player asks.
+//! frame (`update`); then `down`, `pressed` (this frame) and `released`. Through gilrs on Windows (XInput and Windows' own
+//! gamepads), Linux (needs libudev) and macOS; elsewhere none are seen.
 use std::cell::RefCell;
 
 /// The buttons the Haxe engine's controls name (FlxGamepadInputID), the left stick's directions among them.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
-#[cfg_attr(not(windows), allow(dead_code))]
+#[cfg_attr(not(any(windows, target_os = "linux", target_os = "macos")), allow(dead_code))]
 pub enum Button {
     A,
     B,
@@ -35,9 +34,9 @@ struct State {
     was: Vec<Button>,
     /// The sticks: left x, y, right x, y (-1 to 1, up negative as in Flixel), the first gamepad's.
     sticks: [f32; 4],
-    #[cfg(windows)]
+    #[cfg(any(windows, target_os = "linux", target_os = "macos"))]
     gilrs: Option<gilrs::Gilrs>,
-    #[cfg(windows)]
+    #[cfg(any(windows, target_os = "linux", target_os = "macos"))]
     tried: bool,
 }
 
@@ -46,7 +45,7 @@ thread_local! {
 }
 
 /// The buttons down on any gamepad now.
-#[cfg(windows)]
+#[cfg(any(windows, target_os = "linux", target_os = "macos"))]
 fn read(state: &mut State) -> Vec<Button> {
     use gilrs::{Axis, Button as Their};
     if !std::mem::replace(&mut state.tried, true) {
@@ -73,7 +72,7 @@ fn read(state: &mut State) -> Vec<Button> {
     down
 }
 
-#[cfg(not(windows))]
+#[cfg(not(any(windows, target_os = "linux", target_os = "macos")))]
 fn read(_state: &mut State) -> Vec<Button> {
     Vec::new()
 }

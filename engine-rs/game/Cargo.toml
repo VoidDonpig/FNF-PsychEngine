@@ -34,5 +34,5 @@ mlua = { version = "0.12.2", features = ["lua54", "vendored"] }
 # The .exe's icon, name and version, and its manifest (Windows resources; build.rs)
 embed-resource = "3.0.12"
 
-[target."cfg(windows)".dependencies]
+[target."cfg(any(windows, target_os = \"linux\", target_os = \"macos\"))".dependencies]
 gilrs = "0.11.2"

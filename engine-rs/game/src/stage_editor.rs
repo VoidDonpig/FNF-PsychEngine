@@ -2,7 +2,7 @@
 //! from its objects, with the three characters where it puts them; its objects listed, picked (in the list or with a click)
 //! and moved (arrow keys, right mouse button), their settings and the stage's in the Haxe editor's boxes; saved over its
 //! file, the one before kept as `.bak`.
-// shortcut: images are typed, not picked from a file dialog; add one when asked.
+// shortcut: the image list has no filter; it is scrolled with the wheel.
 use crate::gfx::*;
 use crate::scene::Scene;
 use crate::ui::Ui;
@@ -28,6 +28,32 @@ pub(crate) fn stage_names(paths: &Paths) -> Vec<String> {
         .filter_map(|path| Some(path.file_stem()?.to_string_lossy().into_owned())).collect();
     names.sort();
     names.dedup();
+    names
+}
+
+/// The images there are (`images/**/*.png` under each root, mod folder first), as the names a stage's JSON stores
+/// (relative to `images/`, no `.png`): each root's sorted, the ones already listed left out.
+fn image_names(roots: &[PathBuf]) -> Vec<String> {
+    fn walk(dir: &Path, prefix: &str, found: &mut Vec<String>) {
+        let mut entries: Vec<PathBuf> = std::fs::read_dir(dir).into_iter().flatten().flatten().map(|entry| entry.path()).collect();
+        entries.sort();
+        for path in entries {
+            let Some(name) = path.file_name().map(|name| name.to_string_lossy().into_owned()) else { continue };
+            if path.is_dir() {
+                walk(&path, &format!("{prefix}{name}/"), found);
+            } else if let Some(stem) = name.strip_suffix(".png") {
+                found.push(format!("{prefix}{stem}"));
+            }
+        }
+    }
+    let mut names: Vec<String> = Vec::new();
+    for root in roots {
+        let mut found = Vec::new();
+        walk(&root.join("images"), "", &mut found);
+        found.sort();
+        let listed: std::collections::HashSet<String> = names.iter().cloned().collect();
+        names.extend(found.into_iter().filter(|name| !listed.contains(name)));
+    }
     names
 }
 
@@ -69,6 +95,8 @@ pub struct StageEditor {
     /// (name, prefix, indices, framerate, looped).
     shown: Option<(usize, String)>,
     form: (String, String, String, f64, bool),
+    /// The images the Browse list offers, made when it is opened.
+    images: Vec<String>,
     unsaved: bool,
     leaving: bool,
     said: Option<(String, Instant)>,
@@ -86,7 +114,7 @@ impl StageEditor {
         let mut editor = StageEditor {
             base: base.to_path_buf(), folder: folder.to_owned(), names, name: String::new(), json: Value::Null, scene: None, picked: None,
             camera: Vec2::ZERO, zoom: 1.0, mouse: Vec2::ZERO, scroll: 0, boxes: true, help: false, ui: Ui::default(), tab: 1, shown: None, form: (String::new(), String::new(), String::new(), 24.0, false),
-            unsaved: false, leaving: false, said: None,
+            images: Vec::new(), unsaved: false, leaving: false, said: None,
         };
         editor.load(&first);
         editor
@@ -560,6 +588,16 @@ impl StageEditor {
             editor.changed();
             editor.restage();
         };
+        // asked for before the controls its list drops over
+        if object["type"] != "square" {
+            let (opened, picked) = self.ui.browse("object images", x + 178.0, y + 40.0, 52.0, (x, 230.0), "Browse", &self.images);
+            if opened {
+                self.images = image_names(self.paths().roots());
+            }
+            if let Some(image) = picked.and_then(|index| self.images.get(index).cloned()) {
+                set(self, "image", json!(image));
+            }
+        }
         self.ui.label(x, y + 44.0, "Name:");
         if let Some(name) = self.ui.input("object name", x, y + 62.0, 110.0, object["name"].as_str().unwrap_or_default()) {
             set(self, "name", json!(name.trim()));
@@ -735,6 +773,19 @@ mod tests {
     }
 
     use super::*;
+
+    #[test]
+    fn images_are_listed_by_relative_name_the_mod_first_without_repeats() {
+        let dir = std::env::temp_dir().join(format!("funkin-images-{}", std::process::id()));
+        let (own, game) = (dir.join("mod"), dir.join("game"));
+        for file in ["mod/images/zed.png", "mod/images/stages/a/wall.png", "mod/images/notes.txt", "game/images/alpha.png", "game/images/zed.png"] {
+            std::fs::create_dir_all(dir.join(file).parent().unwrap()).unwrap();
+            std::fs::write(dir.join(file), "").unwrap();
+        }
+        let names = image_names(&[own, game]);
+        std::fs::remove_dir_all(&dir).unwrap();
+        assert_eq!(names, ["stages/a/wall", "zed", "alpha"]);
+    }
 
     #[test]
     fn objects_are_called_by_name_or_role_and_characters_found() {

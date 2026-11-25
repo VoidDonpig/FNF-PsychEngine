@@ -194,30 +194,53 @@ impl Ui {
         Some(new.clamp(min, max))
     }
 
+    /// The rows of the list `id` while it is open (scrolled by the wheel) dropping from `y` over what is under them: the
+    /// one clicked on. Any click closes it and goes no further. Whether it was open.
+    fn rows(&mut self, id: &'static str, x: f32, y: f32, width: f32, options: &[String]) -> (bool, Option<usize>) {
+        let mut picked = None;
+        if !self.open.is_some_and(|(open, _)| open == id) {
+            return (false, None);
+        }
+        let (_, scroll) = self.open.expect("open");
+        let scroll = (scroll as f32 - mouse_wheel()).clamp(0.0, options.len().saturating_sub(ROWS) as f32) as usize;
+        self.open = Some((id, scroll));
+        for (row, index) in (scroll..options.len()).take(ROWS).enumerate() {
+            let line = Rect::new(x, y + 18.0 * (row + 1) as f32, width, 18.0);
+            let lit = inside(line, self.mouse);
+            if self.click(line) {
+                picked = Some(index);
+            }
+            self.over.push(Shape::Rect(line, if lit { Color::from_hex(0x0066FF) } else { WHITE }));
+            self.over.push(Shape::Text(options[index].clone(), vec2(x + 3.0, line.y + 14.0), if lit { WHITE } else { BLACK }));
+        }
+        if self.clicked {
+            self.taken = true;
+            self.open = None;
+        }
+        (true, picked)
+    }
+
+    /// A button that drops a list down (at `list`: its left and width) over what is under it: (whether it was just
+    /// clicked, so the list is to be made now, the one chosen). Like a list that drops down, it is asked for before the
+    /// controls under the list.
+    pub fn browse(&mut self, id: &'static str, x: f32, y: f32, width: f32, list: (f32, f32), words: &str, options: &[String]) -> (bool, Option<usize>) {
+        let (is_open, picked) = self.rows(id, list.0, y, list.1, options);
+        let opened = !is_open && self.click(Rect::new(x, y, width, 20.0));
+        if opened {
+            self.open = Some((id, 0));
+        }
+        let area = Rect::new(x, y, width, 20.0);
+        let color = if inside(area, self.mouse) { Color::from_hex(0xFFFFFF) } else { Color::from_hex(0xAAAAAA) };
+        self.rect(area, Color { a: if is_open { 1.0 } else { 0.6 }, ..color });
+        self.shapes.push(Shape::Text(words.to_owned(), vec2(x + 4.0, y + 15.0), BLACK));
+        (opened, picked)
+    }
+
     /// A list that drops down: what is chosen; a click opens it, the wheel scrolls it, a click on one chooses it.
     pub fn dropdown(&mut self, id: &'static str, x: f32, y: f32, width: f32, options: &[String], chosen: usize) -> Option<usize> {
         let area = Rect::new(x, y, width, 18.0);
-        let mut picked = None;
-        let is_open = self.open.is_some_and(|(open, _)| open == id);
-        if is_open {
-            let (_, scroll) = self.open.expect("open");
-            let scroll = (scroll as f32 - mouse_wheel()).clamp(0.0, options.len().saturating_sub(ROWS) as f32) as usize;
-            self.open = Some((id, scroll));
-            for (row, index) in (scroll..options.len()).take(ROWS).enumerate() {
-                let line = Rect::new(x, y + 18.0 * (row + 1) as f32, width, 18.0);
-                let lit = inside(line, self.mouse);
-                if self.click(line) {
-                    picked = Some(index);
-                }
-                self.over.push(Shape::Rect(line, if lit { Color::from_hex(0x0066FF) } else { WHITE }));
-                self.over.push(Shape::Text(options[index].clone(), vec2(x + 3.0, line.y + 14.0), if lit { WHITE } else { BLACK }));
-            }
-            // any click closes it, and goes no further
-            if self.clicked {
-                self.taken = true;
-                self.open = None;
-            }
-        } else if self.click(area) {
+        let (is_open, picked) = self.rows(id, x, y, width, options);
+        if !is_open && self.click(area) {
             self.open = Some((id, chosen.saturating_sub(ROWS / 2)));
         }
         self.rect(area, BLACK);
