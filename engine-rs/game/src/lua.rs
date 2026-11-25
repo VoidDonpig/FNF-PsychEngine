@@ -76,6 +76,35 @@ function setLuaSpriteScrollFactor(tag, x, y) setScrollFactor(tag, x, y) end
 function musicFadeIn(duration, from, to) soundFadeIn('', duration, from, to) end
 function musicFadeOut(duration, to) soundFadeOut('', duration, to) end
 function updateScoreText() end
+-- what callMethod and createInstance take for one of the scripts' objects (ReflectionFunctions.instanceArg)
+function instanceArg(name, class)
+    local text = '##PSYCHLUA_STRINGTOOBJ::' .. tostring(name)
+    if class ~= nil then text = text .. '::' .. tostring(class) end
+    return text
+end
+-- the few static methods of the Haxe engine's classes with an answer here, by class (its package left off) and name
+-- shortcut: the others are not called; each class not known here says so once
+do
+    local told = {}
+    local methods = {
+        ['FlxG.camera.shake'] = function(a) cameraShake('game', a[1] or 0.05, a[2] or 0.5) end,
+        ['FlxG.camera.flash'] = function(a) cameraFlash('game', a[1] or 'FFFFFF', a[2] or 1, a[4]) end,
+        ['FlxG.camera.fade'] = function(a) cameraFade('game', a[1] or '000000', a[2] or 1, a[5], a[3]) end,
+        ['FlxG.random.int'] = function(a) return getRandomInt(a[1], a[2]) end,
+        ['FlxG.random.float'] = function(a) return getRandomFloat(a[1], a[2]) end,
+        ['FlxG.random.bool'] = function(a) return getRandomBool(a[1]) end,
+        ['FlxG.resetState'] = function() restartSong() end,
+    }
+    function callMethodFromClass(class, method, args)
+        local found = methods[(tostring(class or ''):match('([^%.]+)$') or '') .. '.' .. tostring(method)]
+        if found then return found(args or {}) end
+        if not told[tostring(class)] then
+            told[tostring(class)] = true
+            debugPrint('callMethodFromClass: ' .. tostring(class) .. ' is not known here')
+        end
+        return nil
+    end
+end
 function addCharacterToList() end
 "#;
 const STOP_LUA: &str = "##PSYCHLUA_FUNCTIONSTOPLUA";
@@ -128,6 +157,12 @@ pub enum Request {
     EndSong,
     RestartSong,
     ExitSong,
+    /// A custom substate opened (openCustomSubstate), carried out the next moment as Flixel opens one; with `pause`
+    /// the song and the play screen stand still under it.
+    OpenSubstate { name: String, pause: bool },
+    CloseSubstate,
+    /// Discord's application changed (changeDiscordClientID; empty: the game's own).
+    DiscordClient(String),
 }
 
 /// What scripts do to a sound they named.
@@ -201,6 +236,33 @@ pub struct Shared {
     pub character_shaders: [Option<Shader>; 3],
     /// And those the cameras are seen through: the game's, the HUD's, the one over everything.
     pub camera_shaders: [Option<Shader>; 3],
+    /// The custom substate open, and the name of the last opened (CustomSubstate.name; none: "unnamed").
+    pub substate: Option<Substate>,
+    substate_name: Option<String>,
+    /// The groups scripts made (createInstance), by name.
+    groups: HashMap<String, Group>,
+    /// The lines of what is not known here already printed (each is printed once).
+    unknown: std::collections::HashSet<String>,
+}
+
+/// A custom substate (CustomSubstate.hx): its name, whether it holds the game still, the tags of the sprites put in it
+/// in their order, and the timers and tweens it holds still (those running when it opened, as PlayState.openSubState).
+#[derive(Clone, Debug, Default)]
+pub struct Substate {
+    pub name: String,
+    pub pause: bool,
+    members: Vec<String>,
+    held_timers: Vec<String>,
+    held_tweens: Vec<String>,
+}
+
+/// A group the scripts made (FlxTypedGroup, FlxSpriteGroup): the tags of its sprites, and whether it is added (in front
+/// of the characters or behind them).
+#[derive(Clone, Debug, Default)]
+struct Group {
+    members: Vec<String>,
+    added: bool,
+    front: bool,
 }
 
 struct Script {
@@ -450,11 +512,34 @@ struct Sprite {
     /// The file of its picture (getPixelColor reads it), and the sheets after the first of loadMultipleFrames.
     file: Option<PathBuf>,
     more: Vec<Rc<Sheet>>,
+    /// An Adobe Animate atlas it is drawn from instead (makeFlxAnimateSprite), and its animations by name.
+    atlas: Option<Rc<crate::animate::Atlas>>,
+    symbols: HashMap<String, Symbol>,
+}
+
+/// An animation of an atlas sprite (addAnimationBySymbol): a symbol played on its own, all its frames or those numbered,
+/// and how far it is moved.
+#[derive(Clone)]
+struct Symbol {
+    name: String,
+    numbers: Vec<usize>,
+    fps: f64,
+    looped: bool,
+    at: [f64; 2],
+}
+
+/// The frame of a symbol's animation `time` seconds in: of its `numbers` (none: all `length` of the symbol's), started
+/// over or held on the last.
+fn symbol_frame(numbers: &[usize], length: usize, fps: f64, looped: bool, time: f64) -> usize {
+    let count = if numbers.is_empty() { length } else { numbers.len() }.max(1);
+    let step = (time * fps) as usize;
+    let step = if looped { step % count } else { step.min(count - 1) };
+    if numbers.is_empty() { step } else { numbers[step] }
 }
 
 impl Sprite {
     fn new(art: Option<Art>, x: f64, y: f64) -> Sprite {
-        Sprite { text: None, art, solid: None, x, y, scale: [1.0; 2], scroll: [1.0; 2], offset: [0.0; 2], alpha: 1.0, visible: true, angle: 0.0, flip_x: false, color: 0xFFFFFF, camera: Cam::Game, added: false, front: false, animations: HashMap::new(), playing: None, add: false, shader: None, file: None, more: Vec::new() }
+        Sprite { text: None, art, solid: None, x, y, scale: [1.0; 2], scroll: [1.0; 2], offset: [0.0; 2], alpha: 1.0, visible: true, angle: 0.0, flip_x: false, color: 0xFFFFFF, camera: Cam::Game, added: false, front: false, animations: HashMap::new(), playing: None, add: false, shader: None, file: None, more: Vec::new(), atlas: None, symbols: HashMap::new() }
     }
 
     /// The frame shown now: of the animation playing, else the first of the sheet, else the whole picture.
@@ -486,6 +571,12 @@ impl Sprite {
 
     /// Whether the animation playing has played through.
     fn finished(&self) -> bool {
+        if let (Some((name, time)), Some(atlas)) = (&self.playing, &self.atlas) {
+            if let Some(symbol) = self.symbols.get(name) {
+                let count = if symbol.numbers.is_empty() { atlas.rig.symbol_length(&symbol.name) } else { symbol.numbers.len() };
+                return !symbol.looped && time * symbol.fps >= count as f64;
+            }
+        }
         self.playing.as_ref().is_none_or(|(name, time)| self.animations.get(name).is_none_or(|animation| !animation.looped && time * animation.fps >= animation.frames.len() as f64))
     }
 
@@ -580,6 +671,16 @@ impl Sprite {
             return;
         }
         shade(self.shader.as_ref());
+        if let Some(atlas) = &self.atlas {
+            match self.playing.as_ref().and_then(|(name, time)| Some((self.symbols.get(name)?, *time))) {
+                Some((symbol, time)) => {
+                    let frame = symbol_frame(&symbol.numbers, atlas.rig.symbol_length(&symbol.name), symbol.fps, symbol.looped, time);
+                    atlas.draw_symbol_as(&symbol.name, frame, corner + vec2(symbol.at[0] as f32, symbol.at[1] as f32), 1.0, self.flip_x, color);
+                }
+                // (with no animation, the first frame of its main timeline)
+                None => atlas.draw(0, corner, 1.0, self.flip_x, color),
+            }
+        }
         match (&self.solid, self.frame(), &self.art) {
             (Some((_, rgb)), _, _) => draw_rectangle(corner.x, corner.y, size.x, size.y, Color { a: self.alpha as f32, ..Color::from_hex(*rgb & 0xFFFFFF) }),
             (_, Some((frame, moved)), Some(art)) => {
@@ -674,6 +775,17 @@ pub fn ease(name: &str) -> fn(f64) -> f64 {
 }
 
 /// A colour as scripts give one ("FF0000", "0xFFFF0000", "#ff0000", or a number).
+/// A message of the Haxe engine's luaTrace: on the screen only when the script has luaDebugMode on (a deprecation also
+/// wants luaDeprecatedWarnings), always on the error output.
+fn trace(lua: &Lua, shared: &mut Shared, line: String, deprecated: bool) {
+    let flag = |name: &str| lua.globals().get::<bool>(name).unwrap_or(false);
+    if flag("luaDebugMode") && (!deprecated || flag("luaDeprecatedWarnings")) {
+        shared.say(line);
+    } else {
+        eprintln!("Lua: {line}");
+    }
+}
+
 fn color_of(value: &Value) -> u32 {
     match value {
         Value::Integer(number) => *number as u32 & 0xFFFFFF,
@@ -786,6 +898,23 @@ impl Shared {
 
     fn sprite(&mut self, tag: &str) -> Option<&mut Sprite> {
         self.sprites.iter_mut().find(|(name, _)| name == tag).map(|(_, sprite)| sprite)
+    }
+
+    fn has(&self, tag: &str) -> bool {
+        self.sprites.iter().any(|(name, _)| name == tag)
+    }
+
+    /// A line for the player, on the screen as debugPrint's are (and on the error output).
+    fn say(&mut self, line: String) {
+        eprintln!("Lua: {line}");
+        self.printed.push((line, crate::gfx::get_time()));
+    }
+
+    /// `say`, once for each line.
+    fn say_once(&mut self, line: String) {
+        if self.unknown.insert(line.clone()) {
+            self.say(line);
+        }
     }
 }
 
@@ -948,7 +1077,31 @@ impl Scripts {
         function!("callMethod", |_lua, shared, args: (String, Option<Vec<Value>>)| {
             match args.0.as_str() {
                 "videoCutscene.play" | "videoCutscene.videoSprite.play" => shared.borrow_mut().requests.push(Request::PlayVideo),
-                method => eprintln!("Lua: callMethod {method} is not known here"),
+                method => {
+                    // a group the scripts made, filled as Haxe scripts fill one: callMethod('group.add', {instanceArg('tag')})
+                    let given = args.1.iter().flatten();
+                    let tags: Vec<String> = given.clone().filter_map(|value| match value {
+                        Value::String(text) => text.to_string_lossy().strip_prefix("##PSYCHLUA_STRINGTOOBJ::").map(|rest| rest.split("::").next().unwrap_or(rest).to_owned()),
+                        _ => None,
+                    }).collect();
+                    let position = given.clone().find_map(|value| match value {
+                        Value::Integer(number) => Some(*number),
+                        Value::Number(number) => Some(*number as i64),
+                        _ => None,
+                    });
+                    let mut shared = shared.borrow_mut();
+                    let (group, call) = method.rsplit_once('.').unwrap_or((method, ""));
+                    match (shared.groups.get_mut(group), call, tags.first()) {
+                        (Some(group), "add" | "insert", Some(tag)) => {
+                            if !group.members.contains(tag) {
+                                let at = position.and_then(|at| usize::try_from(at).ok()).map_or(group.members.len(), |at| at.min(group.members.len()));
+                                group.members.insert(at, tag.clone());
+                            }
+                        }
+                        (Some(group), "remove", Some(tag)) => group.members.retain(|name| name != tag),
+                        _ => eprintln!("Lua: callMethod {method} is not known here"),
+                    }
+                }
             }
             Ok(())
         });
@@ -1018,6 +1171,9 @@ impl Scripts {
         function!("getPropertyFromClass", |lua, shared, args: (String, String)| {
             let shared = shared.borrow();
             let class = args.0.rsplit('.').next().unwrap_or("");
+            if (class, args.1.as_str()) == ("CustomSubstate", "name") {
+                return from_json(lua, &serde_json::json!(shared.substate_name.as_deref().unwrap_or("unnamed")));
+            }
             let live = match (class, args.1.as_str()) {
                 ("PlayState", field) => field.strip_prefix("instance."),
                 ("Conductor", "songPosition") | ("FlxG", "sound.music.time") => Some("songPosition"),
@@ -1350,11 +1506,10 @@ impl Scripts {
             let now = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map_or(0.0, |since| since.as_millis() as f64);
             let start = if args.3.unwrap_or(false) { now } else { 0.0 };
             let end = args.4.filter(|end| *end > 0.0).map(|end| ((start + end) / 1000.0) as u64);
-            // shortcut: the large picture (args.5, the "icon" by default) is the game's own; discord::Presence has no field for it
-            Request::Presence(crate::discord::Presence { details: args.0.unwrap_or_else(|| "In the Menus".to_owned()), state: args.1.filter(|state| !state.is_empty()), small_image: args.2.filter(|key| !key.is_empty()), start: (start > 0.0).then_some((start / 1000.0) as u64), end })
+            Request::Presence(crate::discord::Presence { large_image: args.5, details: args.0.unwrap_or_else(|| "In the Menus".to_owned()), state: args.1.filter(|state| !state.is_empty()), small_image: args.2.filter(|key| !key.is_empty()), start: (start > 0.0).then_some((start / 1000.0) as u64), end })
         });
-        // shortcut: the game's Discord application is fixed (discord.rs has no way to change it): this does nothing
-        function!("changeDiscordClientID", |_lua, _shared, _args: Option<String>| Ok(()));
+        // (none: the game's own application, as Discord.hx)
+        request!("changeDiscordClientID", |args: Option<String>| Request::DiscordClient(args.unwrap_or_default()));
         request!("loadSong", |args: (Option<String>, Option<i64>)| Request::LoadSong { name: args.0.unwrap_or_default(), difficulty: args.1.unwrap_or(-1) });
         g.set("mouseReleased", lua.create_function(|_, _args: Option<String>| Ok(is_mouse_released()))?)?;
         g.set("gamepadAnalogX", lua.create_function(|_, args: (Option<u32>, Option<bool>)| Ok(crate::pad::stick(args.1.unwrap_or(true), true)))?)?;
@@ -1453,7 +1608,12 @@ impl Scripts {
                 return from_json(lua, &shared_now.notes[index].get(&args.2, position));
             }
             drop(shared_now);
-            let value = strum(&args.0, args.1).and_then(|index| shared.borrow().props.get(&format!("strum{index}.{}", args.2)).cloned());
+            let value = strum(&args.0, args.1).and_then(|index| shared.borrow().props.get(&format!("strum{index}.{}", args.2)).cloned()).or_else(|| {
+                // (a sprite of a group the scripts made)
+                let mut shared = shared.borrow_mut();
+                let tag = shared.groups.get(&args.0)?.members.get(args.1)?.clone();
+                shared.sprite(&tag)?.get(&args.2)
+            });
             if value.is_none() {
                 eprintln!("Lua: getPropertyFromGroup {} {} {} is not known here", args.0, args.1, args.2);
             }
@@ -1470,7 +1630,13 @@ impl Scripts {
             drop(shared_now);
             match strum(&args.0, args.1) {
                 Some(index) => shared.borrow_mut().requests.push(Request::SetProperty { name: format!("strum{index}.{}", args.2), value: to_json(&args.3) }),
-                None => eprintln!("Lua: setPropertyFromGroup {} {} {} is not known here", args.0, args.1, args.2),
+                None => {
+                    let mut shared = shared.borrow_mut();
+                    let (tag, value) = (shared.groups.get(&args.0).and_then(|group| group.members.get(args.1).cloned()), to_json(&args.3));
+                    if !tag.is_some_and(|tag| shared.sprite(&tag).is_some_and(|sprite| sprite.set(&args.2, &value))) {
+                        eprintln!("Lua: setPropertyFromGroup {} {} {} is not known here", args.0, args.1, args.2);
+                    }
+                }
             }
             Ok(())
         });
@@ -1724,6 +1890,7 @@ impl Scripts {
             }
         };
         function!("setTextString", |_lua, shared, args: (String, String)| Ok(with_text(&shared, &args.0, &mut |text| text.words = args.1.clone())));
+        Scripts::register_more(shared, lua, &g, strum, note)?;
         function!("setTextSize", |_lua, shared, args: (String, f64)| Ok(with_text(&shared, &args.0, &mut |text| text.size = args.1)));
         function!("setTextWidth", |_lua, shared, args: (String, f64)| Ok(with_text(&shared, &args.0, &mut |text| text.width = args.1)));
         function!("setTextAlignment", |_lua, shared, args: (String, Option<String>)| {
@@ -1826,6 +1993,233 @@ impl Scripts {
         Ok(())
     }
 
+    /// The custom substate's functions (CustomSubstate.hx), the groups' and instances' (ReflectionFunctions.hx) and the
+    /// atlas sprites' (FlxAnimateFunctions.hx).
+    fn register_more(shared: &Rc<RefCell<Shared>>, lua: &Lua, g: &mlua::Table, strum: fn(&str, usize) -> Option<usize>, note: fn(&Shared, &str, usize) -> Option<usize>) -> mlua::Result<()> {
+        macro_rules! function {
+            ($name:expr, |$lua:ident, $shared:ident, $args:ident : $ty:ty| $body:expr) => {{
+                let $shared = shared.clone();
+                g.set($name, lua.create_function(move |$lua, $args: $ty| {
+                    let _ = &$lua;
+                    $body
+                })?)?;
+            }};
+        }
+        // the custom substate: opened and closed by the game the next moment, as Flixel opens one; until then (and once
+        // it is gone) there is none to put sprites in or close
+        function!("openCustomSubstate", |_lua, shared, args: (String, Option<bool>)| {
+            let mut shared = shared.borrow_mut();
+            shared.substate_name = Some(args.0.clone());
+            shared.requests.push(Request::OpenSubstate { name: args.0, pause: args.1.unwrap_or(false) });
+            Ok(())
+        });
+        function!("closeCustomSubstate", |_lua, shared, _args: ()| {
+            let mut shared = shared.borrow_mut();
+            let open = shared.substate.is_some();
+            if open {
+                shared.requests.push(Request::CloseSubstate);
+            }
+            Ok(open)
+        });
+        function!("insertToCustomSubstate", |_lua, shared, args: (String, Option<i64>)| {
+            let mut shared = shared.borrow_mut();
+            let shared = &mut *shared;
+            let (Some(substate), true) = (shared.substate.as_mut(), shared.sprites.iter().any(|(name, _)| *name == args.0)) else { return Ok(false) };
+            if !substate.members.contains(&args.0) {
+                let at = usize::try_from(args.1.unwrap_or(-1)).map_or(substate.members.len(), |at| at.min(substate.members.len()));
+                substate.members.insert(at, args.0);
+            }
+            Ok(true)
+        });
+
+        // groups: the game's (the notes, the strums) and those the scripts made (createInstance)
+        const GAME_GROUPS: [&str; 5] = ["notes", "unspawnNotes", "strumLineNotes", "playerStrums", "opponentStrums"];
+        let place = |members: &[String], index: Option<i64>| usize::try_from(index.unwrap_or(-1)).map_or(members.len(), |at| at.min(members.len()));
+        function!("addToGroup", |lua, shared, args: (String, String, Option<i64>)| {
+            let mut shared = shared.borrow_mut();
+            if !shared.has(&args.1) {
+                trace(lua, &mut shared, format!("addToGroup: Object {} is not valid!", args.1), false);
+            } else if let Some(group) = shared.groups.get_mut(&args.0) {
+                if !group.members.contains(&args.1) {
+                    group.members.insert(place(&group.members, args.2), args.1);
+                }
+            } else if GAME_GROUPS.contains(&args.0.as_str()) {
+                // shortcut: a sprite put in the notes' or the strums' group is drawn on the HUD over them, not among them
+                if let Some(sprite) = shared.sprite(&args.1) {
+                    (sprite.added, sprite.camera) = (true, Cam::Hud);
+                }
+            } else {
+                trace(lua, &mut shared, format!("addToGroup: Group/Array {} is not valid!", args.0), false);
+            }
+            Ok(())
+        });
+        function!("removeFromGroup", |lua, shared, args: (String, Option<i64>, Option<String>, Option<bool>)| {
+            let mut shared = shared.borrow_mut();
+            let shared = &mut *shared;
+            let (index, tag, destroy) = (args.1.unwrap_or(-1), args.2, args.3.unwrap_or(true));
+            if let Some(tag) = tag.as_ref().filter(|tag| !shared.has(tag)) {
+                trace(lua, shared, format!("removeFromGroup: Object {tag} is not valid!"), false);
+                return Ok(());
+            }
+            if let Some(group) = shared.groups.get_mut(&args.0) {
+                let at = match &tag {
+                    Some(tag) => group.members.iter().position(|name| name == tag),
+                    None => usize::try_from(index).ok().filter(|at| *at < group.members.len()),
+                };
+                let Some(at) = at else { return Ok(()) };
+                let gone = group.members.remove(at);
+                if destroy {
+                    shared.sprites.retain(|(name, _)| *name != gone);
+                }
+            } else if GAME_GROUPS.contains(&args.0.as_str()) {
+                match tag {
+                    Some(tag) if destroy => shared.sprites.retain(|(name, _)| *name != tag),
+                    Some(tag) => shared.sprite(&tag).iter_mut().for_each(|sprite| sprite.added = false),
+                    // shortcut: a note taken out of its group is hidden and let pass (ignoreNote), a strum hidden
+                    None => {
+                        let index = usize::try_from(index).unwrap_or(usize::MAX);
+                        if let Some(at) = note(shared, &args.0, index) {
+                            for (field, value) in [("visible", false), ("ignoreNote", true)] {
+                                shared.notes[at].fields.insert(field.to_owned(), serde_json::json!(value));
+                                shared.requests.push(Request::Note { index: at, field: field.to_owned(), value: serde_json::json!(value) });
+                            }
+                        } else if let Some(at) = strum(&args.0, index) {
+                            shared.requests.push(Request::SetProperty { name: format!("strum{at}.visible"), value: serde_json::json!(false) });
+                        }
+                    }
+                }
+            } else {
+                trace(lua, shared, format!("removeFromGroup: Group/Array {} is not valid!", args.0), false);
+            }
+            Ok(())
+        });
+        function!("updateHitboxFromGroup", |lua, shared, args: (String, i64)| {
+            let mut shared = shared.borrow_mut();
+            let member = shared.groups.get(&args.0).and_then(|group| group.members.get(usize::try_from(args.1).ok()?).cloned());
+            match (member, args.0.as_str()) {
+                (Some(tag), _) => shared.sprite(&tag).iter_mut().for_each(|sprite| sprite.update_hitbox()),
+                // shortcut: the notes and the strums keep their hitboxes; unspawnNotes (an array, not a group) says the
+                // function is deprecated, as only the Haxe engine's array branch does
+                (None, "unspawnNotes") => trace(lua, &mut shared, "updateHitboxFromGroup is deprecated! Use updateHitbox instead.".to_owned(), true),
+                (None, group) if GAME_GROUPS.contains(&group) || shared.groups.contains_key(group) => {}
+                (None, group) => trace(lua, &mut shared, format!("updateHitboxFromGroup: Group/Array {group} is not valid!"), false),
+            }
+            Ok(())
+        });
+
+        // instances: of the classes scripts build, one of the scripts' sprites, texts or groups
+        // shortcut: the classes built here are Flixel's sprite, text and group ones and the engine's sprites; the Haxe
+        // engine builds any of its classes
+        function!("createInstance", |lua, shared, args: (String, String, Option<Vec<Value>>)| {
+            let tag = args.0.trim().replace('.', "");
+            let given = args.2.unwrap_or_default();
+            let number = |at: usize, or: f64| match given.get(at) {
+                Some(Value::Integer(number)) => *number as f64,
+                Some(Value::Number(number)) => *number,
+                _ => or,
+            };
+            let word = |at: usize| match given.get(at) {
+                Some(Value::String(text)) => Some(text.to_string_lossy()).filter(|text| !text.is_empty()),
+                _ => None,
+            };
+            let mut shared = shared.borrow_mut();
+            if shared.has(&tag) || shared.groups.contains_key(&tag) || shared.vars.contains_key(&tag) {
+                trace(lua, &mut shared, format!("createInstance: Variable {tag} is already being used and cannot be replaced!"), false);
+                return Ok(Some(false));
+            }
+            // (each by the arguments of its constructor: FlxSprite(x, y, graphic), BGSprite(image, x, y, scrollX, scrollY),
+            // FlxText(x, y, fieldWidth, text, size))
+            let (image, mut sprite) = match args.1.rsplit('.').next().unwrap_or("") {
+                "FlxSprite" | "FlxSkewedSprite" | "ModchartSprite" => (word(2), Sprite::new(None, number(0, 0.0), number(1, 0.0))),
+                "BGSprite" => {
+                    let mut sprite = Sprite::new(None, number(1, 0.0), number(2, 0.0));
+                    sprite.scroll = [number(3, 1.0), number(4, 1.0)];
+                    (word(0), sprite)
+                }
+                "FlxText" => {
+                    let mut sprite = Sprite::new(None, number(0, 0.0), number(1, 0.0));
+                    sprite.text = Some(Text { words: word(3).unwrap_or_default(), size: number(4, 8.0), width: number(2, 0.0), font: None, font_name: String::new(), align: 0.0, border: (0.0, 0) });
+                    (None, sprite)
+                }
+                "FlxTypedGroup" | "FlxGroup" | "FlxSpriteGroup" | "FlxTypedSpriteGroup" => {
+                    shared.groups.insert(tag, Group::default());
+                    return Ok(Some(true));
+                }
+                _ => {
+                    shared.say_once(format!("createInstance: {} is not known here", args.1));
+                    return Ok(None);
+                }
+            };
+            if let Some(image) = image {
+                (sprite.art, sprite.file) = (shared.art(&image, false), shared.art_file(&image));
+            }
+            shared.sprites.push((tag, sprite));
+            Ok(Some(true))
+        });
+        function!("addInstance", |lua, shared, args: (String, Option<bool>)| {
+            let mut shared = shared.borrow_mut();
+            let front = args.1.unwrap_or(false);
+            if let Some(group) = shared.groups.get_mut(&args.0) {
+                (group.added, group.front) = (true, front);
+            } else if let Some(sprite) = shared.sprite(&args.0) {
+                (sprite.added, sprite.front) = (true, front);
+            } else {
+                trace(lua, &mut shared, format!("addInstance: Can't add what doesn't exist~ ({})", args.0), false);
+            }
+            Ok(())
+        });
+
+        // Adobe Animate atlas sprites: drawn from a folder of images/ with an Animation.json and its spritemaps
+        // shortcut: an atlas sprite has no size here (width and height read 0)
+        let atlas = |shared: &Shared, folder: &str| -> Option<Rc<crate::animate::Atlas>> {
+            let file = shared.paths.as_ref()?.find(&format!("images/{folder}/Animation.json"));
+            match file.ok_or(format!("images/{folder}/Animation.json: not found")).and_then(|file| crate::animate::Atlas::load(file.parent().unwrap_or(Path::new(".")))) {
+                Ok(atlas) => Some(Rc::new(atlas)),
+                Err(error) => {
+                    eprintln!("Lua: {error}");
+                    None
+                }
+            }
+        };
+        function!("makeFlxAnimateSprite", |_lua, shared, args: (String, Option<f64>, Option<f64>, Option<String>)| {
+            let tag = args.0.replace('.', "");
+            let mut shared = shared.borrow_mut();
+            let mut sprite = Sprite::new(None, args.1.unwrap_or(0.0), args.2.unwrap_or(0.0));
+            sprite.atlas = args.3.and_then(|folder| atlas(&shared, &folder));
+            shared.sprites.retain(|(name, _)| *name != tag);
+            shared.sprites.push((tag, sprite));
+            Ok(())
+        });
+        // shortcut: an atlas is read from its folder's Animation.json and spritemaps; other file names given are not used
+        function!("loadAnimateAtlas", |_lua, shared, args: (String, String, Option<String>, Option<String>)| {
+            let mut shared = shared.borrow_mut();
+            if shared.has(&args.0) {
+                let found = atlas(&shared, &args.1);
+                shared.sprite(&args.0).iter_mut().for_each(|sprite| sprite.atlas = found.clone());
+            }
+            Ok(())
+        });
+        let by_symbol = |shared: &mut Shared, tag: &str, name: String, symbol: &str, numbers: Vec<usize>, more: (Option<f64>, Option<bool>, Option<f64>, Option<f64>)| -> bool {
+            let Some(sprite) = shared.sprite(tag) else { return false };
+            let Some(atlas) = &sprite.atlas else { return false };
+            let symbol = atlas.rig.symbol_named(symbol).unwrap_or(symbol).to_owned();
+            sprite.symbols.insert(name.clone(), Symbol { name: symbol, numbers, fps: more.0.unwrap_or(24.0), looped: more.1.unwrap_or(false), at: [more.2.unwrap_or(0.0), more.3.unwrap_or(0.0)] });
+            // (the first one added plays at once)
+            if sprite.playing.is_none() {
+                sprite.playing = Some((name, 0.0));
+            }
+            true
+        };
+        function!("addAnimationBySymbol", |_lua, shared, args: (String, String, String, Option<f64>, Option<bool>, Option<f64>, Option<f64>)| {
+            Ok(by_symbol(&mut shared.borrow_mut(), &args.0, args.1, &args.2, Vec::new(), (args.3, args.4, args.5, args.6)))
+        });
+        function!("addAnimationBySymbolIndices", |_lua, shared, args: (String, String, String, Option<Value>, Option<f64>, Option<bool>, Option<f64>, Option<f64>)| {
+            let numbers = args.3.as_ref().map_or(vec![0], |value| indices(value).into_iter().map(|number| number as usize).collect());
+            Ok(by_symbol(&mut shared.borrow_mut(), &args.0, args.1, &args.2, numbers, (args.4, args.5, args.6, args.7)))
+        });
+        Ok(())
+    }
+
     /// Calls `name` in every script that has it, with `args`. What the last answered is returned (as the Haxe engine's
     /// callOnLuas), Function_Stop winning over the others. A script whose call fails is said so and goes on.
     pub fn call(&mut self, name: &str, args: impl mlua::IntoLuaMulti + Clone) -> Option<String> {
@@ -1909,9 +2303,15 @@ impl Scripts {
     /// Runs the timers on by `dt` seconds, calling onTimerCompleted(tag, loops done, loops left) for each that rings.
     pub fn tick(&mut self, dt: f64) {
         let mut rung = Vec::new();
+        // (a custom substate holding the game holds the timers and tweens that ran when it opened)
+        // shortcut: the scripts' sprites all go on playing their animations under it
+        let held = self.shared.borrow().substate.as_ref().map_or((Vec::new(), Vec::new()), |substate| (substate.held_timers.clone(), substate.held_tweens.clone()));
         {
             let mut shared = self.shared.borrow_mut();
             shared.timers.retain(|tag, (left, each, loops, done)| {
+                if held.0.contains(tag) {
+                    return true;
+                }
                 *left -= dt;
                 if *left > 0.0 {
                     return true;
@@ -1935,7 +2335,7 @@ impl Scripts {
                 }
             }
             let tweens: Vec<(String, Tween)> = shared.tweens.iter().map(|(tag, tween)| (tag.clone(), tween.clone())).collect();
-            for (tag, mut tween) in tweens {
+            for (tag, mut tween) in tweens.into_iter().filter(|(tag, _)| !held.1.contains(tag)) {
                 let name = format!("{}.{}", tween.object, tween.field);
                 let from = match tween.from {
                     Some(from) => from,
@@ -1977,11 +2377,65 @@ impl Scripts {
 
     /// Draws the scripts' sprites seen through `camera`; for the game's, those `front` of the characters or behind them.
     /// `scroll`: where that camera looks from (its corner), zero for the HUD's.
+    /// Those of a group the scripts added are drawn as the group was added; those in the custom substate, by `draw_substate`.
     pub fn draw(&self, camera: Cam, front: bool, scroll: Vec2) {
         let shared = self.shared.borrow();
-        for (_, sprite) in shared.sprites.iter().filter(|(_, sprite)| sprite.added && sprite.camera == camera && (camera != Cam::Game || sprite.front == front)) {
+        let within = |tag: &String| shared.substate.as_ref().is_some_and(|substate| substate.members.contains(tag));
+        let shown = |tag: &String, sprite: &Sprite| match shared.groups.values().find(|group| group.added && group.members.contains(tag)) {
+            Some(group) => Some(group.front),
+            None => sprite.added.then_some(sprite.front),
+        };
+        for (_, sprite) in shared.sprites.iter().filter(|(tag, sprite)| !within(tag) && sprite.camera == camera && shown(tag, sprite).is_some_and(|in_front| camera != Cam::Game || in_front == front)) {
             sprite.draw(scroll);
         }
+    }
+
+    /// Draws the sprites put in the custom substate, in their order, over everything.
+    /// shortcut: they are seen through the top camera, whatever camera they were given
+    pub fn draw_substate(&self) {
+        let shared = self.shared.borrow();
+        let Some(substate) = &shared.substate else { return };
+        for tag in &substate.members {
+            if let Some((_, sprite)) = shared.sprites.iter().find(|(name, _)| name == tag) {
+                sprite.draw(Vec2::ZERO);
+            }
+        }
+    }
+
+    /// The custom substate open: its name, and whether it holds the game still.
+    pub fn substate(&self) -> Option<(String, bool)> {
+        self.shared.borrow().substate.as_ref().map(|substate| (substate.name.clone(), substate.pause))
+    }
+
+    /// Opens the custom substate a script asked for (CustomSubstate.create), closing one open first as Flixel does.
+    pub fn open_substate(&mut self, name: &str, pause: bool) {
+        self.close_substate();
+        {
+            let mut shared = self.shared.borrow_mut();
+            let (held_timers, held_tweens) = if pause { (shared.timers.keys().cloned().collect(), shared.tweens.keys().cloned().collect()) } else { Default::default() };
+            shared.substate_name = Some(name.to_owned());
+            shared.substate = Some(Substate { name: name.to_owned(), pause, members: Vec::new(), held_timers, held_tweens });
+        }
+        self.call("onCustomSubstateCreate", name.to_owned());
+        self.call("onCustomSubstateCreatePost", name.to_owned());
+    }
+
+    /// A frame of the custom substate open, if any.
+    pub fn update_substate(&mut self, dt: f32) {
+        let Some((name, _)) = self.substate() else { return };
+        self.call("onCustomSubstateUpdate", (name.clone(), dt));
+        self.call("onCustomSubstateUpdatePost", (name, dt));
+    }
+
+    /// Closes the custom substate (its destroy): the sprites put in it go with it. Whether it held the game, if one was open.
+    pub fn close_substate(&mut self) -> Option<bool> {
+        let (name, _) = self.substate()?;
+        self.call("onCustomSubstateDestroy", name);
+        let mut shared = self.shared.borrow_mut();
+        shared.substate_name = None;
+        let substate = shared.substate.take()?;
+        shared.sprites.retain(|(tag, _)| !substate.members.contains(tag));
+        Some(substate.pause)
     }
 
     /// What the scripts asked for since the last time.
@@ -2025,6 +2479,60 @@ mod tests {
         let scripts = Scripts::start(&[file.clone()], &[("songName", serde_json::json!("test"))], Shared::default());
         let _ = std::fs::remove_file(file);
         scripts
+    }
+
+    #[test]
+    fn a_custom_substate_is_opened_by_the_game_and_holds_the_timers_running() {
+        let mut scripts = run(r#"
+            function onCreate()
+                makeLuaSprite('box'); runTimer('before', 1)
+                openCustomSubstate('menu', true)
+                setVar('early', insertToCustomSubstate('box'))
+            end
+            function onCustomSubstateCreate(name)
+                setVar('inside', insertToCustomSubstate('box')); runTimer('within', 1)
+                setVar('named', getPropertyFromClass('psychlua.CustomSubstate', 'name'))
+            end
+            function onCustomSubstateUpdate(name, elapsed) setVar('updated', name) end
+            function onCustomSubstateDestroy(name) setVar('gone', name) end
+            function onTimerCompleted(tag) setVar('rang', (getVar('rang') or '') .. tag) end
+        "#);
+        scripts.call("onCreate", ());
+        assert_eq!(scripts.requests(), vec![Request::OpenSubstate { name: "menu".to_owned(), pause: true }]);
+        scripts.open_substate("menu", true);
+        scripts.tick(1.5);
+        scripts.update_substate(0.1);
+        let var = |scripts: &Scripts, name: &str| scripts.shared.borrow().vars.get(name).cloned().unwrap_or_default();
+        assert_eq!([var(&scripts, "early"), var(&scripts, "inside"), var(&scripts, "named"), var(&scripts, "updated"), var(&scripts, "rang")], [serde_json::json!(false), serde_json::json!(true), serde_json::json!("menu"), serde_json::json!("menu"), serde_json::json!("within")]);
+        assert_eq!(scripts.close_substate(), Some(true));
+        assert!(!scripts.shared.borrow().has("box"));
+        scripts.tick(1.0);
+        assert_eq!([var(&scripts, "gone"), var(&scripts, "rang")], [serde_json::json!("menu"), serde_json::json!("withinbefore")]);
+    }
+
+    #[test]
+    fn groups_made_by_scripts_hold_their_sprites() {
+        let scripts = run(r#"
+            createInstance('crowd', 'flixel.group.FlxTypedGroup')
+            createInstance('a.b', 'flixel.FlxSprite', {10, 20})
+            setVar('again', createInstance('ab', 'flixel.FlxSprite'))
+            createInstance('c', 'flixel.text.FlxText', {0, 0, 100, 'hi', 12})
+            addToGroup('crowd', 'ab')
+            callMethod('crowd.insert', {0, instanceArg('c')})
+            setPropertyFromGroup('crowd', 1, 'x', 5)
+            setVar('x', getPropertyFromGroup('crowd', 1, 'x')); setVar('y', getPropertyFromGroup('crowd', 1, 'y'))
+            removeFromGroup('crowd', 0)
+            removeFromGroup('crowd', nil, 'ab', false)
+        "#);
+        let shared = scripts.shared.borrow();
+        assert_eq!([&shared.vars["again"], &shared.vars["x"], &shared.vars["y"]], [&serde_json::json!(false), &serde_json::json!(5.0), &serde_json::json!(20.0)]);
+        assert!(shared.groups["crowd"].members.is_empty() && shared.has("ab") && !shared.has("c"));
+    }
+
+    #[test]
+    fn a_symbol_plays_its_frames_or_those_numbered() {
+        assert_eq!([0.0, 0.5, 1.0, 2.0].map(|time| symbol_frame(&[], 10, 10.0, false, time)), [0, 5, 9, 9]);
+        assert_eq!([0.0, 0.25, 0.35].map(|time| symbol_frame(&[4, 2, 7], 10, 10.0, true, time)), [4, 7, 4]);
     }
 
     #[test]

@@ -200,7 +200,13 @@ Done:
   (setRatingPercent/Name/FC, until the next note judged; onRecalculateRating may keep it), ask where things are on
   screen (getScreenPositionX/Y) and the colour of a sprite's pixel (getPixelColor), give a sprite the frames of
   several sheets (loadMultipleFrames), change the Discord presence, open another song (loadSong), and pause, resume,
-  wind and retune the song's own music, the notes following it. The HScript functions say, once, that HScript is not
+  wind and retune the song's own music, the notes following it. Custom substates (openCustomSubstate,
+  closeCustomSubstate, insertToCustomSubstate, the onCustomSubstate* callbacks; one opened with pauseGame holds the
+  song and the play screen still); sprites, texts and groups built with createInstance/addInstance and groups filled
+  with addToGroup/removeFromGroup; Adobe Animate atlas sprites (makeFlxAnimateSprite, loadAnimateAtlas,
+  addAnimationBySymbol, addAnimationBySymbolIndices); callMethodFromClass for FlxG's camera shake, flash and fade and
+  its random numbers; Discord's large picture and changeDiscordClientID; on pixel stages a note's own texture from
+  `images/pixelUI/<texture>.png` and `<texture>ENDS.png`. The HScript functions say, once, that HScript is not
   supported here. Mods' shaders
   (`shaders/<name>.frag`, written for OpenFL: `#pragma header`, `bitmap`, `openfl_TextureCoordv`, `openfl_TextureSize`,
   `flixel_texture2D`, `texture2D`; ported ones with globals given values outside functions, `texture` and `mainImage`
@@ -328,9 +334,8 @@ Done:
 Not there yet:
 
 - **Menus**: the GPU Caching switch (nothing to switch here); update check.
-- **Scripts**: the rest of Lua's functions (a note's own picture on pixel stages; groups, custom substates,
-  instances, Animate atlas sprites, Discord's large image and client ID, and what getProperty/setProperty and the
-  class functions do not reach yet). Shaders on the game's own pictures other than the characters; a vertex shader gets its corners already
+- **Scripts**: classes built or called by reflection beyond those listed (createInstance, callMethodFromClass), and
+  what getProperty/setProperty and the class functions do not reach yet. Shaders on the game's own pictures other than the characters; a vertex shader gets its corners already
   placed on screen (`openfl_Matrix` changes nothing); a camera takes its shader by setSpriteShader with its name (the Haxe engine's scripts use HScript's setFilters for
   that); `gl_FragCoord` counts from the top of the window. HScript is Haxe code run against the Haxe
   engine's own classes, so mods that use it cannot run here as they are.

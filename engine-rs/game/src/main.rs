@@ -197,6 +197,19 @@ impl Skin {
         });
         let (notes, ends) = own_notes.unwrap_or((dir.join("noteSkins/NOTE_assets.png"), dir.join("noteSkins/NOTE_assetsENDS.png")));
         let (notes, ends) = (image(notes)?, image(ends)?);
+        let (sheet, frames) = Skin::pixel_frames(&notes, &ends);
+        // (a hold piece's size, a quarter of the width and half of the height of theirs)
+        let end = vec2(ends.width as f32 / 4.0, ends.height as f32 / 2.0);
+        let font = std::fs::read(base.join("assets/fonts/vcr.ttf")).ok().and_then(|bytes| load_ttf_font_from_bytes(&bytes).ok());
+        let digits = Skin::pictures(&dir, &["num0-pixel", "num1-pixel", "num2-pixel", "num3-pixel", "num4-pixel", "num5-pixel", "num6-pixel", "num7-pixel", "num8-pixel", "num9-pixel"], true);
+        let splashes = atlas::Sheet::load(&Skin::splash_file(base, own.filter(|(_, chart)| !chart.splash_skin.is_empty()).map(|(paths, chart)| (paths, chart.splash_skin.as_str())), 0)).ok();
+        Ok(Skin { sheet, frames, lanes: Default::default(), font, ratings: Skin::pictures(&dir, &["sick-pixel", "good-pixel", "bad-pixel", "shit-pixel"], true), digits,
+            countdown: Skin::pictures(&dir, &["ready-pixel", "set-pixel", "date-pixel"], true), splashes, splash_names: NOTE_NAMES.map(|name| format!("note splash {name} 1")), splash_rgb: Some([None; 3]), plain: own.is_some_and(|(_, chart)| chart.no_rgb), note_scale: PIXEL_ZOOM, hold: end * PIXEL_ZOOM, popup_scales: [PIXEL_ZOOM * 0.85, PIXEL_ZOOM, PIXEL_ZOOM] })
+    }
+
+    /// Pixel notes' pictures cut up: `notes` a grid of small pictures, `ends` the hold pieces' (as images/pixelUI/ has
+    /// them), in one sheet with frames named as the usual notes' are.
+    fn pixel_frames(notes: &Image, ends: &Image) -> (Texture2D, Vec<(String, atlas::Frame)>) {
         // one picture for both: the notes, and the hold pieces under them
         let mut both = Image::gen_image_color(notes.width.max(ends.width), notes.height + ends.height, Color::new(0.0, 0.0, 0.0, 0.0));
         for (source, top) in [(&notes, 0), (&ends, notes.height as u32)] {
@@ -222,11 +235,7 @@ impl Skin {
             frames.push((format!("{} hold piece0000", NOTE_NAMES[lane]), cell(piece, end)));
             frames.push((format!("{} hold end0000", NOTE_NAMES[lane]), cell(piece + vec2(0.0, end.y), end)));
         }
-        let font = std::fs::read(base.join("assets/fonts/vcr.ttf")).ok().and_then(|bytes| load_ttf_font_from_bytes(&bytes).ok());
-        let digits = Skin::pictures(&dir, &["num0-pixel", "num1-pixel", "num2-pixel", "num3-pixel", "num4-pixel", "num5-pixel", "num6-pixel", "num7-pixel", "num8-pixel", "num9-pixel"], true);
-        let splashes = atlas::Sheet::load(&Skin::splash_file(base, own.filter(|(_, chart)| !chart.splash_skin.is_empty()).map(|(paths, chart)| (paths, chart.splash_skin.as_str())), 0)).ok();
-        Ok(Skin { sheet, frames, lanes: Default::default(), font, ratings: Skin::pictures(&dir, &["sick-pixel", "good-pixel", "bad-pixel", "shit-pixel"], true), digits,
-            countdown: Skin::pictures(&dir, &["ready-pixel", "set-pixel", "date-pixel"], true), splashes, splash_names: NOTE_NAMES.map(|name| format!("note splash {name} 1")), splash_rgb: Some([None; 3]), plain: own.is_some_and(|(_, chart)| chart.no_rgb), note_scale: PIXEL_ZOOM, hold: end * PIXEL_ZOOM, popup_scales: [PIXEL_ZOOM * 0.85, PIXEL_ZOOM, PIXEL_ZOOM] })
+        (sheet, frames)
     }
 
     /// Draws a sheet frame centred on (x, y), stretched to `size` if given. `lane` recolours it.
@@ -631,7 +640,14 @@ impl Playing {
                 self.lua.call("onCreatePost", ());
             }
             self.lua.tick(dt as f64);
+            // a custom substate holding the game: only it goes on (the Haxe engine's play screen is not updated under it)
+            if self.lua.substate().is_some_and(|(_, held)| held) {
+                self.lua.update_substate(dt);
+                return self.apply_lua().unwrap_or(Flow::Continue);
+            }
             self.lua.call("onUpdate", dt);
+            // (one that does not hold it goes on with it)
+            self.lua.update_substate(dt);
         } else if first {
             self.time_events();
         }
@@ -818,6 +834,8 @@ impl Playing {
         // (as the Haxe engine does, the game pauses itself when another window comes to the front)
         if !self.bowing && (controls::pressed(Ui::Pause) || (self.settings.auto_pause && !is_focused())) && !lua::Scripts::stopped(&self.lua.call("onPause", ())) {
             self.song.pause();
+            // (the pause menu takes the place of a custom substate, as Flixel opens one substate at a time)
+            self.lua.close_substate();
             (self.paused, self.paused_at, self.pause_scroll, self.skip_time) = (Some(0), get_time(), 0.0, self.position.max(0.0));
             self.pause_music();
             return Flow::Continue;
@@ -1466,12 +1484,17 @@ impl Playing {
                         "hitHealth" => self.play.tweaks.entry(index).or_default().hit_health = value.as_f64(),
                         "missHealth" => self.play.tweaks.entry(index).or_default().miss_health = value.as_f64(),
                         "lowPriority" => self.play.tweaks.entry(index).or_default().low_priority = flag,
-                        // shortcut: a note's own picture is a sheet like the usual notes'; on pixel stages (a grid of
-                        // small pictures) it is not looked for
+                        // a note's own picture: a sheet like the usual notes', or on pixel stages a grid of small
+                        // pictures and its hold pieces' (images/pixelUI/<name>.png and <name>ENDS.png)
                         "texture" => {
                             let name = value.as_str().unwrap_or("").to_owned();
                             if !name.is_empty() && !self.note_art.contains_key(&name) {
-                                let found = self.paths.find(&format!("images/{name}.png")).and_then(|file| Some((atlas::picture(&file)?, atlas::parse(&std::fs::read_to_string(file.with_extension("xml")).ok()?))));
+                                let image = |relative: String| Image::from_file_with_format(&std::fs::read(self.paths.find(&relative)?).ok()?, None).ok();
+                                let found = if self.pixel() {
+                                    image(format!("images/pixelUI/{name}.png")).zip(image(format!("images/pixelUI/{name}ENDS.png"))).map(|(notes, ends)| Skin::pixel_frames(&notes, &ends))
+                                } else {
+                                    self.paths.find(&format!("images/{name}.png")).and_then(|file| Some((atlas::picture(&file)?, atlas::parse(&std::fs::read_to_string(file.with_extension("xml")).ok()?))))
+                                };
                                 match found {
                                     Some(art) => drop(self.note_art.insert(name, art)),
                                     None => eprintln!("Lua: the note picture {name} was not found"),
@@ -1503,6 +1526,27 @@ impl Playing {
                 lua::Request::StartCountdown => (self.countdown_asked, self.countdown_held) = (false, false),
                 lua::Request::RestartSong => return Some(Flow::Restart),
                 lua::Request::ExitSong => return Some(Flow::Quit),
+                lua::Request::OpenSubstate { name, pause } => {
+                    // one holding the game pauses the song as the pause menu does; one opened over it still holds it, as
+                    // the Haxe engine's play screen stays paused
+                    let held = self.lua.substate().is_some_and(|(_, held)| held);
+                    if pause && !held {
+                        self.song.pause();
+                    }
+                    self.lua.open_substate(&name, pause || held);
+                }
+                lua::Request::CloseSubstate => {
+                    // the song goes on (onResume, as from the pause menu), then the substate is gone
+                    if self.lua.substate().is_some_and(|(_, held)| held) {
+                        self.lua.call("onResume", ());
+                        self.forget_released();
+                        if self.started && !self.music_held {
+                            self.song.start();
+                        }
+                    }
+                    self.lua.close_substate();
+                }
+                lua::Request::DiscordClient(id) => discord::set_client(&id),
             }
         }
         None
@@ -1858,6 +1902,7 @@ impl Playing {
         fade(1.0);
         on_camera[2].iter().for_each(|_| layer_begin());
         self.lua.draw(lua::Cam::Other, false, Vec2::ZERO);
+        self.lua.draw_substate();
         flash(lua::Cam::Other);
         on_camera[2].iter().for_each(layer_end);
         if let Some(video) = &self.video {
@@ -2026,6 +2071,7 @@ fn presence(screen: &Screen, weeks: &[funkin_core::content::Week]) -> discord::P
         small_image: playing.scene.as_ref().and_then(|scene| scene.opponent.as_ref()).map(|opponent| opponent.icon_name.clone()),
         start: running.then_some(now),
         end: running.then_some(now + left),
+        large_image: None,
     }
 }
 

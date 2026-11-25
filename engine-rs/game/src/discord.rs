@@ -15,12 +15,31 @@ pub struct Presence {
     pub state: Option<String>,
     /// The opponent's health icon, shown small.
     pub small_image: Option<String>,
+    /// The large picture (none: the game's "icon"; empty: no picture), as a script's changeDiscordPresence gives it.
+    pub large_image: Option<String>,
     /// When the song began and when it will end (seconds since 1970), for the time left.
     pub start: Option<u64>,
     pub end: Option<u64>,
 }
 
-static SENDER: Mutex<Option<Sender<Option<Presence>>>> = Mutex::new(None);
+/// What the Discord thread is told: a presence to show (or nothing), or none to show the last again (the application changed).
+static SENDER: Mutex<Option<Sender<Option<Option<Presence>>>>> = Mutex::new(None);
+/// The application asked for (changeDiscordClientID); empty for the game's own.
+static CLIENT: Mutex<String> = Mutex::new(String::new());
+
+fn client_id() -> String {
+    let client = CLIENT.lock().unwrap_or_else(|poisoned| poisoned.into_inner()).clone();
+    if client.is_empty() { CLIENT_ID.to_owned() } else { client }
+}
+
+/// Changes the application Discord shows the game as (empty: the game's own): Discord is said hello to again with it,
+/// and shown the last presence, as Discord.hx's clientID setter.
+pub fn set_client(id: &str) {
+    let changed = std::mem::replace(&mut *CLIENT.lock().unwrap_or_else(|poisoned| poisoned.into_inner()), id.to_owned()) != id;
+    if let (true, Some(sender)) = (changed, SENDER.lock().unwrap_or_else(|poisoned| poisoned.into_inner()).as_ref()) {
+        let _ = sender.send(None);
+    }
+}
 
 /// Shows `presence` in Discord, or nothing. Handed to a thread of its own: Discord being slow or away never holds the game up.
 pub fn show(presence: Option<Presence>) {
@@ -30,7 +49,7 @@ pub fn show(presence: Option<Presence>) {
         std::thread::spawn(move || keep(receiver, connect));
         sender
     });
-    let _ = sender.send(presence);
+    let _ = sender.send(Some(presence));
 }
 
 /// A frame of Discord's pipe: its kind (0 hello, 1 a command), its length, its JSON.
@@ -54,7 +73,11 @@ fn read_frame(pipe: &mut impl Read) -> Option<(u32, Value)> {
 /// The command that shows `presence` (or clears the box).
 fn command(presence: &Option<Presence>, nonce: u64) -> Value {
     let activity = presence.as_ref().map(|presence| {
-        let mut activity = json!({ "details": presence.details, "assets": { "large_image": "icon", "large_text": "Engine Version: Psych Engine (Rust)" } });
+        let mut activity = json!({ "details": presence.details, "assets": { "large_text": "Engine Version: Psych Engine (Rust)" } });
+        let large = presence.large_image.as_deref().unwrap_or("icon");
+        if !large.is_empty() {
+            activity["assets"]["large_image"] = json!(large);
+        }
         if let Some(state) = &presence.state {
             activity["state"] = json!(state);
         }
@@ -100,24 +123,28 @@ fn connect() -> Option<Box<dyn Pipe>> {
 }
 
 /// Says hello on a new pipe; the pipe, once Discord says it is ready.
-fn hello(mut pipe: Box<dyn Pipe>) -> Option<Box<dyn Pipe>> {
-    pipe.write_all(&frame(0, &json!({ "v": 1, "client_id": CLIENT_ID }))).ok()?;
+fn hello(mut pipe: Box<dyn Pipe>, client: &str) -> Option<Box<dyn Pipe>> {
+    pipe.write_all(&frame(0, &json!({ "v": 1, "client_id": client }))).ok()?;
     matches!(read_frame(&mut pipe), Some((1, _))).then_some(pipe)
 }
 
 /// Keeps Discord showing the last presence asked for, trying to reach it again every fifteen seconds while it is away.
-fn keep(news: Receiver<Option<Presence>>, connect: fn() -> Option<Box<dyn Pipe>>) {
+fn keep(news: Receiver<Option<Option<Presence>>>, connect: fn() -> Option<Box<dyn Pipe>>) {
     let (mut pipe, mut wanted, mut nonce): (Option<Box<dyn Pipe>>, Option<Presence>, u64) = (None, None, 0);
+    let mut opened_with = String::new();
     loop {
         match news.recv_timeout(Duration::from_secs(15)) {
-            // only the latest counts
-            Ok(presence) => wanted = news.try_iter().last().unwrap_or(presence),
+            // only the latest presence counts
+            Ok(first) => std::iter::once(first).chain(news.try_iter()).flatten().for_each(|presence| wanted = presence),
             Err(RecvTimeoutError::Timeout) if pipe.is_some() || wanted.is_none() => continue,
             Err(RecvTimeoutError::Timeout) => {}
             Err(RecvTimeoutError::Disconnected) => return,
         }
-        if pipe.is_none() {
-            pipe = connect().and_then(hello);
+        // (another application: hello again)
+        let client = client_id();
+        if pipe.is_none() || opened_with != client {
+            pipe = connect().and_then(|pipe| hello(pipe, &client));
+            opened_with = client;
         }
         let Some(open) = &mut pipe else { continue };
         nonce += 1;
@@ -141,8 +168,8 @@ mod tests {
         *PATH.lock().unwrap() = Some(path.clone());
         let (sender, receiver) = channel();
         std::thread::spawn(move || keep(receiver, || Some(Box::new(std::os::unix::net::UnixStream::connect(PATH.lock().unwrap().clone()?).ok()?))));
-        let playing = Presence { details: "Freeplay".to_owned(), state: Some("Bopeebo (Hard)".to_owned()), small_image: Some("dad".to_owned()), start: Some(10), end: Some(100) };
-        sender.send(Some(playing)).unwrap();
+        let playing = Presence { details: "Freeplay".to_owned(), state: Some("Bopeebo (Hard)".to_owned()), small_image: Some("dad".to_owned()), start: Some(10), end: Some(100), large_image: None };
+        sender.send(Some(Some(playing))).unwrap();
         // Discord, played by the test: it reads the hello, says it is ready, and answers the command
         let (mut discord, _) = listener.accept().unwrap();
         let (kind, hello) = read_frame(&mut discord).unwrap();
@@ -153,10 +180,17 @@ mod tests {
         let activity = &shown["args"]["activity"];
         assert_eq!((kind, shown["cmd"].as_str(), activity["state"].as_str(), activity["assets"]["small_image"].as_str()), (1, Some("SET_ACTIVITY"), Some("Bopeebo (Hard)"), Some("dad")));
         assert_eq!((activity["timestamps"]["start"].as_u64(), activity["timestamps"]["end"].as_u64()), (Some(10), Some(100)));
+        assert_eq!(activity["assets"]["large_image"].as_str(), Some("icon"));
         // nothing to show: the box is cleared
-        sender.send(None).unwrap();
+        sender.send(Some(None)).unwrap();
         let (_, cleared) = read_frame(&mut discord).unwrap();
         assert!(cleared["args"]["activity"].is_null());
         let _ = std::fs::remove_file(&path);
+    }
+
+    #[test]
+    fn a_script_names_the_large_picture_or_none() {
+        let shown = |large: Option<&str>| command(&Some(Presence { large_image: large.map(str::to_owned), ..Default::default() }), 1)["args"]["activity"]["assets"]["large_image"].clone();
+        assert_eq!([shown(None), shown(Some("bf")), shown(Some(""))], [json!("icon"), json!("bf"), Value::Null]);
     }
 }
