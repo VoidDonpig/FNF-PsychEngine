@@ -219,6 +219,19 @@ fn kept(name: &str) -> &'static str {
     })
 }
 
+/// A list of frame numbers from a stage file, kept once per distinct content (so loading a stage again leaks nothing new).
+fn kept_indices(indices: Vec<u32>) -> &'static [u32] {
+    thread_local!(static LISTS: std::cell::RefCell<std::collections::HashSet<&'static [u32]>> = Default::default());
+    LISTS.with(|lists| {
+        let mut lists = lists.borrow_mut();
+        lists.get(indices.as_slice()).copied().unwrap_or_else(|| {
+            let list: &'static [u32] = Vec::leak(indices);
+            lists.insert(list);
+            list
+        })
+    })
+}
+
 /// The backdrop a stage file describes itself (its "objects", as the Haxe engine's stage editor writes them): pictures, animated
 /// pictures and plain squares, in the order they are drawn. What comes after the three characters is drawn over them.
 /// A colour as a stage file writes it: "#RRGGBB", "0xAARRGGBB", "RRGGBB" or a name ("red"). Anything else is white.
@@ -276,8 +289,7 @@ fn objects(stage: &Value, low: bool, story: bool) -> (Vec<LayerDef>, Vec<usize>)
             def.fps = number(&first["fps"], 24.0);
             def.at -= pair(&first["offsets"], 0.0);
             let indices: Vec<u32> = first["indices"].as_array().into_iter().flatten().filter_map(|index| Some(index.as_u64()? as u32)).collect();
-            // shortcut: kept for good each time the stage is loaded (a handful of numbers); keep them by content if stages come with many
-            def.indices = Vec::leak(indices);
+            def.indices = kept_indices(indices);
         }
         Some(def)
     }).collect::<Vec<_>>();
@@ -2940,6 +2952,7 @@ mod tests {
         assert_eq!((square.stretch, square.scroll, square.tint), (super::vec2(3000.0, 1800.0), super::vec2(0.1, 0.2), super::Color::from_hex(0x203060)));
         assert!((detail.angle - std::f32::consts::FRAC_PI_2).abs() < 1e-6 && !detail.front);
         // the animation it starts on, with its offset taken off and only the frames it names
+        assert!(std::ptr::eq(super::kept_indices(vec![5, 6]), super::kept_indices(vec![5, 6])));
         assert!(crowd.anim == Some(("crowd cheer", super::Motion::Once)) && crowd.at == super::vec2(290.0, 280.0) && crowd.indices == [0, 2] && crowd.flip && crowd.pixel);
         // low quality: what is marked for it, here the one in front of the characters
         let low = super::objects(&stage, true, false).0;
