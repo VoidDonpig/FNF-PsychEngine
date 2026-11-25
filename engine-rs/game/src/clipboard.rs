@@ -112,21 +112,58 @@ mod tools {
         false
     }
 
+    /// How long a tool has to fail before it counts as serving the selection (wl-copy, xclip and xsel stay running to do so).
+    const GRACE: Duration = Duration::from_millis(250);
+
+    /// Starts the tool and gives it the text; whether it took it (it ended well, or is still running after the grace time).
+    /// A tool still running is reaped by a helper thread, so it does not stay a zombie once it ends.
+    fn serve(mut command: Command, text: &str) -> bool {
+        let Ok(mut child) = command.stdin(Stdio::piped()).stdout(Stdio::null()).spawn() else { return false };
+        let Some(mut stdin) = child.stdin.take() else { return false };
+        // a tool that is gone already makes this fail; its exit status says the rest
+        let _ = stdin.write_all(text.as_bytes());
+        drop(stdin);
+        let start = Instant::now();
+        while start.elapsed() < GRACE {
+            match child.try_wait() {
+                Ok(Some(status)) => return status.success(),
+                Ok(None) => std::thread::sleep(Duration::from_millis(2)),
+                Err(_) => return false,
+            }
+        }
+        std::thread::spawn(move || {
+            let _ = child.wait();
+        });
+        true
+    }
+
     pub fn set(text: &str) {
-        // shortcut: the first tool that starts gets the text; one that starts and then fails is not followed by the next
-        for (line, _) in tools() {
-            let Ok(mut child) = command(&line, false).stdin(Stdio::piped()).stdout(Stdio::null()).spawn() else { continue };
-            // the text goes in from a helper thread (a full pipe must not block the frame); the tool is left running when it
-            // keeps serving the selection (wl-copy, xclip, xsel)
-            let Some(mut stdin) = child.stdin.take() else { continue };
-            let text = text.to_owned();
-            std::thread::spawn(move || {
-                let _ = stdin.write_all(text.as_bytes());
-                drop(stdin);
-                // reaped here, so it does not stay a zombie once it ends
-                let _ = child.wait();
-            });
-            return;
+        // on a helper thread: a failing tool is waited for a moment before the next is tried, and the frame must not wait
+        let text = text.to_owned();
+        std::thread::spawn(move || {
+            for (line, _) in tools() {
+                if serve(command(&line, false), &text) {
+                    return;
+                }
+            }
+        });
+    }
+
+    #[cfg(test)]
+    mod tests {
+        fn sh(script: &str) -> std::process::Command {
+            let mut command = std::process::Command::new("sh");
+            command.args(["-c", script]);
+            command
+        }
+
+        #[test]
+        fn a_tool_that_starts_and_fails_is_not_the_one() {
+            assert!(!super::serve(sh("cat >/dev/null; exit 1"), "x"));
+            assert!(!super::serve(std::process::Command::new("no-such-clipboard-tool"), "x"));
+            assert!(super::serve(sh("cat >/dev/null"), "x"));
+            // one that keeps running (as it does to serve the selection) took it
+            assert!(super::serve(sh("cat >/dev/null; sleep 1"), "x"));
         }
     }
 }
