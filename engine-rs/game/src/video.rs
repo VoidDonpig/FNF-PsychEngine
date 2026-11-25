@@ -38,6 +38,8 @@ pub struct Video {
     pub cover: bool,
     /// Started when the song was over: the song ends with it.
     pub ending: bool,
+    /// Not begun until a script says so (startVideo's playOnLoad false, then videoCutscene.play).
+    pub waiting: bool,
 }
 
 impl Video {
@@ -59,7 +61,7 @@ impl Video {
                 eprintln!("{}: {error}", path.display());
             }
         });
-        Ok(Video { frames, spare, sound, frame_seconds, playing: None, picture: None, shown: 0, started: None, stopped: None, held: 0.0, over: false, looped, skippable, cover, ending })
+        Ok(Video { frames, spare, sound, frame_seconds, playing: None, picture: None, shown: 0, started: None, stopped: None, held: 0.0, over: false, looped, skippable, cover, ending, waiting: false })
     }
 
     /// Goes on; `accept` is whether Accept is down. True once it is over or skipped (its sound stopped).
@@ -92,7 +94,7 @@ impl Video {
         if self.stopped.is_some() {
             return false;
         }
-        if self.started.is_none() {
+        if self.started.is_none() && !self.waiting {
             let Ok((samples, rate)) = self.sound.try_recv() else { return false };
             self.playing = song.play_samples(samples, rate, self.looped);
             self.started = Some(Instant::now());

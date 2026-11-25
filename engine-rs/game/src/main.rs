@@ -622,7 +622,8 @@ impl Playing {
                 // the end of a cutscene starts the countdown, asking the scripts again (startAndEnd)
                 self.countdown_asked &= !cover;
             } else if video.cover {
-                return Flow::Continue;
+                // (the scripts go on under a cutscene: what they ask for is done, as playing one kept waiting)
+                return self.apply_lua().unwrap_or(Flow::Continue);
             }
         }
         if let Some((speech, ending)) = &mut self.speech {
@@ -1272,10 +1273,14 @@ impl Playing {
                         _ => eprintln!("Lua: {field} of a note is not used here"),
                     }
                 }
-                lua::Request::Video { path, skippable, cover, looped } => match video::Video::open(&path, skippable, cover, looped, cover && self.end_asked) {
-                    Ok(video) => self.video = Some(video),
+                lua::Request::Video { path, skippable, cover, looped, waiting } => match video::Video::open(&path, skippable, cover, looped, cover && self.end_asked) {
+                    Ok(mut video) => {
+                        video.waiting = waiting;
+                        self.video = Some(video);
+                    }
                     Err(error) => eprintln!("{error}"),
                 },
+                lua::Request::PlayVideo => self.video.iter_mut().for_each(|video| video.waiting = false),
                 lua::Request::Dialogue { path, music } if self.speech.is_none() => match speech::Speech::load(&self.paths, &path, music.as_deref()) {
                     Ok(speech) => self.speech = Some((speech, self.end_asked)),
                     Err(error) => eprintln!("startDialogue: {error}"),
