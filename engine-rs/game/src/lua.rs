@@ -153,14 +153,14 @@ function __instanceMethod(path, a)
         return false
     end
     if not character and not luaSpriteExists(object) and not luaTextExists(object) then return false end
-    if method == 'playAnim' then playAnim(object, a[1], a[2]) return true end
+    if method == 'playAnim' then playAnim(object, a[1], a[2], a[3], a[4]) return true end
     if method == 'dance' then characterDance(object) return true end
     if method == 'setPosition' then setProperty(object .. '.x', a[1] or 0); setProperty(object .. '.y', a[2] or 0) return true end
     if method == 'screenCenter' then screenCenter(object, a[1]) return true end
     if method == 'updateHitbox' then updateHitbox(object) return true end
     if method == 'setGraphicSize' then setGraphicSize(object, a[1] or 0, a[2]) return true end
-    if method == 'kill' then setProperty(object .. '.visible', false) return true end
-    if method == 'revive' then setProperty(object .. '.visible', true) return true end
+    if method == 'kill' then setProperty(object .. '.alive', false) return true end
+    if method == 'revive' then setProperty(object .. '.alive', true) return true end
     if method == 'destroy' then removeLuaSprite(object, true) return true end
     return false
 end
@@ -581,9 +581,11 @@ fn frames_named<T: Clone>(frames: &[(String, Frame, T)], prefix: &str, indices: 
 
 impl Animation {
     /// The frame it shows after `time` seconds.
-    fn step(&self, time: f64) -> usize {
+    /// The frame shown `time` seconds in (counted from the last frame back when played reversed).
+    fn step(&self, time: f64, reversed: bool) -> usize {
         let step = (time * self.fps) as usize;
-        if self.looped { step % self.frames.len() } else { step.min(self.frames.len() - 1) }
+        let step = if self.looped { step % self.frames.len() } else { step.min(self.frames.len() - 1) };
+        if reversed { self.frames.len() - 1 - step } else { step }
     }
 }
 
@@ -715,6 +717,9 @@ struct Sprite {
     /// An Adobe Animate atlas it is drawn from instead (makeFlxAnimateSprite), and its animations by name.
     atlas: Option<Rc<crate::animate::Atlas>>,
     symbols: HashMap<String, Symbol>,
+    /// The animation plays from its last frame to its first (playAnim's reversed), and kill() was called (not drawn, not updated).
+    reversed: bool,
+    killed: bool,
 }
 
 /// An animation of an atlas sprite (addAnimationBySymbol): a symbol played on its own, all its frames or those numbered,
@@ -739,14 +744,14 @@ fn symbol_frame(numbers: &[usize], length: usize, fps: f64, looped: bool, time: 
 
 impl Sprite {
     fn new(art: Option<Art>, x: f64, y: f64) -> Sprite {
-        Sprite { text: None, art, solid: None, x, y, scale: [1.0; 2], scroll: [1.0; 2], offset: [0.0; 2], alpha: 1.0, visible: true, angle: 0.0, flip_x: false, color: 0xFFFFFF, camera: Cam::Game, added: false, front: false, camera_set: false, between: 0, among: None, animations: HashMap::new(), playing: None, add: false, shader: None, file: None, more: Vec::new(), atlas: None, symbols: HashMap::new() }
+        Sprite { text: None, art, solid: None, x, y, scale: [1.0; 2], scroll: [1.0; 2], offset: [0.0; 2], alpha: 1.0, visible: true, angle: 0.0, flip_x: false, color: 0xFFFFFF, camera: Cam::Game, added: false, front: false, camera_set: false, between: 0, among: None, animations: HashMap::new(), playing: None, add: false, shader: None, file: None, more: Vec::new(), atlas: None, symbols: HashMap::new(), reversed: false, killed: false }
     }
 
     /// The frame shown now: of the animation playing, else the first of the sheet, else the whole picture.
     fn frame(&self) -> Option<(Frame, [f64; 2])> {
         if let Some((name, time)) = &self.playing {
             if let Some(animation) = self.animations.get(name).filter(|animation| !animation.frames.is_empty()) {
-                return Some((animation.frames[animation.step(*time)], animation.offset));
+                return Some((animation.frames[animation.step(*time, self.reversed)], animation.offset));
             }
         }
         match self.art.as_ref()? {
@@ -801,6 +806,7 @@ impl Sprite {
             "y" => json!(self.y),
             "alpha" => json!(self.alpha),
             "visible" => json!(self.visible),
+            "alive" | "exists" => json!(!self.killed),
             "angle" => json!(self.angle),
             "flipX" => json!(self.flip_x),
             "color" => json!(self.color),
@@ -840,6 +846,7 @@ impl Sprite {
             "y" => self.y = number,
             "alpha" => self.alpha = number,
             "visible" => self.visible = number != 0.0,
+            "alive" | "exists" => self.killed = number == 0.0,
             "angle" => self.angle = number,
             "flipX" => self.flip_x = number != 0.0,
             "color" => self.color = number as u32 & 0xFFFFFF,
@@ -857,7 +864,7 @@ impl Sprite {
 
     /// Draws it, `scroll` being where the camera it is seen through looks (zero for the HUD's).
     fn draw(&self, scroll: Vec2) {
-        if !self.visible || self.alpha <= 0.0 {
+        if !self.visible || self.killed || self.alpha <= 0.0 {
             return;
         }
         // (an atlas turns and scales about its origin, not its middle)
@@ -893,7 +900,7 @@ impl Sprite {
             (_, Some((frame, moved)), Some(art)) => {
                 let other = self.playing.as_ref().and_then(|(name, time)| {
                     let animation = self.animations.get(name).filter(|animation| !animation.frames.is_empty())?;
-                    animation.textures.get(animation.step(*time))?.as_ref()
+                    animation.textures.get(animation.step(*time, self.reversed))?.as_ref()
                 });
                 let texture = match art {
                     _ if other.is_some() => other.unwrap(),
@@ -1299,13 +1306,16 @@ impl Scripts {
         // a sprite of the scripts by its tag, else a character
         for name in ["playAnim", "objectPlayAnimation", "luaSpritePlayAnimation"] {
             let shared = shared.clone();
-            g.set(name, lua.create_function(move |_, args: (String, String, Option<bool>)| {
+            g.set(name, lua.create_function(move |_, args: (String, String, Option<bool>, Option<bool>, Option<f64>)| {
                 let mut shared = shared.borrow_mut();
                 match shared.sprite(&args.0) {
                     Some(sprite) => {
                         let same = sprite.playing.as_ref().is_some_and(|(playing, _)| *playing == args.1);
                         if args.2.unwrap_or(false) || !same || sprite.finished() {
-                            sprite.playing = Some((args.1, 0.0));
+                            // (a frame to start from, counted in the order it plays)
+                            let start = args.4.unwrap_or(0.0).max(0.0) / sprite.animations.get(&args.1).map_or(24.0, |animation| animation.fps.max(1.0));
+                            sprite.reversed = args.3.unwrap_or(false);
+                            sprite.playing = Some((args.1, start));
                         }
                     }
                     None => shared.requests.push(Request::Animation { who: args.0, animation: args.1 }),
@@ -2716,10 +2726,10 @@ impl Scripts {
         let mut finished = Vec::new();
         {
             let mut shared = self.shared.borrow_mut();
-            // (with the state held, only the sprites of the substate itself, which updates them, go on playing)
+            // (with the state held, only the sprites of the substate itself, which updates them, go on playing; a killed one stands still)
             let held_state = shared.substate.as_ref().filter(|substate| substate.pause).map(|substate| substate.members.clone());
             for (tag, sprite) in &mut shared.sprites {
-                if let (Some((_, time)), true) = (&mut sprite.playing, held_state.as_ref().is_none_or(|members| members.contains(tag))) {
+                if let (Some((_, time)), true) = (&mut sprite.playing, !sprite.killed && held_state.as_ref().is_none_or(|members| members.contains(tag))) {
                     *time += dt;
                 }
             }
@@ -3150,11 +3160,11 @@ mod tests {
         let mut scripts = run(r#"
             function onCreate()
                 makeLuaSprite('a', nil, 0, 0); makeGraphic('a', 100, 50, 'FFFFFF'); addLuaSprite('a')
-                callMethod('boyfriend.playAnim', {'singLEFT', true})
+                callMethod('boyfriend.playAnim', {'singLEFT', true}); callMethod('a.playAnim', {'none', true, true, 2})
                 callMethod('a.setPosition', {5, 6}); callMethod('a.kill')
                 callMethod('camGame.shake', {0.05, 0.5}); callMethod('triggerEvent', {'Hey!', '1', '2'}); callMethod('endSong')
                 local unknown = callMethod('a.nothing')
-                setVar('seen', {getProperty('a.x'), getProperty('a.y'), getProperty('a.visible'), unknown == nil})
+                setVar('seen', {getProperty('a.x'), getProperty('a.y'), getProperty('a.alive'), unknown == nil})
             end
         "#);
         scripts.call("onCreate", ());
@@ -3198,5 +3208,19 @@ mod tests {
         assert_eq!(scripts.shared.borrow().vars["seen"], json!([true, 0.0]));
         let mut shared = scripts.shared.borrow_mut();
         assert_eq!((shared.sprite("box").map(|sprite| sprite.camera), shared.sprite("icon").map(|sprite| sprite.camera)), (Some(Cam::Other), Some(Cam::Hud)));
+    }
+
+    #[test]
+    fn an_animation_plays_reversed_and_from_a_frame_and_a_killed_sprite_stands_still() {
+        let frame = |x: f32| Frame { source: Rect::new(x, 0.0, 1.0, 1.0), offset: Vec2::ZERO, size: vec2(1.0, 1.0), rotated: false };
+        let mut sprite = Sprite::new(None, 0.0, 0.0);
+        sprite.animations.insert("go".to_owned(), Animation { frames: (0..4).map(|at| frame(at as f32)).collect(), fps: 10.0, looped: false, offset: [0.0; 2], texture: None });
+        let shown = |sprite: &Sprite| sprite.frame().unwrap().0.source.x;
+        (sprite.playing, sprite.reversed) = (Some(("go".to_owned(), 0.0)), true);
+        assert_eq!(shown(&sprite), 3.0);
+        sprite.playing = Some(("go".to_owned(), 0.2));
+        assert_eq!(shown(&sprite), 1.0);
+        assert_eq!(sprite.get("alive"), Some(serde_json::json!(true)));
+        assert!(sprite.set("alive", &serde_json::json!(false)) && sprite.killed);
     }
 }
