@@ -1354,6 +1354,7 @@ impl Playing {
             self.lua.call("onStepHit", ());
             if self.lua_step % 4 == 0 {
                 self.lua.set("curBeat", self.lua_step / 4);
+                self.lua.beat(self.lua_step / 4);
                 self.lua.call("onBeatHit", ());
             }
         }

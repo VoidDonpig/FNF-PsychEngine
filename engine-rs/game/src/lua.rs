@@ -161,6 +161,8 @@ function __instanceMethod(path, a)
     if method == 'setGraphicSize' then setGraphicSize(object, a[1] or 0, a[2]) return true end
     if method == 'kill' then setProperty(object .. '.alive', false) return true end
     if method == 'revive' then setProperty(object .. '.alive', true) return true end
+    if method == 'createFilledBar' then __barColors(object, a[1], a[2]) return true end
+    if method == 'setRange' then __barRange(object, a[1], a[2]) return true end
     if method == 'destroy' then removeLuaSprite(object, true) return true end
     return false
 end
@@ -308,8 +310,8 @@ pub struct Shared {
     substate_name: Option<String>,
     /// The groups scripts made (createInstance), by name.
     groups: HashMap<String, Group>,
-    /// The cameras scripts made (createInstance FlxCamera), by tag: all drawn as the camera over everything.
-    cameras: Vec<String>,
+    /// The cameras scripts made (createInstance FlxCamera), by tag, in the order they are drawn over camOther.
+    cameras: Vec<(String, Layer)>,
     /// The lines of what is not known here already printed (each is printed once).
     unknown: std::collections::HashSet<String>,
 }
@@ -720,6 +722,55 @@ struct Sprite {
     /// The animation plays from its last frame to its first (playAnim's reversed), and kill() was called (not drawn, not updated).
     reversed: bool,
     killed: bool,
+    /// Drawn again along these axes with that much between (FlxBackdrop), and moved by `velocity` pixels a second.
+    tile: [bool; 2],
+    gap: [f64; 2],
+    velocity: [f64; 2],
+    /// A bar filled by a value (FlxBar).
+    bar: Option<Bar>,
+    /// One of the engine's characters a script made (objects.Character), drawn at x and y.
+    character: Option<Rc<RefCell<crate::scene::Character>>>,
+    /// The made camera (createInstance FlxCamera) it is seen through, by tag.
+    layer: Option<String>,
+}
+
+/// A bar of a script (FlxBar): where its value comes from (a field of a sprite of the scripts, else of the game), its range,
+/// how it fills and its colours; `value` is what it was last told.
+#[derive(Clone)]
+struct Bar {
+    parent: String,
+    field: String,
+    min: f64,
+    max: f64,
+    value: f64,
+    direction: u8,
+    fill: u32,
+    empty: Option<u32>,
+    size: [f64; 2],
+}
+
+/// A camera a script made: how it is seen over the screen.
+#[derive(Clone)]
+struct Layer {
+    zoom: f64,
+    alpha: f64,
+    angle: f64,
+    x: f64,
+    y: f64,
+    visible: bool,
+}
+
+impl Layer {
+    fn field(&mut self, field: &str) -> Option<&mut f64> {
+        match field {
+            "zoom" => Some(&mut self.zoom),
+            "alpha" => Some(&mut self.alpha),
+            "angle" => Some(&mut self.angle),
+            "x" => Some(&mut self.x),
+            "y" => Some(&mut self.y),
+            _ => None,
+        }
+    }
 }
 
 /// An animation of an atlas sprite (addAnimationBySymbol): a symbol played on its own, all its frames or those numbered,
@@ -744,7 +795,7 @@ fn symbol_frame(numbers: &[usize], length: usize, fps: f64, looped: bool, time: 
 
 impl Sprite {
     fn new(art: Option<Art>, x: f64, y: f64) -> Sprite {
-        Sprite { text: None, art, solid: None, x, y, scale: [1.0; 2], scroll: [1.0; 2], offset: [0.0; 2], alpha: 1.0, visible: true, angle: 0.0, flip_x: false, color: 0xFFFFFF, camera: Cam::Game, added: false, front: false, camera_set: false, between: 0, among: None, animations: HashMap::new(), playing: None, add: false, shader: None, file: None, more: Vec::new(), atlas: None, symbols: HashMap::new(), reversed: false, killed: false }
+        Sprite { text: None, art, solid: None, x, y, scale: [1.0; 2], scroll: [1.0; 2], offset: [0.0; 2], alpha: 1.0, visible: true, angle: 0.0, flip_x: false, color: 0xFFFFFF, camera: Cam::Game, added: false, front: false, camera_set: false, between: 0, among: None, animations: HashMap::new(), playing: None, add: false, shader: None, file: None, more: Vec::new(), atlas: None, symbols: HashMap::new(), reversed: false, killed: false, tile: [false; 2], gap: [0.0; 2], velocity: [0.0; 2], bar: None, character: None, layer: None }
     }
 
     /// The frame shown now: of the animation playing, else the first of the sheet, else the whole picture.
@@ -764,6 +815,13 @@ impl Sprite {
     fn size(&self) -> [f64; 2] {
         if let Some(text) = &self.text {
             return text.size();
+        }
+        if let Some(bar) = &self.bar {
+            return bar.size;
+        }
+        if let Some(character) = &self.character {
+            let size = character.borrow().script_size();
+            return [size.x as f64, size.y as f64];
         }
         if let Some(atlas) = &self.atlas {
             // its bounds: of the symbol playing, else of the main timeline's first frame
@@ -807,6 +865,10 @@ impl Sprite {
             "alpha" => json!(self.alpha),
             "visible" => json!(self.visible),
             "alive" | "exists" => json!(!self.killed),
+            "velocity.x" => json!(self.velocity[0]),
+            "velocity.y" => json!(self.velocity[1]),
+            "value" if self.bar.is_some() => json!(self.bar.as_ref()?.value),
+            "percent" if self.bar.is_some() => json!(self.bar.as_ref().map(|bar| 100.0 * (bar.value - bar.min) / (bar.max - bar.min).max(f64::EPSILON))?),
             "angle" => json!(self.angle),
             "flipX" => json!(self.flip_x),
             "color" => json!(self.color),
@@ -847,6 +909,13 @@ impl Sprite {
             "alpha" => self.alpha = number,
             "visible" => self.visible = number != 0.0,
             "alive" | "exists" => self.killed = number == 0.0,
+            "velocity.x" => self.velocity[0] = number,
+            "velocity.y" => self.velocity[1] = number,
+            // (a value a script sets is the bar's from then on, not the parent's)
+            "value" | "percent" if self.bar.is_some() => self.bar.iter_mut().for_each(|bar| {
+                bar.value = if field == "value" { number } else { bar.min + (bar.max - bar.min) * number / 100.0 };
+                bar.parent.clear();
+            }),
             "angle" => self.angle = number,
             "flipX" => self.flip_x = number != 0.0,
             "color" => self.color = number as u32 & 0xFFFFFF,
@@ -864,6 +933,23 @@ impl Sprite {
 
     /// Draws it, `scroll` being where the camera it is seen through looks (zero for the HUD's).
     fn draw(&self, scroll: Vec2) {
+        let axes = (self.tile[0] && self.scale[0] != 0.0, self.tile[1] && self.scale[1] != 0.0);
+        if !axes.0 && !axes.1 {
+            return self.draw_at(scroll, Vec2::ZERO);
+        }
+        // a backdrop: the picture over again, as far as the screen goes
+        let size = self.size();
+        let cell = [size[0] * self.scale[0].abs() + self.gap[0], size[1] * self.scale[1].abs() + self.gap[1]];
+        let range = |on: bool, at: f64, look: f32, span: f64, cell: f64| if on && cell > 0.0 { (((look as f64 - at) / cell).floor() as i64..=((look as f64 + span - at) / cell).ceil() as i64).take(200).collect() } else { vec![0] };
+        let (columns, rows) = (range(axes.0, self.x - self.offset[0], scroll.x, 1280.0, cell[0]), range(axes.1, self.y - self.offset[1], scroll.y, 720.0, cell[1]));
+        for row in &rows {
+            for column in &columns {
+                self.draw_at(scroll, vec2((*column as f64 * cell[0]) as f32, (*row as f64 * cell[1]) as f32));
+            }
+        }
+    }
+
+    fn draw_at(&self, scroll: Vec2, shift: Vec2) {
         if !self.visible || self.killed || self.alpha <= 0.0 {
             return;
         }
@@ -871,13 +957,36 @@ impl Sprite {
         let size = if self.atlas.is_some() { [0.0; 2] } else { self.size() };
         let (size, scale) = (vec2(size[0] as f32, size[1] as f32), vec2(self.scale[0] as f32, self.scale[1] as f32));
         // a scroll factor under 1 keeps it further back: the camera moves it less
-        let corner = vec2((self.x - self.offset[0]) as f32, (self.y - self.offset[1]) as f32) + scroll * (Vec2::ONE - vec2(self.scroll[0] as f32, self.scroll[1] as f32));
+        let corner = shift + vec2((self.x - self.offset[0]) as f32, (self.y - self.offset[1]) as f32) + scroll * (Vec2::ONE - vec2(self.scroll[0] as f32, self.scroll[1] as f32));
         let middle = (corner + size / 2.0).extend(0.0);
         // scaled and turned about its middle, as Flixel does
         push_model_matrix(Mat4::from_translation(middle) * Mat4::from_rotation_z((self.angle as f32).to_radians()) * Mat4::from_scale(scale.extend(1.0)) * Mat4::from_translation(-middle));
         let tint = Color::from_hex(self.color);
         let color = Color { a: self.alpha as f32, ..tint };
         blend_add(self.add);
+        if let Some(character) = &self.character {
+            character.borrow().script_draw(corner, color);
+            pop_model_matrix();
+            blend_add(false);
+            return;
+        }
+        if let Some(bar) = &self.bar {
+            let fraction = ((bar.value - bar.min) / (bar.max - bar.min).max(f64::EPSILON)).clamp(0.0, 1.0) as f32;
+            let (w, h) = (size.x, size.y);
+            if let Some(empty) = bar.empty {
+                draw_rectangle(corner.x, corner.y, w, h, Color { a: self.alpha as f32, ..Color::from_hex(empty) });
+            }
+            let fill = Color { a: self.alpha as f32, ..Color::from_hex(bar.fill) };
+            match bar.direction {
+                1 => draw_rectangle(corner.x + w * (1.0 - fraction), corner.y, w * fraction, h, fill),
+                2 => draw_rectangle(corner.x, corner.y, w, h * fraction, fill),
+                3 => draw_rectangle(corner.x, corner.y + h * (1.0 - fraction), w, h * fraction, fill),
+                _ => draw_rectangle(corner.x, corner.y, w * fraction, h, fill),
+            }
+            pop_model_matrix();
+            blend_add(false);
+            return;
+        }
         if let Some(text) = &self.text {
             text.draw(corner, color);
             pop_model_matrix();
@@ -1309,6 +1418,9 @@ impl Scripts {
             g.set(name, lua.create_function(move |_, args: (String, String, Option<bool>, Option<bool>, Option<f64>)| {
                 let mut shared = shared.borrow_mut();
                 match shared.sprite(&args.0) {
+                    Some(sprite) if sprite.character.is_some() => {
+                        sprite.character.iter().for_each(|character| { character.borrow_mut().script_play(&args.1, args.2.unwrap_or(false)); });
+                    }
                     Some(sprite) => {
                         let same = sprite.playing.as_ref().is_some_and(|(playing, _)| *playing == args.1);
                         if args.2.unwrap_or(false) || !same || sprite.finished() {
@@ -1323,7 +1435,14 @@ impl Scripts {
                 Ok(())
             })?)?;
         }
-        request!("characterDance", |args: String| Request::Dance { who: args });
+        function!("characterDance", |_lua, shared, args: String| {
+            let mut shared = shared.borrow_mut();
+            match shared.sprite(&args).and_then(|sprite| sprite.character.clone()) {
+                Some(character) => character.borrow_mut().script_dance(),
+                None => shared.requests.push(Request::Dance { who: args }),
+            }
+            Ok(())
+        });
         request!("endSong", |_args: ()| Request::EndSong);
         request!("startCountdown", |_args: ()| Request::StartCountdown);
         function!("startDialogue", |_lua, shared, args: (String, Option<String>)| {
@@ -1440,6 +1559,15 @@ impl Scripts {
         request!("exitSong", |_args: Option<bool>| Request::ExitSong);
         function!("setProperty", |_lua, shared, args: (String, Value)| {
             let (value, mut shared) = (to_json(&args.1), shared.borrow_mut());
+            let camera = args.0.split_once('.').and_then(|(tag, field)| Some((&mut shared.cameras.iter_mut().find(|(name, _)| name == tag)?.1, field)));
+            if let Some((layer, field)) = camera {
+                match (field, layer.field(field)) {
+                    (_, Some(slot)) => *slot = value.as_f64().unwrap_or(*slot),
+                    ("visible", _) => layer.visible = value.as_bool().unwrap_or(layer.visible),
+                    _ => {}
+                }
+                return Ok(());
+            }
             let set = args.0.split_once('.').and_then(|(tag, field)| Some(shared.sprite(tag)?.set(field, &value))).unwrap_or(false);
             if !set {
                 shared.requests.push(Request::SetProperty { name: args.0, value });
@@ -1448,7 +1576,8 @@ impl Scripts {
         });
         function!("getProperty", |lua, shared, args: String| {
             let mut shared = shared.borrow_mut();
-            let of_sprite = args.split_once('.').and_then(|(tag, field)| shared.sprite(tag)?.get(field));
+            let of_camera = args.split_once('.').and_then(|(tag, field)| Some(*shared.cameras.iter_mut().find(|(name, _)| name == tag)?.1.field(field)?)).map(|number| serde_json::json!(number));
+            let of_sprite = of_camera.or_else(|| args.split_once('.').and_then(|(tag, field)| shared.sprite(tag)?.get(field)));
             from_json(lua, &of_sprite.or_else(|| shared.props.get(&args).cloned()).unwrap_or_default())
         });
         // the classes of the Haxe engine scripts read and write (class_read lists them); any other says it is not known here
@@ -1680,6 +1809,18 @@ impl Scripts {
             g.set(name, lua.create_function(move |_, args: (Value, String)| Ok(crate::pad::named(&args.1).is_some_and(state)))?)?;
         }
         // (only web addresses are opened, by the credits menu's link opener)
+        function!("__barColors", |_lua, shared, args: (String, Value, Value)| {
+            if let Some(bar) = shared.borrow_mut().sprite(&args.0).and_then(|sprite| sprite.bar.as_mut()) {
+                (bar.empty, bar.fill) = (Some(color_of(&args.1)), color_of(&args.2));
+            }
+            Ok(())
+        });
+        function!("__barRange", |_lua, shared, args: (String, f64, f64)| {
+            if let Some(bar) = shared.borrow_mut().sprite(&args.0).and_then(|sprite| sprite.bar.as_mut()) {
+                (bar.min, bar.max) = (args.1, args.2);
+            }
+            Ok(())
+        });
         g.set("__openLink", lua.create_function(|_, link: String| { crate::menu::open_link(&link); Ok(()) })?)?;
         g.set("mouseClicked", lua.create_function(|_, _args: Option<String>| Ok(is_mouse_pressed()))?)?;
         g.set("mousePressed", lua.create_function(|_, _args: Option<String>| Ok(is_mouse_down()))?)?;
@@ -2132,13 +2273,14 @@ impl Scripts {
         });
         function!("setObjectCamera", |_lua, shared, args: (String, Option<String>)| {
             let mut shared = shared.borrow_mut();
-            let made = shared.cameras.iter().any(|tag| Some(tag.as_str()) == args.1.as_deref());
+            let made = shared.cameras.iter().find(|(tag, _)| Some(tag.as_str()) == args.1.as_deref()).map(|(tag, _)| tag.clone());
             if let Some(sprite) = shared.sprite(&args.0) {
                 sprite.camera_set = true;
+                sprite.layer = made.clone();
                 sprite.camera = match args.1.unwrap_or_default().to_lowercase().as_str() {
                     "hud" | "camhud" => Cam::Hud,
                     "other" | "camother" => Cam::Other,
-                    _ if made => Cam::Other,
+                    _ if made.is_some() => Cam::Other,
                     _ => Cam::Game,
                 };
             }
@@ -2461,8 +2603,8 @@ impl Scripts {
 
         // instances: of the classes scripts build, one of the scripts' sprites, texts or groups
         // shortcut: the classes built here are Flixel's sprite, text, group and camera ones and the engine's sprites and health
-        // icons; a made camera is drawn as camOther is (one over the HUD), all of them together. Character, FlxBackdrop and
-        // FlxBar are not built (not known here)
+        // icons, characters, backdrops and bars; a made camera is a layer over camOther (zoom, alpha, angle, x and y). A bar
+        // follows a field of a sprite of the scripts or of the game's values; its border is not drawn
         function!("createInstance", |lua, shared, args: (String, String, Option<Vec<Value>>)| {
             let tag = args.0.trim().replace('.', "");
             let given = args.2.unwrap_or_default();
@@ -2495,8 +2637,48 @@ impl Scripts {
                     (None, sprite)
                 }
                 "FlxCamera" => {
-                    shared.cameras.push(tag);
+                    shared.cameras.push((tag, Layer { zoom: 1.0, alpha: 1.0, angle: 0.0, x: 0.0, y: 0.0, visible: true }));
                     return Ok(Some(true));
+                }
+                // (x, y, the character's file, whether it stands on the player's side; its file's offset is in its x and y)
+                "Character" => {
+                    let Some(paths) = shared.paths.clone() else { return Ok(None) };
+                    let name = word(2).unwrap_or_else(|| "bf".to_owned());
+                    let spot = vec2(number(0, 0.0) as f32, number(1, 0.0) as f32);
+                    let made = crate::scene::Character::load(&paths, &name, spot, matches!(given.get(3), Some(Value::Boolean(true))));
+                    let character = match made {
+                        Ok(character) => character,
+                        Err(error) => {
+                            trace(lua, &mut shared, format!("createInstance: Character {name}: {error}"), false);
+                            return Ok(None);
+                        }
+                    };
+                    let at = character.script_position();
+                    let mut sprite = Sprite::new(None, at.x as f64, at.y as f64);
+                    sprite.character = Some(Rc::new(RefCell::new(character)));
+                    shared.sprites.push((tag, sprite));
+                    return Ok(Some(true));
+                }
+                // (the picture, which axes it repeats along ("x", "y" or both), and the space between the copies)
+                "FlxBackdrop" => {
+                    let mut sprite = Sprite::new(None, 0.0, 0.0);
+                    let axes = word(1).unwrap_or_else(|| "xy".to_owned()).to_lowercase();
+                    sprite.tile = [axes.contains('x'), axes.contains('y')];
+                    sprite.gap = [number(2, 0.0), number(3, 0.0)];
+                    (word(0), sprite)
+                }
+                // (x, y, how it fills, its size, the sprite it follows and the field of it, the range)
+                "FlxBar" => {
+                    let direction = word(2).unwrap_or_default().to_lowercase();
+                    let direction = if direction.contains("right_to_left") { 1 } else if direction.contains("top_to_bottom") { 2 } else if direction.contains("bottom_to_top") { 3 } else { 0 };
+                    let parent = match given.get(5) {
+                        Some(Value::String(text)) => text.to_string_lossy().strip_prefix("##PSYCHLUA_STRINGTOOBJ::").map_or_else(|| text.to_string_lossy(), |rest| rest.split("::").next().unwrap_or(rest).to_owned()),
+                        _ => String::new(),
+                    };
+                    let size = [number(3, 100.0), number(4, 10.0)];
+                    let mut sprite = Sprite::new(None, number(0, 0.0), number(1, 0.0));
+                    sprite.bar = Some(Bar { parent, field: word(6).unwrap_or_default(), min: number(7, 0.0), max: number(8, 100.0), value: number(7, 0.0), direction, fill: 0xFF0000, empty: None, size });
+                    (None, sprite)
                 }
                 // (the icon's file by the name, two frames side by side; scripts put it on the HUD)
                 "HealthIcon" => {
@@ -2697,6 +2879,17 @@ impl Scripts {
         }
     }
 
+    /// A beat of the song: the scripts' characters dance on it (every second beat, as the Haxe engine's do; those that sway, each).
+    pub fn beat(&self, beat: i64) {
+        for (_, sprite) in &self.shared.borrow().sprites {
+            if let (Some(character), false) = (&sprite.character, sprite.killed) {
+                if beat % 2 == 0 {
+                    character.borrow_mut().script_dance();
+                }
+            }
+        }
+    }
+
     /// Runs the timers on by `dt` seconds, calling onTimerCompleted(tag, loops done, loops left) for each that rings.
     pub fn tick(&mut self, dt: f64) {
         let mut rung = Vec::new();
@@ -2726,12 +2919,29 @@ impl Scripts {
         let mut finished = Vec::new();
         {
             let mut shared = self.shared.borrow_mut();
-            // (with the state held, only the sprites of the substate itself, which updates them, go on playing; a killed one stands still)
+            // (with the state held, only the sprites of the substate itself, which updates them, go on; a killed one stands still)
             let held_state = shared.substate.as_ref().filter(|substate| substate.pause).map(|substate| substate.members.clone());
             for (tag, sprite) in &mut shared.sprites {
-                if let (Some((_, time)), true) = (&mut sprite.playing, !sprite.killed && held_state.as_ref().is_none_or(|members| members.contains(tag))) {
+                if sprite.killed || held_state.as_ref().is_some_and(|members| !members.contains(tag)) {
+                    continue;
+                }
+                if let Some((_, time)) = &mut sprite.playing {
                     *time += dt;
                 }
+                if let Some(character) = &sprite.character {
+                    character.borrow_mut().script_tick(dt as f32);
+                }
+                sprite.x += sprite.velocity[0] * dt;
+                sprite.y += sprite.velocity[1] * dt;
+            }
+            // the bars that follow a field: a sprite's of the scripts (the parent's tag), else the game's
+            let followed: Vec<(usize, f64)> = shared.sprites.iter().enumerate().filter_map(|(at, (_, sprite))| {
+                let bar = sprite.bar.as_ref().filter(|bar| !bar.field.is_empty())?;
+                let from_sprite = shared.sprites.iter().find(|(tag, _)| *tag == bar.parent).and_then(|(_, parent)| parent.get(&bar.field));
+                Some((at, from_sprite.or_else(|| shared.props.get(&bar.field).cloned())?.as_f64()?))
+            }).collect();
+            for (at, value) in followed {
+                shared.sprites[at].1.bar.iter_mut().for_each(|bar| bar.value = value);
             }
             let tweens: Vec<(String, Tween)> = shared.tweens.iter().map(|(tag, tween)| (tag.clone(), tween.clone())).collect();
             for (tag, mut tween) in tweens.into_iter().filter(|(tag, _)| !held.1.contains(tag)) {
@@ -2784,8 +2994,21 @@ impl Scripts {
             Some(group) => Some(if group.front { 3 } else { 0 }),
             None => sprite.added.then_some(if sprite.front { 3 } else { sprite.between.min(2) as usize }),
         };
-        for (_, sprite) in shared.sprites.iter().filter(|(tag, sprite)| !within(tag) && sprite.camera == camera && sprite.among.is_none() && shown(tag, sprite).is_some_and(|its| camera != Cam::Game || its == layer)) {
+        for (_, sprite) in shared.sprites.iter().filter(|(tag, sprite)| !within(tag) && sprite.camera == camera && sprite.among.is_none() && sprite.layer.is_none() && shown(tag, sprite).is_some_and(|its| camera != Cam::Game || its == layer)) {
             sprite.draw(scroll);
+        }
+        // the cameras scripts made, each over the one before: seen turned and zoomed about the screen's middle
+        if camera == Cam::Other {
+            let middle = vec3(640.0, 360.0, 0.0);
+            for (name, layer) in shared.cameras.iter().filter(|(_, layer)| layer.visible && layer.alpha > 0.0) {
+                push_model_matrix(Mat4::from_translation(middle + vec3(layer.x as f32, layer.y as f32, 0.0)) * Mat4::from_rotation_z((layer.angle as f32).to_radians()) * Mat4::from_scale(vec3(layer.zoom as f32, layer.zoom as f32, 1.0)) * Mat4::from_translation(-middle));
+                for (_, sprite) in shared.sprites.iter().filter(|(tag, sprite)| !within(tag) && sprite.layer.as_ref() == Some(name) && shown(tag, sprite).is_some()) {
+                    let mut faded = sprite.clone();
+                    faded.alpha *= layer.alpha;
+                    faded.draw(Vec2::ZERO);
+                }
+                pop_model_matrix();
+            }
         }
         // the custom substate's sprites, in its order, over everything of that camera
         if let (Some(substate), true) = (&shared.substate, camera != Cam::Game || layer == 3) {
@@ -3222,5 +3445,28 @@ mod tests {
         assert_eq!(shown(&sprite), 1.0);
         assert_eq!(sprite.get("alive"), Some(serde_json::json!(true)));
         assert!(sprite.set("alive", &serde_json::json!(false)) && sprite.killed);
+    }
+
+    #[test]
+    fn backdrops_bars_and_made_cameras_are_instances_with_properties() {
+        use serde_json::json;
+        let mut scripts = run(r#"
+            function onCreate()
+                createInstance('cam', 'flixel.FlxCamera'); setProperty('cam.zoom', 0.5); setProperty('cam.angle', 10)
+                createInstance('back', 'flixel.addons.display.FlxBackdrop', {'', 'x', 4, 6}); setProperty('back.velocity.x', 30)
+                createInstance('bar', 'flixel.ui.FlxBar', {10, 20, 'RIGHT_TO_LEFT', 200, 20, 'game', 'health', 0, 2})
+                callMethod('bar.createFilledBar', {'000000', '00FF00'})
+                setVar('seen', {getProperty('cam.zoom'), getProperty('cam.angle'), getProperty('cam.alpha'), getProperty('back.velocity.x')})
+            end
+        "#);
+        scripts.call("onCreate", ());
+        assert_eq!(scripts.shared.borrow().vars["seen"], json!([0.5, 10.0, 1.0, 30.0]));
+        scripts.shared.borrow_mut().props.insert("health".to_owned(), json!(1.5));
+        scripts.tick(1.0);
+        let mut shared = scripts.shared.borrow_mut();
+        let back = shared.sprite("back").unwrap();
+        assert_eq!((back.tile, back.gap, back.x), ([true, false], [4.0, 6.0], 30.0));
+        let bar = shared.sprite("bar").unwrap().bar.clone().unwrap();
+        assert_eq!((bar.value, bar.direction, bar.fill, bar.empty), (1.5, 1, 0x00FF00, Some(0)));
     }
 }

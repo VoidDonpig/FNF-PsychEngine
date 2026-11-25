@@ -1086,6 +1086,35 @@ impl Character {
         self.position + self.size / 2.0
     }
 
+    /// For the scripts' own characters (createInstance objects.Character): where it stands now (its file's offset in), that
+    /// it moved on by `dt`, plays a pose (false when it has none of that name), dances, is drawn at a place, and its size.
+    pub(crate) fn script_position(&self) -> Vec2 {
+        self.position
+    }
+
+    pub(crate) fn script_tick(&mut self, dt: f32) {
+        self.time += dt;
+    }
+
+    pub(crate) fn script_play(&mut self, animation: &str, force: bool) -> bool {
+        if !force && self.current == animation && !self.finished() {
+            return self.animations.contains_key(animation);
+        }
+        self.play(animation)
+    }
+
+    pub(crate) fn script_dance(&mut self) {
+        self.dance();
+    }
+
+    pub(crate) fn script_draw(&self, at: Vec2, tint: Color) {
+        self.draw_as(&self.current, self.time, at, tint);
+    }
+
+    pub(crate) fn script_size(&self) -> Vec2 {
+        self.size
+    }
+
     pub(crate) fn draw(&self) {
         self.draw_as(&self.current, self.time, self.position, self.tint);
     }
