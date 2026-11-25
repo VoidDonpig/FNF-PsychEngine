@@ -430,8 +430,8 @@ struct Animation {
     fps: f64,
     looped: bool,
     offset: [f64; 2],
-    /// The sheet its frames are on, when that is not the sprite's first (loadMultipleFrames).
-    texture: Option<Texture2D>,
+    /// The sheet each frame is on, when that is not the sprite's first (loadMultipleFrames); empty when all are on the first.
+    textures: Vec<Option<Texture2D>>,
 }
 
 /// What a text of a script says, and how (Flixel's FlxText, as makeLuaText sets it up).
@@ -446,6 +446,34 @@ struct Text {
     /// 0 left, 0.5 centred, 1 right.
     align: f32,
     border: (f64, u32),
+}
+
+/// The frames of a collection of several sheets' frames that atlas::animation would pick (the names that begin with `prefix`, in the order
+/// of their names' numbers, or those numbered in `indices`), each with the sheet it is on.
+fn frames_named<T: Clone>(frames: &[(String, Frame, T)], prefix: &str, indices: &[u32]) -> Vec<(Frame, T)> {
+    let order = |name: &str| {
+        let stem = name.trim_end_matches(|c: char| c.is_ascii_digit());
+        (stem.to_owned(), name[stem.len()..].parse::<u32>().unwrap_or(0))
+    };
+    let mut all: Vec<&(String, Frame, T)> = frames.iter().filter(|(name, ..)| name.starts_with(prefix)).collect();
+    all.sort_by_key(|(name, ..)| order(name));
+    // a frame's number is what follows the prefix at once
+    let number = |name: &str| {
+        let rest = name[prefix.len()..].trim_start();
+        rest[..rest.len() - rest.trim_start_matches(|c: char| c.is_ascii_digit()).len()].parse::<u32>().ok()
+    };
+    if indices.is_empty() {
+        return all.into_iter().map(|(_, frame, with)| (*frame, with.clone())).collect();
+    }
+    indices.iter().filter_map(|i| all.iter().find(|(name, ..)| number(name) == Some(*i)).map(|(_, frame, with)| (*frame, with.clone()))).collect()
+}
+
+impl Animation {
+    /// The frame it shows after `time` seconds.
+    fn step(&self, time: f64) -> usize {
+        let step = (time * self.fps) as usize;
+        if self.looped { step % self.frames.len() } else { step.min(self.frames.len() - 1) }
+    }
 }
 
 impl Text {
@@ -605,9 +633,7 @@ impl Sprite {
     fn frame(&self) -> Option<(Frame, [f64; 2])> {
         if let Some((name, time)) = &self.playing {
             if let Some(animation) = self.animations.get(name).filter(|animation| !animation.frames.is_empty()) {
-                let step = (time * animation.fps) as usize;
-                let step = if animation.looped { step % animation.frames.len() } else { step.min(animation.frames.len() - 1) };
-                return Some((animation.frames[step], animation.offset));
+                return Some((animation.frames[animation.step(*time)], animation.offset));
             }
         }
         match self.art.as_ref()? {
@@ -743,7 +769,10 @@ impl Sprite {
         match (&self.solid, self.frame(), &self.art) {
             (Some((_, rgb)), _, _) => draw_rectangle(corner.x, corner.y, size.x, size.y, Color { a: self.alpha as f32, ..Color::from_hex(*rgb & 0xFFFFFF) }),
             (_, Some((frame, moved)), Some(art)) => {
-                let other = self.playing.as_ref().and_then(|(name, _)| self.animations.get(name)?.texture.as_ref());
+                let other = self.playing.as_ref().and_then(|(name, time)| {
+                    let animation = self.animations.get(name).filter(|animation| !animation.frames.is_empty())?;
+                    animation.textures.get(animation.step(*time))?.as_ref()
+                });
                 let texture = match art {
                     _ if other.is_some() => other.unwrap(),
                     Art::Sheet(sheet) => &sheet.texture,
@@ -1865,20 +1894,25 @@ impl Scripts {
         let animate = |shared: &mut Shared, tag: &str, name: String, prefix: Option<&str>, numbers: Vec<u32>, fps: f64, looped: bool| {
             let Some(sprite) = shared.sprite(tag) else { return };
             let Some(Art::Sheet(sheet)) = &sprite.art else { return };
-            let mut frames = match prefix {
-                Some(prefix) => sheet.animation(prefix, &numbers),
-                None => numbers.iter().filter_map(|&number| sheet.frames.get(number as usize).map(|(_, frame)| *frame)).collect(),
+            // (a sprite of loadMultipleFrames has the frames of all its sheets as one collection: those of the name, from
+            // every sheet, in the order of their names, each drawn from its own sheet)
+            let mut found: Vec<(Frame, Option<Texture2D>)> = match prefix {
+                Some(prefix) => sheet.animation(prefix, &numbers).into_iter().map(|frame| (frame, None)).collect(),
+                None => numbers.iter().filter_map(|&number| sheet.frames.get(number as usize).map(|(_, frame)| (*frame, None))).collect(),
             };
-            // (of loadMultipleFrames' sheets, the first that has frames of that name)
-            // shortcut: an animation is of one sheet; Haxe's may take frames from several
-            let mut texture = None;
-            if let (true, Some(prefix)) = (frames.is_empty(), prefix) {
-                if let Some((sheet, found)) = sprite.more.iter().map(|sheet| (sheet, sheet.animation(prefix, &numbers))).find(|(_, found)| !found.is_empty()) {
-                    (frames, texture) = (found, Some(sheet.texture.clone()));
+            if let Some(prefix) = prefix {
+                if !sprite.more.is_empty() {
+                    let mut named: Vec<(String, Frame, Option<Texture2D>)> = sheet.frames.iter().map(|(name, frame)| (name.clone(), *frame, None)).collect();
+                    for other in &sprite.more {
+                        named.extend(other.frames.iter().map(|(name, frame)| (name.clone(), *frame, Some(other.texture.clone()))));
+                    }
+                    found = frames_named(&named, prefix, &numbers);
                 }
             }
+            let (frames, textures): (Vec<Frame>, Vec<Option<Texture2D>>) = found.into_iter().unzip();
+            let textures = if textures.iter().all(Option::is_none) { Vec::new() } else { textures };
             let first = sprite.animations.is_empty();
-            sprite.animations.insert(name.clone(), Animation { frames, fps, looped, offset: [0.0; 2], texture });
+            sprite.animations.insert(name.clone(), Animation { frames, fps, looped, offset: [0.0; 2], textures });
             // the first one added plays at once, as Psych's do
             if first {
                 sprite.playing = Some((name, 0.0));
@@ -2737,6 +2771,15 @@ mod tests {
         // somewhere the letter is solid red, around it black outline, in the corner nothing
         assert!(pixels.contains(&0xFFFF0000) && pixels.iter().any(|pixel| pixel >> 24 > 0 && pixel & 0xFFFFFF == 0));
         assert_eq!(pixels[0], 0);
+    }
+
+    #[test]
+    fn frames_of_several_sheets_make_one_animation() {
+        let frame = |x: f32| Frame { source: Rect::new(x, 0.0, 1.0, 1.0), offset: Vec2::ZERO, size: Vec2::ONE, rotated: false };
+        let frames = [("walk0002".to_owned(), frame(2.0), 'a'), ("walk0000".to_owned(), frame(0.0), 'a'), ("walk0001".to_owned(), frame(1.0), 'b'), ("idle0000".to_owned(), frame(9.0), 'b')];
+        let sources = |found: Vec<(Frame, char)>| found.iter().map(|(frame, sheet)| (frame.source.x, *sheet)).collect::<Vec<_>>();
+        assert_eq!(sources(frames_named(&frames, "walk", &[])), [(0.0, 'a'), (1.0, 'b'), (2.0, 'a')]);
+        assert_eq!(sources(frames_named(&frames, "walk", &[2, 1])), [(2.0, 'a'), (1.0, 'b')]);
     }
 
     #[test]
