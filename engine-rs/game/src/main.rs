@@ -501,6 +501,8 @@ impl Playing {
         let video = opening.and_then(|name| paths.video(name)).and_then(|path| video::Video::open(&path, true, true, false, false).map_err(|error| eprintln!("{error}")).ok());
         let end_video = closing.and_then(|name| paths.video(name));
         lua.shared.borrow_mut().class_props.insert("PlayState.isPixelStage".to_owned(), serde_json::json!(scene.as_ref().is_some_and(|scene| scene.pixel)));
+        // (the names scripts may give the stage file's objects shaders by)
+        lua.shared.borrow_mut().object_names = scene.as_ref().map_or(Vec::new(), |scene| scene.object_names());
         Ok(Playing { charting, preview: None, video, end_video, speech: None, countdown_asked: false, countdown_held: false, entry: entry.clone(), play, song, player_voice, own_skin: None, music_fade: None, lua, looks: Default::default(), renamed: Default::default(), note_art: HashMap::new(), strums: strums(settings), flash: None, sounds: HashMap::new(), fades: Vec::new(), music_volume: 1.0, bar_colors: Default::default(), lua_step: i64::MIN, lua_section: usize::MAX, lua_created: false, rating_set: Default::default(), music_held: false, music_pitch: None, end_asked: false, end_held: false, base: base.to_path_buf(), staged, bowing: false, tune: false, paused_at: 0.0, pause_scroll: 0.0, deaths: 0, scene, waited: 0.0, clock: Default::default(), ticked: std::time::Instant::now(), started: false, paused: None, choosing: None, skip_time: 0.0, skip_held: 0.0, difficulties, story, taunt_until: None, start_at, position: -lead_in, settings: settings.clone(), held_keys: Vec::new(), flash_until: [[f64::MIN; 4]; 2], judgement: None, last_hit: f64::MIN, lanes_used: [false; 4], idled: false, idle_for: 0.0, sang_for: 0.0,
             paths, cutscene, lead_in, counted: i64::MIN, popups: Vec::new(), splashes: Vec::new(), dead: None, next_event: 0, speed, speed_change: None }.with(settings))
     }
@@ -1393,6 +1395,7 @@ impl Playing {
         let mut shared = self.lua.shared.borrow_mut();
         if let Some(scene) = &mut self.scene {
             scene.shaders = shared.character_shaders.clone();
+            scene.shade_objects(&shared.object_shaders);
         }
         // what is true or false is told so (to Lua, the number 0 is true)
         let values = props.into_iter().map(|(name, value)| (name, if is_flag(name) { serde_json::json!(value != 0.0) } else { serde_json::json!(value) }));

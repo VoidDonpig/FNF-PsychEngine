@@ -234,6 +234,9 @@ pub struct Shared {
     shaders: HashMap<String, Option<Shader>>,
     pub shaders_on: bool,
     pub character_shaders: [Option<Shader>; 3],
+    /// And those of the stage file's objects, by their names (the names the stage has, as the play screen told).
+    pub object_shaders: HashMap<String, Shader>,
+    pub object_names: Vec<String>,
     /// And those the cameras are seen through: the game's, the HUD's, the one over everything.
     pub camera_shaders: [Option<Shader>; 3],
     /// The custom substate open, and the name of the last opened (CustomSubstate.name; none: "unnamed").
@@ -856,6 +859,7 @@ impl Shared {
         match (character_slot(object), camera_slot(object)) {
             (Some(slot), _) => self.character_shaders[slot].clone(),
             (_, Some(slot)) => self.camera_shaders[slot].clone(),
+            _ if self.object_names.iter().any(|name| name == object) => self.object_shaders.get(object).cloned(),
             _ => self.sprite(object)?.shader.clone(),
         }
     }
@@ -1237,7 +1241,8 @@ impl Scripts {
             Ok(())
         });
         // mods' shaders (`shaders/<name>.frag`), on the scripts' sprites and the three characters
-        // shortcut: on the game's own pictures other than the characters they are not taken. A character's shader
+        // shortcut: on the game's own pictures other than the characters and the stage file's objects (the HUD's, the
+        // stages the game draws in code) they are not taken. A character's shader
         // stays on its place when the character changes (the Haxe engine's goes with the old one), and a sprite that
         // is a plain rectangle (makeGraphic) is one dot to its shader (openfl_TextureSize 1 by 1).
         function!("initLuaShader", |_lua, shared, args: (String, Option<Value>)| {
@@ -1259,9 +1264,12 @@ impl Scripts {
                 shared.camera_shaders[slot] = Some(shader.fresh());
                 return Ok(true);
             }
+            // (an object of the stage's file, by its name there)
+            let of_stage = shared.object_names.contains(&args.0);
             match (character_slot(&args.0), shared.sprite(&args.0)) {
                 (Some(slot), _) => shared.character_shaders[slot] = Some(shader.fresh()),
                 (None, Some(sprite)) => sprite.shader = Some(shader.fresh()),
+                (None, None) if of_stage => drop(shared.object_shaders.insert(args.0.clone(), shader.fresh())),
                 (None, None) => return Ok(false),
             }
             Ok(true)
@@ -1274,7 +1282,7 @@ impl Scripts {
             Ok(match (character_slot(&args), shared.sprite(&args)) {
                 (Some(slot), _) => shared.character_shaders[slot].take().is_some(),
                 (None, Some(sprite)) => sprite.shader.take().is_some(),
-                (None, None) => false,
+                (None, None) => shared.object_shaders.remove(&args).is_some(),
             })
         });
         // a uniform read: one number (or true/false), or all it holds

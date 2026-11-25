@@ -62,12 +62,14 @@ struct LayerDef {
     stretch: Vec2,
     /// The frames of its animation to play, when not all of them.
     indices: &'static [u32],
-    /// Its place in the stage file's objects (the stage editor's), when it comes from one.
+    /// Its place in the stage file's objects (the stage editor's), when it comes from one, and its name there (what
+    /// scripts call it by).
     source: Option<usize>,
+    name: &'static str,
 }
 
 fn layer(image: &'static str, x: f32, y: f32, scroll_x: f32, scroll_y: f32) -> LayerDef {
-    LayerDef { image, at: vec2(x, y), scroll: vec2(scroll_x, scroll_y), size: Size::Times(1.0), flip: false, flip_y: false, anim: None, fps: 24.0, front: false, after: 0, pixel: false, add: false, centered: false, detail: false, tint: WHITE, angle: 0.0, stretch: Vec2::ONE, indices: &[], source: None }
+    LayerDef { image, at: vec2(x, y), scroll: vec2(scroll_x, scroll_y), size: Size::Times(1.0), flip: false, flip_y: false, anim: None, fps: 24.0, front: false, after: 0, pixel: false, add: false, centered: false, detail: false, tint: WHITE, angle: 0.0, stretch: Vec2::ONE, indices: &[], source: None, name: "" }
 }
 
 /// The backdrop of a stage, back to front. The numbers are those of source/states/stages.
@@ -265,7 +267,7 @@ fn objects(stage: &Value, low: bool, story: bool) -> (Vec<LayerDef>, Vec<usize>)
         (def.flip, def.flip_y, def.pixel, def.after) = (object["flipX"] == true, object["flipY"] == true, object["antialiasing"] == false, cast.len());
         def.tint = Color { a: number(&object["alpha"], 1.0), ..object["color"].as_str().map_or(WHITE, color_named) };
         def.angle = number(&object["angle"], 0.0).to_radians();
-        def.source = Some(place);
+        (def.source, def.name) = (Some(place), kept(object["name"].as_str().unwrap_or("")));
         if kind == "animatedSprite" {
             // the animation it starts on: the one named first, else the first of the list
             let animations = object["animations"].as_array().map_or(&[][..], Vec::as_slice);
@@ -304,6 +306,8 @@ struct Layer {
     angle: f32,
     /// How bright it is drawn (1 as it is): the streets of weekend 1 darken for a moment at a shot.
     shade: f32,
+    /// A mod's shader a script put on it (by its name in the stage file).
+    shader: Option<Shader>,
 }
 
 /// Nene's knife on the streets of weekend 1: she raises it when the player is nearly out, and puts it away when he is not.
@@ -736,7 +740,7 @@ impl Layer {
         }
         let frames = def.anim.map_or(Vec::new(), |(prefix, _)| crate::atlas::animation(&sheet, prefix, def.indices));
         let time = if matches!(def.anim, Some((_, Motion::Once | Motion::Flash))) { 1e9 } else { 0.0 };
-        Some(Layer { def, texture, frames, sheet, time, swayed: false, tint: def.tint, angle: def.angle, shade: 1.0 })
+        Some(Layer { def, texture, frames, sheet, time, swayed: false, tint: def.tint, angle: def.angle, shade: 1.0, shader: None })
     }
 
     /// Changes to another animation of its sheet, from its start.
@@ -819,10 +823,12 @@ impl Layer {
             push_model_matrix(Mat4::from_translation(middle) * Mat4::from_scale(vec3(1.0, -1.0, 1.0)) * Mat4::from_translation(-middle));
         }
         blend_add(self.def.add);
+        shade(self.shader.as_ref());
         match frame {
             Some(f) => crate::atlas::draw_frame(&self.texture, self.frames[f], at.x, at.y, scale, self.def.flip, tint),
             None => draw_texture_ex(&self.texture, at.x, at.y, tint, DrawTextureParams { dest_size: Some(size * scale), flip_x: self.def.flip, ..Default::default() }),
         }
+        shade(None);
         blend_add(false);
         if self.def.flip_y {
             pop_model_matrix();
@@ -1500,6 +1506,18 @@ impl Scene {
 
     fn singer(&mut self, who: usize) -> Option<&mut Character> {
         [&mut self.opponent, &mut self.player, &mut self.gf][who].as_mut()
+    }
+
+    /// The names of the stage file's objects (what scripts call them by).
+    pub fn object_names(&self) -> Vec<String> {
+        self.backdrop.iter().map(|layer| layer.def.name).filter(|name| !name.is_empty()).map(str::to_owned).collect()
+    }
+
+    /// Puts the shaders scripts gave the stage file's objects on them, by their names.
+    pub fn shade_objects(&mut self, shaders: &std::collections::HashMap<String, Shader>) {
+        for layer in self.backdrop.iter_mut().filter(|layer| !layer.def.name.is_empty()) {
+            layer.shader = shaders.get(layer.def.name).cloned();
+        }
     }
 
     /// A value scripts may read by the Haxe engine's name for it (getProperty): the camera's, and the characters' place
