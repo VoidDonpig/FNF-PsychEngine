@@ -105,6 +105,44 @@ do
         return nil
     end
 end
+-- callMethod on an object by its path: a character, a sprite or text of the scripts, a camera, or the play screen itself
+-- (no object in the path). Returns whether the method is one known here, and what it gave.
+local cameras = {camGame = 'game', ['FlxG.camera'] = 'game', camHUD = 'hud', camOther = 'other'}
+function __instanceMethod(path, a)
+    local object, method = path:match('^(.*)%.([^%.]+)$')
+    if not object then object, method = '', path end
+    local camera, character = cameras[object], (object == 'boyfriend' or object == 'dad' or object == 'gf')
+    if object == '' then
+        if method == 'endSong' then endSong() return true end
+        if method == 'startCountdown' then startCountdown() return true end
+        if method == 'triggerEvent' then triggerEvent(a[1], a[2], a[3]) return true end
+        if method == 'addCharacterToList' then addCharacterToList(a[1], a[2]) return true end
+        if method == 'recalculateRating' then addScore(0) return true end
+        if method == 'moveCameraSection' then cameraSetTarget(gfSection and 'gf' or (mustHitSection and 'boyfriend' or 'dad')) return true end
+        if method == 'KillNotes' then
+            for i = 0, getProperty('notes.length') - 1 do removeFromGroup('notes', 0) end
+            return true
+        end
+        return false
+    end
+    if camera then
+        if method == 'shake' then cameraShake(camera, a[1] or 0, a[2] or 0) return true end
+        if method == 'flash' then cameraFlash(camera, a[1] or 'FFFFFF', a[2] or 1) return true end
+        if method == 'fade' then cameraFade(camera, a[1] or '000000', a[2] or 1) return true end
+        return false
+    end
+    if not character and not luaSpriteExists(object) and not luaTextExists(object) then return false end
+    if method == 'playAnim' then playAnim(object, a[1], a[2]) return true end
+    if method == 'dance' then characterDance(object) return true end
+    if method == 'setPosition' then setProperty(object .. '.x', a[1] or 0); setProperty(object .. '.y', a[2] or 0) return true end
+    if method == 'screenCenter' then screenCenter(object, a[1]) return true end
+    if method == 'updateHitbox' then updateHitbox(object) return true end
+    if method == 'setGraphicSize' then setGraphicSize(object, a[1] or 0, a[2]) return true end
+    if method == 'kill' then setProperty(object .. '.visible', false) return true end
+    if method == 'revive' then setProperty(object .. '.visible', true) return true end
+    if method == 'destroy' then removeLuaSprite(object, true) return true end
+    return false
+end
 function addCharacterToList() end
 "#;
 const STOP_LUA: &str = "##PSYCHLUA_FUNCTIONSTOPLUA";
@@ -1273,8 +1311,11 @@ impl Scripts {
             shared.requests.push(Request::Video { path, skippable: args.1.unwrap_or(true), cover: !args.2.unwrap_or(false), looped: args.3.unwrap_or(false), waiting: !args.4.unwrap_or(true) });
             Ok(true)
         });
-        // shortcut: the methods scripts call by name here are the few the game has an answer to; the Haxe engine calls any of its own
-        function!("callMethod", |_lua, shared, args: (String, Option<Vec<Value>>)| {
+        // the methods of the scripts' objects and of the play screen, by a path as getProperty has it (__instanceMethod, the
+        // prelude, lists them)
+        // shortcut: only those; the Haxe engine calls any method of any of its objects
+        function!("callMethod", |lua, shared, args: (String, Option<Vec<Value>>)| {
+            let mut unknown = false;
             match args.0.as_str() {
                 "videoCutscene.play" | "videoCutscene.videoSprite.play" => shared.borrow_mut().requests.push(Request::PlayVideo),
                 method => {
@@ -1299,11 +1340,22 @@ impl Scripts {
                             }
                         }
                         (Some(group), "remove", Some(tag)) => group.members.retain(|name| name != tag),
-                        _ => eprintln!("Lua: callMethod {method} is not known here"),
+                        _ => unknown = true,
                     }
                 }
             }
-            Ok(())
+            if unknown {
+                let given = lua.create_sequence_from(args.1.clone().unwrap_or_default())?;
+                let handled: Option<(bool, Value)> = lua.globals().get::<Function>("__instanceMethod")?.call((args.0.clone(), given)).ok();
+                return match handled {
+                    Some((true, result)) => Ok(result),
+                    _ => {
+                        eprintln!("Lua: callMethod {} is not known here", args.0);
+                        Ok(Value::Nil)
+                    }
+                };
+            }
+            Ok(Value::Nil)
         });
         // the achievements: scores counted up to a top that unlocks, as Achievements.addLuaCallbacks
         for (name, op, amount) in [("getAchievementScore", Op::Get, 0.0), ("setAchievementScore", Op::Set, 0.0), ("addAchievementScore", Op::Add, 1.0)] {
@@ -3039,6 +3091,29 @@ mod tests {
             Request::SoundOp { tag: String::new(), op: SoundOp::Volume(0.25) },
             Request::SetProperty { name: "camGame.zoom".to_owned(), value: json!(1.5) },
             Request::SetProperty { name: "Application.nothing".to_owned(), value: json!(1) },
+        ]);
+    }
+
+    #[test]
+    fn methods_are_called_on_objects_by_their_path() {
+        use serde_json::json;
+        let mut scripts = run(r#"
+            function onCreate()
+                makeLuaSprite('a', nil, 0, 0); makeGraphic('a', 100, 50, 'FFFFFF'); addLuaSprite('a')
+                callMethod('boyfriend.playAnim', {'singLEFT', true})
+                callMethod('a.setPosition', {5, 6}); callMethod('a.kill')
+                callMethod('camGame.shake', {0.05, 0.5}); callMethod('triggerEvent', {'Hey!', '1', '2'}); callMethod('endSong')
+                local unknown = callMethod('a.nothing')
+                setVar('seen', {getProperty('a.x'), getProperty('a.y'), getProperty('a.visible'), unknown == nil})
+            end
+        "#);
+        scripts.call("onCreate", ());
+        assert_eq!(scripts.shared.borrow().vars["seen"], json!([5.0, 6.0, false, true]));
+        assert_eq!(scripts.requests(), [
+            Request::Animation { who: "boyfriend".to_owned(), animation: "singLEFT".to_owned() },
+            Request::Event { name: "Screen Shake".to_owned(), value1: "0.5, 0.05".to_owned(), value2: String::new() },
+            Request::Event { name: "Hey!".to_owned(), value1: "1".to_owned(), value2: "2".to_owned() },
+            Request::EndSong,
         ]);
     }
 }
