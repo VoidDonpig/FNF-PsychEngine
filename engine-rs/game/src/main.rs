@@ -1711,8 +1711,15 @@ impl Playing {
             return;
         }
         if let Some(scene) = self.scene.as_ref().filter(|scene| scene.hides_hud()) {
-            // shortcut: a bar that fills while Accept is held to skip; the Haxe engine fills a ring.
-            draw_rectangle(WIDTH - 200.0, HEIGHT - 80.0, 120.0 * scene.skipping.min(1.0), 10.0, Color::new(1.0, 1.0, 1.0, scene.skipping.min(1.0)));
+            // the skip ring of VideoSprite.hx: FlxPieDial (radius 40, 40 pieces, a hole of 24) at the bottom right, shown as it fills
+            let filled = (scene.skipping * 1.025).min(1.0);
+            let alpha = ((filled - 0.025) / 0.975).clamp(0.0, 1.0);
+            let middle = vec2(WIDTH - 120.0, HEIGHT - 112.0);
+            for piece in 0..if alpha > 0.0 { (filled * 40.0).round() as usize } else { 0 } {
+                let angle = (piece as f32 + 0.5) / 40.0 * std::f32::consts::TAU;
+                let at = middle + vec2(angle.sin(), -angle.cos()) * 32.0;
+                draw_rectangle_turned(at.x - 3.5, at.y - 8.0, 7.0, 16.0, angle, Color { a: alpha, ..WHITE });
+            }
             return;
         }
         on_camera[1].iter().for_each(|_| layer_begin());
@@ -1789,11 +1796,13 @@ impl Playing {
                 let alpha = if state == NoteState::Missed { 0.3 } else { 1.0 } * faint;
                 let pieces = self.play.pieces(index);
                 if pass == 0 && !pieces.is_empty() {
-                    // shortcut: holds stay upright whatever the strum's direction; turn them with it if a mod's chart shows it
-                    // `way`: where later times lie on screen
-                    let way = direction * if turn.sin() < 0.0 { -1.0 } else { 1.0 };
-                    let (first, last) = (along(pieces[0].time), along(pieces[pieces.len() - 1].time) + way * skin.hold.y);
-                    if first.max(last) < 0.0 || first.min(last) > HEIGHT {
+                    // Holds turn with their strum, as Note.followStrumNote does: angle = direction - 90 + the strum's angle (upright at 90).
+                    // `travel`: where later times lie on screen; `point`: where a time lies along the strum's direction.
+                    let travel = vec2(turn.cos(), turn.sin()) * direction;
+                    let point = |time: f64| vec2(centre.x + turn.cos() * (y_at(time) - strum_y) + moved("offsetX"), along(time));
+                    let angle = strum.direction - 90.0 + strum.angle;
+                    let (first, last) = (point(pieces[0].time), point(pieces[pieces.len() - 1].time) + travel * skin.hold.y);
+                    if (first.y.max(last.y) < 0.0 || first.y.min(last.y) > HEIGHT) || (first.x.max(last.x) < 0.0 || first.x.min(last.x) > WIDTH) {
                         continue;
                     }
                     // Drawn piece by piece, as the Haxe engine draws a hold: a body from each piece to the next, and the
@@ -1809,17 +1818,19 @@ impl Playing {
                         let clipped = hit || (after_hit && !open);
                         after_hit = hit;
                         let end = k + 1 == pieces.len();
-                        let mut from = along(piece.time);
-                        let to = if end { from + way * skin.hold.y } else { along(pieces[k + 1].time) };
-                        if clipped && (from - centre.y) * way < 0.0 {
-                            from = centre.y;
+                        let mut from = point(piece.time);
+                        let to = if end { from + travel * skin.hold.y } else { point(pieces[k + 1].time) };
+                        if clipped && (from - centre).dot(travel) < 0.0 {
+                            from = centre;
                         }
-                        let length = (to - from) * way;
-                        if length <= 0.0 || from.max(to) < 0.0 || from.min(to) > HEIGHT {
+                        let length = (to - from).dot(travel);
+                        if length <= 0.0 || (from.y.max(to.y) < 0.0 || from.y.min(to.y) > HEIGHT) || (from.x.max(to.x) < 0.0 || from.x.min(to.x) > WIDTH) {
                             continue;
                         }
-                        let (name, height) = if end { ("hold end", length * way) } else { ("hold piece", length) };
-                        skin.frame_of(art, &format!("{} {name}0000", NOTE_NAMES[note.lane]), x, (from + to) / 2.0, Some(vec2(skin.hold.x, height)), Some(note.lane).filter(|_| !painted), 0.6 * faint);
+                        // (the cap is turned over when notes come from above)
+                        let (name, height) = if end { ("hold end", length * direction) } else { ("hold piece", length) };
+                        let middle = (from + to) / 2.0;
+                        turned(middle, angle, &|| skin.frame_of(art, &format!("{} {name}0000", NOTE_NAMES[note.lane]), middle.x, middle.y, Some(vec2(skin.hold.x, height)), Some(note.lane).filter(|_| !painted), 0.6 * faint));
                     }
                 }
                 if pass == 1 && matches!(state, NoteState::Pending | NoteState::Missed) && on_screen(along(note.time)) {
