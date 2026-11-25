@@ -627,8 +627,11 @@ impl Playing {
 
     fn sound(&self, name: &str, volume: f32, looped: bool) {
         let folder = if looped { "music" } else { "sounds" };
-        if let Some(path) = self.paths.find(&format!("{folder}/{name}.ogg")) {
-            self.song.play_sound(&path, volume, looped);
+        match self.paths.find(&format!("{folder}/{name}.ogg")) {
+            // music stays with the song (the pause menu raises it, Resume ends it); a one-shot sound plays as any other
+            Some(path) if looped => { self.song.play_sound(&path, volume, true); }
+            Some(path) => audio::effect(&path, volume),
+            None => {}
         }
     }
 
@@ -790,6 +793,9 @@ impl Playing {
             let chosen = self.choosing.unwrap_or(row) as f32;
             self.pause_scroll += (chosen - self.pause_scroll) * (1.0 - (-get_frame_time().min(0.1) * 9.6).exp());
             let step = |row: usize, count: usize| (row + controls::pressed(Ui::Down) as usize + (count - 1) * controls::pressed(Ui::Up) as usize) % count;
+            if controls::pressed(Ui::Up) || controls::pressed(Ui::Down) {
+                self.sound("scrollMenu", 0.4, false);
+            }
             if let Some(pick) = self.choosing {
                 // the difficulties, then a way back
                 let count = self.difficulties.len() + 1;

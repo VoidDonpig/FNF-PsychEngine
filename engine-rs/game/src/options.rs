@@ -414,6 +414,7 @@ impl OptionsMenu {
             Kind::Number(_, _, _, step, _) => self.held_steps(dt, hold_pace(selected.key) / step),
             _ => 0.0,
         };
+        let hitsound = settings.hitsound_volume;
         if steps != 0.0 || held != 0.0 {
             change(&selected.kind, settings, if steps != 0.0 { steps * fast } else { held * fast });
             if steps != 0.0 {
@@ -440,6 +441,10 @@ impl OptionsMenu {
                 Kind::Choice(get, _) => *get(settings) = *get(&mut usual),
             }
             menus.sound("cancelMenu", 1.0);
+        }
+        // the hitsound at its new volume, as GameplaySettingsSubState.hx's onChangeHitsoundVolume
+        if settings.hitsound_volume != hitsound {
+            menus.sound("hitsound", settings.hitsound_volume as f32);
         }
         if back {
             (self.page, self.row) = (None, main_row(page));

@@ -650,8 +650,8 @@ impl Menus {
     }
 
     pub fn sound(&self, name: &str, volume: f32) {
-        if let (Some(audio), Some(path)) = (&self.audio, self.paths.find(&format!("sounds/{name}.ogg"))) {
-            audio.play_sound(&path, volume, false);
+        if let Some(path) = self.paths.find(&format!("sounds/{name}.ogg")) {
+            crate::audio::effect(&path, volume);
         }
     }
 

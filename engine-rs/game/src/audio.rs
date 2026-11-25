@@ -69,6 +69,13 @@ pub fn forget_tracks() {
     output::forget_tracks();
 }
 
+/// Plays a short sound whatever screen is up, as FlxG.sound.play: the menus', the pause menu's, the options' over a
+/// paused song and the song's own one-shot sounds all come out of this one output, opened when first needed.
+pub fn effect(path: &Path, volume: f32) {
+    thread_local!(static EFFECTS: Song = Song::load(&[]));
+    EFFECTS.with(|effects| { effects.play_sound(path, volume, false); });
+}
+
 pub struct Song {
     /// Silent clock: ms played before the current run, and when that run began.
     played: f64,
