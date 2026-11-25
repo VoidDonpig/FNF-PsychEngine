@@ -173,7 +173,7 @@ fn runs(ask: &Ask) -> Vec<Run> {
 fn start(ask: &Ask) -> Option<Pending> {
     for run in runs(ask) {
         let mut command = Command::new(run.program);
-        command.args(&run.args).envs(run.env.iter().map(|(name, value)| (name, value))).stdin(Stdio::null()).stdout(Stdio::piped()).stderr(Stdio::null());
+        command.args(&run.args).envs(run.env.iter().map(|(name, value)| (name, value))).stdin(Stdio::null()).stdout(Stdio::piped()).stderr(Stdio::piped());
         #[cfg(windows)]
         {
             // (no console window comes up with it)
@@ -190,8 +190,15 @@ fn start(ask: &Ask) -> Option<Pending> {
     None
 }
 
+/// Whether what a tool said on its error output is about not reaching a display or desktop (zenity: "cannot open display",
+/// kdialog: "cannot connect to X server"), which is not a cancel though the tool ends with 1 then as it does for one.
+fn no_display(stderr: &[u8]) -> bool {
+    let said = String::from_utf8_lossy(stderr).to_lowercase();
+    ["cannot open display", "cannot connect", "could not connect", "unable to init", "failed to connect", "no display", "no protocol specified"].iter().any(|sign| said.contains(sign))
+}
+
 /// The path the tool wrote (its last line ending taken off); cancelled when it wrote none or ended with 1, as they
-/// all do when cancelled.
+/// all do when cancelled, unless its error output says it could not reach a display.
 fn answer_of(output: std::io::Result<Output>) -> Answer {
     let Ok(output) = output else { return Answer::Failed };
     let mut bytes = output.stdout;
@@ -200,8 +207,7 @@ fn answer_of(output: std::io::Result<Output>) -> Answer {
     }
     match output.status.code() {
         Some(0) if !bytes.is_empty() => Answer::Chosen(path_of(bytes)),
-        // shortcut: a tool that ends with 1 because it could not work (no display it can reach) reads as cancelled, not
-        // as failed, so the editor does not fall back to its own way then
+        Some(1) if no_display(&output.stderr) => Answer::Failed,
         Some(0 | 1) => Answer::Cancelled,
         _ => Answer::Failed,
     }
@@ -294,5 +300,10 @@ mod tests {
         assert_eq!(answer_of(output(0, "")), Answer::Cancelled);
         assert_eq!(answer_of(output(1, "")), Answer::Cancelled);
         assert_eq!(answer_of(output(2, "")), Answer::Failed);
+        let said = |words: &str| Ok(Output { status: std::process::ExitStatus::from_raw(1 << 8), stdout: Vec::new(), stderr: words.as_bytes().to_vec() });
+        assert_eq!(answer_of(said("Gtk-WARNING **: cannot open display: ")), Answer::Failed);
+        assert_eq!(answer_of(said("kdialog: Cannot connect to X server :0")), Answer::Failed);
+        assert_eq!(answer_of(said("")), Answer::Cancelled);
+        assert_eq!(answer_of(said("execution error: User canceled. (-128)")), Answer::Cancelled);
     }
 }
