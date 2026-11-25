@@ -272,16 +272,14 @@ impl Texture2D {
                 let rows = (band.len() / row.len()) as u32;
                 // (a picture too large for the card became a dot: nothing goes in it)
                 if (texture.0.width, texture.0.height) == (width, height) {
-                    with(|context| context.write(&texture.0.texture, 0, y + 1 - rows, width, rows, &band));
+                    // (each band sent off at once: the card's copy of it is let go of before the next)
+                    with(|context| (context.write(&texture.0.texture, 0, y + 1 - rows, width, rows, &band), context.queue.submit([])));
                 }
                 band.clear();
             }
         });
         match (read, texture) {
-            (Ok(()), Some(texture)) => {
-                with(|context| context.queue.submit([]));
-                texture
-            }
+            (Ok(()), Some(texture)) => texture,
             (read, _) => {
                 eprintln!("Picture: {}", read.err().unwrap_or_else(|| "no rows".to_owned()));
                 Texture2D::from_image(&Image::gen_image_color(1, 1, Color::new(0.0, 0.0, 0.0, 0.0)))
@@ -1685,12 +1683,12 @@ mod tests {
     fn a_picture_file_becomes_rows_of_rgba() {
         let mut file = Vec::new();
         {
-            let mut encoder = png::Encoder::new(&mut file, 2, 1);
+            let mut encoder = png::Encoder::new(&mut file, 2, 2);
             encoder.set_color(png::ColorType::Rgb);
-            encoder.write_header().unwrap().write_image_data(&[255, 0, 0, 0, 0, 255]).unwrap();
+            encoder.write_header().unwrap().write_image_data(&[255, 0, 0, 0, 0, 255, 0, 255, 0, 0, 0, 0]).unwrap();
         }
         let image = Image::from_file_with_format(&file, None).unwrap();
-        assert_eq!((image.width, image.height, image.get_pixel(1, 0)), (2, 1, Color::new(0.0, 0.0, 1.0, 1.0)));
+        assert_eq!((image.width, image.height, image.get_pixel(1, 0), image.get_pixel(0, 1)), (2, 2, Color::new(0.0, 0.0, 1.0, 1.0), Color::new(0.0, 1.0, 0.0, 1.0)));
         assert!(Image::from_file_with_format(b"not a picture", None).is_err());
     }
 }
