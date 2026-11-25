@@ -3437,7 +3437,7 @@ mod tests {
     fn an_animation_plays_reversed_and_from_a_frame_and_a_killed_sprite_stands_still() {
         let frame = |x: f32| Frame { source: Rect::new(x, 0.0, 1.0, 1.0), offset: Vec2::ZERO, size: vec2(1.0, 1.0), rotated: false };
         let mut sprite = Sprite::new(None, 0.0, 0.0);
-        sprite.animations.insert("go".to_owned(), Animation { frames: (0..4).map(|at| frame(at as f32)).collect(), fps: 10.0, looped: false, offset: [0.0; 2], texture: None });
+        sprite.animations.insert("go".to_owned(), Animation { frames: (0..4).map(|at| frame(at as f32)).collect(), fps: 10.0, looped: false, offset: [0.0; 2], textures: Vec::new() });
         let shown = |sprite: &Sprite| sprite.frame().unwrap().0.source.x;
         (sprite.playing, sprite.reversed) = (Some(("go".to_owned(), 0.0)), true);
         assert_eq!(shown(&sprite), 3.0);
