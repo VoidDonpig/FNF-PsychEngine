@@ -2225,10 +2225,11 @@ impl Scripts {
             if let Some((size, rgb)) = sprite.solid {
                 return Ok(if inside(size[0], size[1]) { (0xFF000000 | (rgb & 0xFFFFFF)) as i32 as i64 } else { 0 });
             }
-            // a text: its words rendered as drawn, in a font file (a text of the default font, which has no file here, has no pixels)
+            // a text: its words rendered as drawn, in its font file or else the game's built-in font (the one the renderer draws it in)
             if let Some(text) = sprite.text.clone() {
                 let color = sprite.color;
-                let rendered = shared.font_bytes(&text.font_name).and_then(|bytes| text.pixels(&bytes, color));
+                let bytes = shared.font_bytes(&text.font_name).unwrap_or_else(|| include_bytes!("../../../assets/fonts/vcr.ttf").to_vec());
+                let rendered = text.pixels(&bytes, color);
                 return Ok(match rendered {
                     Some((width, height, pixels)) if inside(width as f64, height as f64) => pixels[args.2 as usize * width + args.1 as usize] as i32 as i64,
                     Some(_) => 0,
@@ -3305,6 +3306,12 @@ mod tests {
         // somewhere the letter is solid red, around it black outline, in the corner nothing
         assert!(pixels.contains(&0xFFFF0000) && pixels.iter().any(|pixel| pixel >> 24 > 0 && pixel & 0xFFFFFF == 0));
         assert_eq!(pixels[0], 0);
+        // a text with no font file renders in the built-in font, not as black
+        let scripts = run("makeLuaText('t', 'I', 0, 0, 0); setTextSize('t', 32); setTextColor('t', 'FF0000'); setTextBorder('t', 0, '000000')
+            local red = 0
+            for y = 0, 60 do for x = 0, 30 do if getPixelColor('t', x, y) == -65536 then red = red + 1 end end end
+            setVar('red', red)");
+        assert!(scripts.shared.borrow().vars["red"].as_i64().unwrap_or(0) > 0);
     }
 
     #[test]
