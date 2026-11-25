@@ -50,6 +50,7 @@ vec4 funkin_pre(vec4 c) { return vec4(c.rgb * mix(c.a, 1.0, funkin_ready), c.a);
 vec4 funkin_tinted(vec4 c) { return vec4(c.rgb * funkin_color.rgb * mix(c.a, 1.0, funkin_ready), c.a) * funkin_color.a; }
 #define texture2D(funkin_t, funkin_c) funkin_pre(textureLod(funkin_t, funkin_c, 0.0))
 #define flixel_texture2D(funkin_t, funkin_c) funkin_tinted(textureLod(funkin_t, funkin_c, 0.0))
+#define texture(funkin_t, funkin_c) funkin_pre(textureLod(funkin_t, funkin_c, 0.0))
 ";
 
 const TYPES: [&str; 12] = ["float", "int", "bool", "vec2", "vec3", "vec4", "ivec2", "ivec3", "ivec4", "mat2", "mat3", "mat4"];
@@ -57,8 +58,6 @@ const TYPES: [&str; 12] = ["float", "int", "bool", "vec2", "vec3", "vec4", "ivec
 /// Takes apart one part of a shader written for OpenFL (its fragment shader, or `vertex`): its uniforms, pictures and
 /// varyings set aside, and the values it gives its globals outside any function (which only some drivers take) given
 /// at the start of `main` instead.
-// shortcut: a picture read with plain `texture(...)` (not `texture2D`, `flixel_texture2D` or the usual `#define texture flixel_texture2D`)
-// comes without its colours multiplied by its opacity.
 fn gather(source: &str, vertex: bool) -> Result<Gathered, String> {
     let source = without_comments(source);
     let (mut block, mut pictures, mut defaults, mut varyings) = (Vec::new(), Vec::new(), Vec::new(), Vec::new());
@@ -84,6 +83,8 @@ fn gather(source: &str, vertex: bool) -> Result<Gathered, String> {
                 // what OpenFL's vertex shader does where one says `#pragma body`
                 ["pragma", "body", ..] => body.push_str(&format!("{lead}{VERTEX_BODY}")),
                 // (the boilerplate of ported shaders: `#define mainImage main`)
+                // (a shader's own `#define texture ...` takes the place of the header's)
+                ["define", name, ..] if *name == "texture" || name.starts_with("texture(") => body.push_str(&format!("{lead}#undef texture\n{line}")),
                 ["define", name, "main"] => {
                     entry = (*name).to_owned();
                     body.push_str(&format!("{lead}{line}"));
@@ -470,6 +471,12 @@ mod tests {
         ).unwrap_or_else(|error| panic!("{error}"));
         assert!(pair.vertex.is_some() && ["iTime", "amount"].iter().all(|name| pair.slots.iter().any(|slot| slot.name == *name)));
         assert!(translate("#pragma header\nvarying float wobble;\nvoid main() { gl_FragColor = vec4(wobble); }").is_err_and(|error| error.contains(".vert")));
+        // a plain `texture(...)` read is premultiplied like texture2D (what OpenFL's bitmaps hold), and a shader's own
+        // `#define texture flixel_texture2D` still takes its place
+        for shape in ["#pragma header\nvoid main() { gl_FragColor = texture(bitmap, openfl_TextureCoordv); }", "#pragma header\n#define texture flixel_texture2D\nvoid main() { gl_FragColor = texture(bitmap, openfl_TextureCoordv); }"] {
+            translate(shape).unwrap_or_else(|error| panic!("{error}\n{shape}"));
+        }
+        assert!(text_of(false, &[], &[], &gather("#pragma header\n#define texture flixel_texture2D\nvoid main() {}", false).unwrap()).contains("#undef texture\n#define texture flixel_texture2D"));
         // what is not taken, or wrong, is said
         assert!(translate("uniform float list[SOME];\nvoid main() {}").is_err_and(|error| error.contains("how long")));
         assert!(translate("#pragma header\nvoid main() { gl_FragColor = nothing; }").is_err_and(|error| error.contains("nothing")));
