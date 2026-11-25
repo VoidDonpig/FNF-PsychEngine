@@ -630,6 +630,7 @@ const ATTRIBUTES: [wgpu::VertexAttribute; 8] = wgpu::vertex_attr_array![0 => Flo
 /// A mod's shader read and made ready: what draws through it, and where its uniforms lie.
 struct Program {
     pipeline: wgpu::RenderPipeline,
+    adding: wgpu::RenderPipeline,
     layout: wgpu::BindGroupLayout,
     slots: Vec<crate::shader::Slot>,
     size: usize,
@@ -1096,7 +1097,7 @@ impl Context {
                 }
                 let call = &self.calls[index];
                 if let Some(shader) = &call.shader {
-                    pass.set_pipeline(&shader.0.program.pipeline);
+                    pass.set_pipeline(if call.picture.2 { &shader.0.program.adding } else { &shader.0.program.pipeline });
                     pass.set_bind_group(1, shader.0.group.borrow().as_ref(), &[]);
                     adding = None;
                 } else if adding != Some(call.picture.2) {
@@ -1158,7 +1159,7 @@ impl Context {
         }
         let layout = self.device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor { label: None, entries: &entries });
         let pipeline_layout = self.device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor { label: None, bind_group_layouts: &[Some(&self.layout), Some(&layout)], ..Default::default() });
-        let pipeline = self.device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
+        let make = |blend: wgpu::BlendState| self.device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
             label: None,
             layout: Some(&pipeline_layout),
             vertex: wgpu::VertexState {
@@ -1175,17 +1176,21 @@ impl Context {
                 entry_point: Some("main"),
                 compilation_options: Default::default(),
                 // (what OpenFL's shaders answer has its colours multiplied by its opacity already)
-                // shortcut: one way of laying it over what is there; a sprite that adds its light (setBlendMode) does not
-                // while it is drawn through a mod's shader
-                targets: &[Some(wgpu::ColorTargetState { format: self.format, blend: Some(wgpu::BlendState::PREMULTIPLIED_ALPHA_BLENDING), write_mask: wgpu::ColorWrites::ALL })],
+                targets: &[Some(wgpu::ColorTargetState { format: self.format, blend: Some(blend), write_mask: wgpu::ColorWrites::ALL })],
             }),
             multiview_mask: None,
             cache: None,
         });
+        let pipeline = make(wgpu::BlendState::PREMULTIPLIED_ALPHA_BLENDING);
+        // a sprite that adds its light (setBlendMode 'add'): the colours are multiplied by the opacity already, so they
+        // are added as they are; the opacity of what is there stays (as with the game's own `adding`)
+        let light = wgpu::BlendComponent { src_factor: wgpu::BlendFactor::One, dst_factor: wgpu::BlendFactor::One, operation: wgpu::BlendOperation::Add };
+        let kept = wgpu::BlendComponent { src_factor: wgpu::BlendFactor::Zero, dst_factor: wgpu::BlendFactor::One, operation: wgpu::BlendOperation::Add };
+        let adding = make(wgpu::BlendState { color: light, alpha: kept });
         if let Some(error) = pollster::block_on(scope.pop()) {
             return Err(error.to_string());
         }
-        Ok(Rc::new(Program { pipeline, layout, slots, size, pictures, defaults }))
+        Ok(Rc::new(Program { pipeline, adding, layout, slots, size, pictures, defaults }))
     }
 
     /// A shader for one sprite: its uniforms as the file gives them, a white dot for each picture it asks for.
