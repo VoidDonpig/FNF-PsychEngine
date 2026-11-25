@@ -280,8 +280,7 @@ fn lane_x(settings: &Settings, player: bool, lane: usize) -> f32 {
 }
 
 /// The HUD's pieces a script may put a mod's shader on, by the Haxe engine's names.
-// shortcut: the bars and texts are drawn as rectangles and letters here, not as pictures of their own: to a shader each
-// rectangle is one white dot (openfl_TextureSize 1 by 1) and each letter a piece of the font's sheet
+// (a piece with a shader is drawn into a picture of its own first, as large as what was drawn, and that picture is shaded)
 const HUD_PIECES: [&str; 6] = ["timeBar", "healthBar", "iconP1", "iconP2", "scoreTxt", "botplayTxt"];
 
 /// The texts scripts may read of the three characters, by the Haxe engine's names.
@@ -1681,7 +1680,7 @@ impl Playing {
         let hud_shaders: HashMap<String, gfx::Shader> = HUD_PIECES.iter().filter_map(|name| Some((name.to_string(), self.lua.shared.borrow().object_shaders.get(*name)?.clone()))).collect();
         let piece = |name: &str| {
             fade(hud_alpha * look(&format!("{name}.alpha")));
-            shade(hud_shaders.get(name));
+            shade_piece(hud_shaders.get(name));
             shown(name)
         };
         // the mods' shaders scripts put on the cameras: all a camera shows is a layer seen through its shader
@@ -1905,7 +1904,7 @@ impl Playing {
             }
         }
 
-        shade(None);
+        shade_piece(None);
         // health: the player's share grows from the right
         let (bar_x, bar_y, bar_w) = (WIDTH / 2.0 - 300.0, HEIGHT * if settings.downscroll { 0.11 } else { 0.89 }, 600.0);
         // judgements sit left of the player's lanes
@@ -1921,7 +1920,7 @@ impl Playing {
             draw_rectangle(bar_x, bar_y, middle - bar_x, 18.0, faded(left.or(singers[0].map(|c| c.color)).unwrap_or(Color::from_hex(0xFF0000))));
             draw_rectangle(middle, bar_y, bar_w * player_share, 18.0, faded(right.or(singers[1].map(|c| c.color)).unwrap_or(Color::from_hex(0x66FF33))));
         }
-        shade(None);
+        shade_piece(None);
         // the two singers' icons meet where the bar's colours meet; the losing one shows its second picture
         let icon_size = 150.0 * self.scene.as_ref().map_or(1.0, |scene| scene.icon_scale);
         for (side, singer) in singers.iter().enumerate() {
@@ -1938,6 +1937,7 @@ impl Playing {
             draw_texture_ex(icon, x, bar_y + 9.0 - icon_size / 2.0, faded(WHITE), DrawTextureParams { dest_size: Some(vec2(icon_size, icon_size)), source: Some(source), flip_x: side == 1, ..Default::default() });
         }
 
+        shade_piece(None);
         // "Sick! (95.12%) - FC", as the Haxe engine puts it
         let rating = match self.rating() {
             (a, name, combo, true) => format!("{} ({}%) - {}", phrase(&format!("rating_{name}"), &name), (a * 10000.0).floor() / 100.0, phrase(&combo, &combo)),
@@ -1971,7 +1971,7 @@ impl Playing {
                 draw_text_ex(&line, x + shift, bar_y + 52.0 + shift, TextParams { font: skin.font.as_ref(), font_size: 20, font_scale: swell as f32, color, ..Default::default() });
             }
         }
-        shade(None);
+        shade_piece(None);
         if let Some((text, color, at)) = &self.judgement {
             let age = (position - at) as f32;
             if age < 700.0 {
@@ -1982,7 +1982,7 @@ impl Playing {
         if self.play.botplay && piece("botplayTxt") {
             skin.centered(&phrase("Botplay", "Botplay").to_uppercase(), if settings.downscroll { HEIGHT - 190.0 } else { 190.0 }, 32, WHITE);
         }
-        shade(None);
+        shade_piece(None);
         fade(hud_alpha);
         // what scripts printed (debugPrint), newest at the top, each fading out after six seconds, as the Haxe engine shows it
         let now = get_time();

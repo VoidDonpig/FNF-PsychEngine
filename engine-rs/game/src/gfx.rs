@@ -742,6 +742,8 @@ struct Context {
     /// to frame (the picture, how it is read, the window's size it was made for).
     layers: Vec<(usize, usize)>,
     layer_open: Option<usize>,
+    /// The shader a HUD piece's layer (`shade_piece`) is going to be seen through.
+    piece: Option<Shader>,
     layer_stages: Vec<(wgpu::TextureView, wgpu::BindGroup, (u32, u32))>,
     /// The next thing drawn starts a call of its own (a layer or the rain's reach ends before it).
     cut: bool,
@@ -939,7 +941,7 @@ pub fn open(conf: Conf) -> Result<(String, Option<String>), String> {
     let now = Instant::now();
     let mut context = Context {
         event_loop: Some(event_loop), app, window, instance, surface: Some(surface), device, queue, config, format, pipeline, adding, layout, samplers, pictures: 0, white: None, letters: None,
-        vertices: Vec::new(), calls: Vec::new(), module: shader, shader: None, shaders: 0, layers: Vec::new(), layer_open: None, layer_stages: Vec::new(), cut: false, effect: None, rain: None, buffer: None, background: BLACK, camera: Mat4::IDENTITY, models: Vec::new(), recolor: None, fade: 1.0, blocks: 0.0, add: false,
+        vertices: Vec::new(), calls: Vec::new(), module: shader, shader: None, shaders: 0, layers: Vec::new(), layer_open: None, piece: None, layer_stages: Vec::new(), cut: false, effect: None, rain: None, buffer: None, background: BLACK, camera: Mat4::IDENTITY, models: Vec::new(), recolor: None, fade: 1.0, blocks: 0.0, add: false,
         down: HashSet::new(), pressed: HashSet::new(), released: HashSet::new(), last_pressed: None, typed: VecDeque::new(), alt_enter: false, focused: true, mouse: Mouse::default(),
         started: now, frame_began: now, frame_time: 1.0 / 60.0, shown: now, display_lag: 0.0, due: now, open: true,
     };
@@ -1212,10 +1214,29 @@ impl Context {
 
     /// Ends the layer begun at call `first`: what was drawn since goes to a picture of its own, and that picture is laid
     /// over the frame, the whole window, through `shader`.
-    fn end_layer(&mut self, first: usize, shader: &Shader) {
-        let (layer, size) = (self.layers.len(), (self.config.width.max(1), self.config.height.max(1)));
+    fn end_layer(&mut self, first: usize, shader: &Shader, fit: bool) {
         if first >= self.calls.len() {
             return;
+        }
+        let layer = self.layers.len();
+        let window = (self.config.width.max(1), self.config.height.max(1));
+        // a piece's layer is a picture of the piece alone: as large as everything drawn in it (in clip space `left`, `top`,
+        // `right`, `bottom`), so that to the shader the picture's edges are the piece's; a camera's layer is the window
+        let (mut left, mut top, mut right, mut bottom) = (-1.0f32, 1.0f32, 1.0f32, -1.0f32);
+        let mut size = window;
+        if fit {
+            let from = if first == 0 { 0 } else { self.calls[first - 1].end as usize };
+            let drawn = &mut self.vertices[from..];
+            let (mut low, mut high) = (Vec2::splat(f32::MAX), Vec2::splat(f32::MIN));
+            for vertex in drawn.iter() {
+                (low, high) = (low.min(vec2(vertex.position[0], vertex.position[1])), high.max(vec2(vertex.position[0], vertex.position[1])));
+            }
+            (left, right, bottom, top) = (low.x, high.x, low.y, high.y);
+            size = ((((right - left) / 2.0 * window.0 as f32).ceil() as u32).clamp(1, 4096), (((top - bottom) / 2.0 * window.1 as f32).ceil() as u32).clamp(1, 4096));
+            // (what was drawn is moved to fill that picture)
+            for vertex in drawn {
+                vertex.position = [(vertex.position[0] - left) / (right - left) * 2.0 - 1.0, (vertex.position[1] - bottom) / (top - bottom) * 2.0 - 1.0];
+            }
         }
         if self.layer_stages.get(layer).is_none_or(|(_, _, made)| *made != size) {
             let texture = Self::blank(&self.device, size.0, size.1, self.format, wgpu::TextureUsages::RENDER_ATTACHMENT | wgpu::TextureUsages::TEXTURE_BINDING);
@@ -1226,9 +1247,9 @@ impl Context {
             self.layer_stages.push((view, group, size));
         }
         self.layers.push((first, self.calls.len()));
-        // the picture over the whole window; its colours are multiplied by its opacity already (told by `recolored`)
-        shader.set("openfl_TextureSize", &[crate::WIDTH as f64, crate::HEIGHT as f64]);
-        let corner = |x: f32, y: f32| Vertex { position: [x * 2.0 - 1.0, 1.0 - y * 2.0], uv: [x, y], color: [1.0; 4], red: [0.0; 3], green: [0.0; 3], blue: [0.0; 3], recolored: 1.0, blocks: 0.0 };
+        // the picture over the whole window (or the piece's place); its colours are multiplied by its opacity already (told by `recolored`)
+        shader.set("openfl_TextureSize", &if fit { [size.0 as f64, size.1 as f64] } else { [crate::WIDTH as f64, crate::HEIGHT as f64] });
+        let corner = |x: f32, y: f32| Vertex { position: [left + x * (right - left), top - y * (top - bottom)], uv: [x, y], color: [1.0; 4], red: [0.0; 3], green: [0.0; 3], blue: [0.0; 3], recolored: 1.0, blocks: 0.0 };
         self.vertices.extend([(0.0, 0.0), (1.0, 0.0), (1.0, 1.0), (0.0, 0.0), (1.0, 1.0), (0.0, 1.0)].map(|(x, y)| corner(x, y)));
         self.calls.push(Call { group: self.layer_stages[layer].1.clone(), picture: (u64::MAX - layer as u64, FilterMode::Linear, false, shader.0.id), end: self.vertices.len() as u32, shader: Some(shader.clone()) });
         self.cut = true;
@@ -1440,7 +1461,7 @@ pub fn next_frame(fps: f64) -> bool {
         context.vertices.clear();
         context.calls.clear();
         context.layers.clear();
-        (context.effect, context.layer_open, context.cut) = (None, None, false);
+        (context.effect, context.layer_open, context.piece, context.cut) = (None, None, None, false);
         context.models.clear();
         (context.recolor, context.blocks, context.add, context.last_pressed, context.fade, context.shader) = (None, 0.0, false, None, 1.0, None);
 
@@ -1471,7 +1492,7 @@ pub fn clear_background(color: Color) {
         context.vertices.clear();
         context.calls.clear();
         context.layers.clear();
-        (context.effect, context.layer_open, context.cut) = (None, None, false);
+        (context.effect, context.layer_open, context.piece, context.cut) = (None, None, None, false);
         context.background = color;
     });
 }
@@ -1505,7 +1526,21 @@ pub fn layer_begin() {
 pub fn layer_end(shader: &Shader) {
     with(|context| {
         if let Some(first) = context.layer_open.take() {
-            context.end_layer(first, shader);
+            context.end_layer(first, shader, false);
+        }
+    });
+}
+
+/// What is drawn from now on, up to the next call, is a HUD piece (the health bar, the score text...) seen through
+/// `shader`: drawn into a picture of its own first, as Flixel's bars and texts are pictures. None ends the piece.
+/// (Inside a camera's layer it is left to the camera's shader.)
+pub fn shade_piece(shader: Option<&Shader>) {
+    with(|context| {
+        if let Some((shader, first)) = context.piece.take().zip(context.layer_open.take()) {
+            context.end_layer(first, &shader, true);
+        }
+        if let Some(shader) = shader.filter(|_| context.layer_open.is_none()) {
+            (context.layer_open, context.piece, context.cut) = (Some(context.calls.len()), Some(shader.clone()), true);
         }
     });
 }
