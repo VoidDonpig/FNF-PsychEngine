@@ -1367,6 +1367,10 @@ impl Playing {
                                 }
                             }
                         }
+                        "animSuffix" => {
+                            let suffix = value.as_str().unwrap_or("").to_owned();
+                            self.scene.iter_mut().for_each(|scene| drop(scene.suffixes.insert(index, suffix.clone())));
+                        }
                         // (drawn, or left alone, with what the scripts set)
                         "visible" | "multAlpha" | "offsetX" | "offsetY" | "rgbShader.enabled" | "noteSplashData.disabled" | "noMissAnimation" => {}
                         _ => eprintln!("Lua: {field} of a note is not used here"),

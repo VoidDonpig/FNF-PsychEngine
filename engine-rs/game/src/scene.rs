@@ -1023,9 +1023,9 @@ impl Character {
     }
 
     /// `alt`: with the alternative pose, when the character has one.
-    fn sing(&mut self, lane: usize, missed: bool, alt: bool) {
+    fn sing(&mut self, lane: usize, missed: bool, suffix: &str) {
         let pose = format!("{}{}", SING[lane], if missed { "miss" } else { "" });
-        if !(alt && self.play(&format!("{pose}-alt"))) {
+        if !(!suffix.is_empty() && self.play(&format!("{pose}{suffix}"))) {
             self.play(&pose);
         }
         self.since_note = 0.0;
@@ -1033,9 +1033,9 @@ impl Character {
 
     /// A piece of a hold, sung as the Haxe engine sings one: with the character's pose for holding ("singLEFT-hold"), left
     /// to play on (or its "-loop") once it runs; without one, the sing pose started over on every piece.
-    fn sing_piece(&mut self, lane: usize, alt: bool) {
-        let alt_pose = format!("{}-alt", SING[lane]);
-        let pose = if alt && self.animations.contains_key(&alt_pose) { alt_pose } else { SING[lane].to_owned() };
+    fn sing_piece(&mut self, lane: usize, suffix: &str) {
+        let alt_pose = format!("{}{suffix}", SING[lane]);
+        let pose = if !suffix.is_empty() && self.animations.contains_key(&alt_pose) { alt_pose } else { SING[lane].to_owned() };
         let hold = format!("{pose}-hold");
         if !self.animations.contains_key(&hold) {
             self.play(&pose);
@@ -1180,6 +1180,8 @@ pub struct Scene {
     flicker: Option<f32>,
     /// The streets' rain: how hard at the song's start and end; and how far the song is (0 to 1), which the play screen keeps.
     rain: Option<(f32, f32)>,
+    /// The ending of the singing poses scripts gave single notes (by their number), in place of "-alt" or none.
+    pub suffixes: HashMap<usize, String>,
     /// For how long it has rained, as the rain is drawn, and how fast that goes on in the fist fight.
     rain_time: f32,
     rain_pace: f32,
@@ -1342,6 +1344,7 @@ impl Scene {
                 _ => None,
             },
             progress: 0.0,
+            suffixes: HashMap::new(),
             rain_time: 1.0,
             rain_pace: 1.0,
             fight: (chart.stage == "phillyBlazin").then(Default::default),
@@ -1475,9 +1478,11 @@ impl Scene {
     /// A piece of chart note `note`'s hold was hit on `side` (0: the opponent, 1: the player): its singer sings on, and
     /// the opponent's keep the camera bumping. Stunts and the fist fight move for the notes themselves, not their holds.
     fn piece_sung(&mut self, lane: usize, note: usize, side: usize, chart: &Chart) {
-        let note = &chart.notes[note];
+        let (index, note) = (note, &chart.notes[note]);
         self.bumping |= side == 0 && !self.tutorial;
         let alt = note.kind == NoteKind::Alt || (side == 0 && chart.section_at(note.time).is_some_and(|s| s.alt));
+        let alt = self.suffixes.get(&index).cloned().unwrap_or(if alt { "-alt".to_owned() } else { String::new() });
+        let alt = alt.as_str();
         match note.kind {
             _ if self.fight.is_some() => {}
             NoteKind::NoAnimation | NoteKind::LightCan | NoteKind::KickCan | NoteKind::KneeCan | NoteKind::CockGun | NoteKind::FireGun | NoteKind::Fight(_) => {}
@@ -1819,7 +1824,7 @@ impl Scene {
                 Event::PieceHit { .. } => continue,
             };
             self.bumping |= side == 0 && !self.tutorial;
-            let note = note.map(|index| &chart.notes[index]);
+            let (index, note) = (note, note.map(|index| &chart.notes[index]));
             let kind = note.map_or(NoteKind::Normal, |n| n.kind);
             // in the fist fight nobody sings: every note is an exchange of moves, and the opponent's notes count as the player's misses
             if let Some(fight) = &mut self.fight {
@@ -1844,6 +1849,9 @@ impl Scene {
                 continue;
             }
             let alt = kind == NoteKind::Alt || (side == 0 && note.and_then(|n| chart.section_at(n.time)).is_some_and(|s| s.alt));
+            // (the poses' ending a script gave the note, `animSuffix`, in place of the chart's)
+            let alt = index.and_then(|index| self.suffixes.get(&index)).cloned().unwrap_or(if alt { "-alt".to_owned() } else { String::new() });
+            let alt = alt.as_str();
             match kind {
                 NoteKind::NoAnimation => {}
                 NoteKind::Hey if !missed => {
@@ -1901,7 +1909,7 @@ impl Scene {
                         (_, false) => ("cock", "Gun_Prep".to_owned()),
                     };
                     match pose {
-                        "" => self.player.iter_mut().for_each(|c| c.sing(lane, true, false)),
+                        "" => self.player.iter_mut().for_each(|c| c.sing(lane, true, "")),
                         pose => {
                             self.player.iter_mut().for_each(|c| c.pose(pose, None));
                             self.sounds.extend(self.paths.find(&format!("sounds/{sound}.ogg")).map(|path| (path, 1.0)));

@@ -183,7 +183,7 @@ Done:
   turn, direction, visibility; noteTweenX/Y/Alpha/Angle/Direction; the default strum places), the notes following
   their strum along its direction; texts (makeLuaText and the setText/getText functions: words, size, width,
   alignment, colour, outline, font); the notes (getPropertyFromGroup/setPropertyFromGroup on unspawnNotes and
-  notes: their time, lane, side, type, state; ignoreNote, hitCausesMiss, noAnimation, noMissAnimation, gfNote, visible,
+  notes: their time, lane, side, type, state; ignoreNote, hitCausesMiss, noAnimation, noMissAnimation, animSuffix, gfNote, visible,
   multAlpha, offsetX/offsetY; a note's own picture, `texture`, in its painted colours with `rgbShader.enabled` off;
   hitHealth, missHealth, lowPriority, `noteSplashData.disabled`).
   getProperty/setProperty (and tweens) on the cameras' and the HUD's pieces (camHUD, camGame, iconP1, iconP2,
@@ -304,8 +304,8 @@ Done:
 Not there yet:
 
 - **Menus**: the GPU Caching switch (nothing to switch here); update check.
-- **Scripts**: the rest of Lua's functions (a note's other fields: animSuffix, its own picture on pixel stages; shaders, groups, and getProperty/setProperty
-  beyond the camera, health, score, the characters' place and the scripts' sprites). HScript is Haxe code run against the Haxe
+- **Scripts**: the rest of Lua's functions (a note's own picture on pixel stages; shaders, groups, custom substates,
+  Animate atlas sprites, and what getProperty/setProperty and the class functions do not reach yet). HScript is Haxe code run against the Haxe
   engine's own classes, so mods that use it cannot run here as they are. Custom shaders.
 - **Editors**: the chart editor's menu entries that need a file dialog or another format (New, Open Events, Save As,
   the V-Slice ones), its themes; a system file dialog (the stage editor lists the images instead).
