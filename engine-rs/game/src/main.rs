@@ -2184,8 +2184,9 @@ fn memory_mb() -> Option<u64> {
         }
         #[link(name = "kernel32")]
         extern "system" {
-            fn GetCurrentProcess() -> *mut std::ffi::c_void;
-            fn K32GetProcessMemoryInfo(process: *mut std::ffi::c_void, counters: *mut Counters, size: u32) -> i32;
+            // (declared as priority.rs declares it: a handle as a number)
+            fn GetCurrentProcess() -> isize;
+            fn K32GetProcessMemoryInfo(process: isize, counters: *mut Counters, size: u32) -> i32;
         }
         let mut counters = Counters { size: std::mem::size_of::<Counters>() as u32, faults: 0, numbers: [0; 8] };
         let known = unsafe { K32GetProcessMemoryInfo(GetCurrentProcess(), &mut counters, counters.size) } != 0;
