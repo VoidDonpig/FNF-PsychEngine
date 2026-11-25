@@ -465,6 +465,58 @@ impl Text {
         [if self.width > 0.0 { self.width } else { widest + 4.0 }, lines.len().max(1) as f64 * self.size * 1.15 + 4.0]
     }
 
+    /// The text as it is drawn (same places, same outline), rendered to a picture of its size: rows of 0xAARRGGBB, the letters'
+    /// coverage as alpha. `bytes`: its font file.
+    fn pixels(&self, bytes: &[u8], color: u32) -> Option<(usize, usize, Vec<u32>)> {
+        let font = fontdue::Font::from_bytes(bytes, fontdue::FontSettings::default()).ok()?;
+        let size = self.size.max(1.0).trunc() as f32;
+        // (the lines as `lines` makes them, measured by the font's own advances as the renderer does)
+        let measure = |line: &str| line.chars().map(|letter| font.metrics(letter, size).advance_width).sum::<f32>();
+        let lines: Vec<(String, f32)> = if self.width > 0.0 { crate::menu::wrap(&self.words, self.width as f32, measure) } else { self.words.lines().map(str::to_owned).collect() }.into_iter().map(|line| {
+            let wide = measure(&line);
+            (line, wide)
+        }).collect();
+        let widest = lines.iter().map(|(_, wide)| *wide as f64).fold(0.0, f64::max);
+        let (box_width, box_height) = (if self.width > 0.0 { self.width } else { widest + 4.0 }, lines.len().max(1) as f64 * self.size * 1.15 + 4.0);
+        let [width, height] = [box_width, box_height].map(|side| side.ceil().max(1.0) as usize);
+        let mut canvas = vec![[0.0f32; 4]; width * height];
+        let (border, border_color) = (self.border.0 as f32, self.border.1 & 0xFFFFFF);
+        let line_width = box_width as f32;
+        for (row, (line, wide)) in lines.iter().enumerate() {
+            let at = vec2(2.0 + (line_width - 4.0 - wide) * self.align, 2.0 + (row as f32 + 0.85) * self.size as f32 * 1.15);
+            let mut layers: Vec<(Vec2, u32)> = Vec::new();
+            if border > 0.0 {
+                layers.extend([(-1.0, -1.0), (0.0, -1.0), (1.0, -1.0), (-1.0, 0.0), (1.0, 0.0), (-1.0, 1.0), (0.0, 1.0), (1.0, 1.0)].map(|(x, y)| (vec2(x, y) * border, border_color)));
+            }
+            layers.push((Vec2::ZERO, color & 0xFFFFFF));
+            for (shift, rgb) in layers {
+                let mut pen = 0.0;
+                for letter in line.chars() {
+                    let (metrics, coverage) = font.rasterize(letter, size);
+                    // the letter's corner as the renderer puts it: its bottom lies `ymin` above the baseline
+                    let (left, top) = ((at.x + shift.x + pen + metrics.xmin as f32) as i64, (at.y + shift.y - metrics.height as f32 - metrics.ymin as f32) as i64);
+                    for (at, cover) in coverage.iter().enumerate() {
+                        let (x, y) = (left + (at % metrics.width.max(1)) as i64, top + (at / metrics.width.max(1)) as i64);
+                        if *cover == 0 || x < 0 || y < 0 || x >= width as i64 || y >= height as i64 {
+                            continue;
+                        }
+                        // the new letter over what is there
+                        let (below, a) = (&mut canvas[y as usize * width + x as usize], *cover as f32 / 255.0);
+                        let out = a + below[3] * (1.0 - a);
+                        for (channel, shift) in [16, 8, 0].into_iter().enumerate() {
+                            let new = ((rgb >> shift) & 0xFF) as f32;
+                            below[channel] = if out > 0.0 { (new * a + below[channel] * below[3] * (1.0 - a)) / out } else { 0.0 };
+                        }
+                        below[3] = out;
+                    }
+                    pen += metrics.advance_width;
+                }
+            }
+        }
+        let pixels = canvas.iter().map(|[r, g, b, a]| u32::from_be_bytes([(a * 255.0).round() as u8, r.round() as u8, g.round() as u8, b.round() as u8])).collect();
+        Some((width, height, pixels))
+    }
+
     fn draw(&self, corner: Vec2, color: Color) {
         let (size, width) = (self.size.max(1.0) as u16, self.size()[0] as f32);
         let (border, border_color) = (self.border.0 as f32, Color { a: color.a, ..Color::from_hex(self.border.1 & 0xFFFFFF) });
@@ -890,14 +942,19 @@ impl Shared {
     }
 
     /// A font of `fonts/`, loaded once: the song's mod's, the shared ones, or the game's own.
+    /// The bytes of a font file by its name.
+    fn font_bytes(&self, name: &str) -> Option<Vec<u8>> {
+        let roots = self.paths.as_ref().map_or(Vec::new(), |paths| paths.roots().to_vec());
+        // (the game's fonts sit in assets/fonts, beside the shared folder)
+        let file = roots.iter().flat_map(|root| [root.join("fonts").join(name), root.join("..").join("fonts").join(name)]).find(|file| file.is_file());
+        file.and_then(|file| std::fs::read(file).ok())
+    }
+
     fn font(&mut self, name: &str) -> Option<Font> {
         if let Some(font) = self.fonts.get(name) {
             return font.clone();
         }
-        let roots = self.paths.as_ref().map_or(Vec::new(), |paths| paths.roots().to_vec());
-        // (the game's fonts sit in assets/fonts, beside the shared folder)
-        let file = roots.iter().flat_map(|root| [root.join("fonts").join(name), root.join("..").join("fonts").join(name)]).find(|file| file.is_file());
-        let font = file.and_then(|file| std::fs::read(file).ok()).and_then(|bytes| load_ttf_font_from_bytes(&bytes).ok());
+        let font = self.font_bytes(name).and_then(|bytes| load_ttf_font_from_bytes(&bytes).ok());
         self.fonts.insert(name.to_owned(), font.clone());
         font
     }
@@ -1756,7 +1813,16 @@ impl Scripts {
             if let Some((size, rgb)) = sprite.solid {
                 return Ok(if inside(size[0], size[1]) { (0xFF000000 | (rgb & 0xFFFFFF)) as i32 as i64 } else { 0 });
             }
-            // shortcut: a text's pixels are not read; it answers as an object without pixels
+            // a text: its words rendered as drawn, in a font file (a text of the default font, which has no file here, has no pixels)
+            if let Some(text) = sprite.text.clone() {
+                let color = sprite.color;
+                let rendered = shared.font_bytes(&text.font_name).and_then(|bytes| text.pixels(&bytes, color));
+                return Ok(match rendered {
+                    Some((width, height, pixels)) if inside(width as f64, height as f64) => pixels[args.2 as usize * width + args.1 as usize] as i32 as i64,
+                    Some(_) => 0,
+                    None => BLACK,
+                });
+            }
             let Some(file) = sprite.file.clone() else { return Ok(BLACK) };
             let image = shared.pixels.entry(file.clone()).or_insert_with(|| std::fs::read(&file).ok().and_then(|bytes| Image::from_file_with_format(&bytes, None).ok()));
             Ok(match image {
@@ -2660,6 +2726,17 @@ mod tests {
         let shared = scripts.shared.borrow();
         assert!(close(&shared.vars["box"][0], 152.0) && close(&shared.vars["box"][1], 0.0) && close(&shared.vars["box"][2], 106.4));
         assert!(close(&shared.props["strum5.width"], 106.4));
+    }
+
+    #[test]
+    fn a_text_renders_to_pixels_in_its_colour_with_its_outline() {
+        let Ok(bytes) = std::fs::read(concat!(env!("CARGO_MANIFEST_DIR"), "/../../assets/fonts/vcr.ttf")) else { return };
+        let text = Text { words: "I".to_owned(), size: 32.0, width: 0.0, font: None, font_name: "vcr.ttf".to_owned(), align: 0.0, border: (2.0, 0) };
+        let (width, height, pixels) = text.pixels(&bytes, 0xFF0000).unwrap();
+        assert_eq!(pixels.len(), width * height);
+        // somewhere the letter is solid red, around it black outline, in the corner nothing
+        assert!(pixels.contains(&0xFFFF0000) && pixels.iter().any(|pixel| pixel >> 24 > 0 && pixel & 0xFFFFFF == 0));
+        assert_eq!(pixels[0], 0);
     }
 
     #[test]
