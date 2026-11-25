@@ -182,7 +182,14 @@ Done:
   hitHealth, missHealth, lowPriority, `noteSplashData.disabled`).
   getProperty/setProperty (and tweens) on the cameras' and the HUD's pieces (camHUD, camGame, iconP1, iconP2,
   healthBar, scoreTxt, timeBar, timeTxt, botplayTxt: alpha and visible), songSpeed, camFollow,
-  isCameraOnForcedPos and the characters' visible. Videos: weekend 1's in story mode (before Darnell, after 2hot
+  isCameraOnForcedPos and the characters' visible; more of the game by its Haxe names (songLength, ratingPercent,
+  ratingName, ratingFC, playbackRate, cpuControlled, practiceMode, instakillOnMiss, healthGain, healthLoss, combo,
+  songMisses, camZooming, gfSpeed, `camGame.scroll`, startingSong, endingSong) and of the characters (curCharacter, the
+  animation playing and whether it is over, flipX, idleSuffix), what is true or false told as such;
+  getPropertyFromClass/setPropertyFromClass for the options (`ClientPrefs.data`), the song and the play screen
+  (PlayState, its `instance`), the Conductor, FlxG's size, music and camera zoom, and the game over's character and
+  sounds (GameOverSubstate); getObjectOrder/setObjectOrder among the scripts' sprites and around the characters;
+  getTranslationPhrase, getFileTranslation. Videos: weekend 1's in story mode (before Darnell, after 2hot
   and Blazin), and Lua's startVideo (as a cutscene the countdown or the end waits for, or over the song; with playOnLoad false
   it waits, black, for callMethod('videoCutscene.play'));
   mp4 files with H.264 pictures and AAC sound, decoded by OpenH264 (built in) and symphonia; holding Accept for

@@ -260,6 +260,19 @@ fn lane_x(settings: &Settings, player: bool, lane: usize) -> f32 {
     left + LANE_WIDTH * lane as f32 + LANE_WIDTH / 2.0
 }
 
+/// The texts scripts may read of the three characters, by the Haxe engine's names.
+const CHARACTER_TEXTS: [[&str; 4]; 3] = [
+    ["boyfriend.curCharacter", "boyfriend.animation.curAnim.name", "boyfriend.animation.name", "boyfriend.idleSuffix"],
+    ["dad.curCharacter", "dad.animation.curAnim.name", "dad.animation.name", "dad.idleSuffix"],
+    ["gf.curCharacter", "gf.animation.curAnim.name", "gf.animation.name", "gf.idleSuffix"],
+];
+
+/// Whether a property scripts read is true or false (the game keeps them as numbers).
+fn is_flag(name: &str) -> bool {
+    name.ends_with(".visible") || name.ends_with(".flipX") || name.ends_with(".finished")
+        || matches!(name, "isCameraOnForcedPos" | "camZooming" | "cpuControlled" | "practiceMode" | "instakillOnMiss" | "startingSong" | "endingSong")
+}
+
 /// What scripts may fade or hide of the cameras and the HUD, by the Haxe engine's names (all at 1 until set).
 const LOOKS: [&str; 18] = [
     "camHUD.alpha", "camHUD.visible", "camGame.alpha", "camGame.visible", "iconP1.alpha", "iconP1.visible", "iconP2.alpha", "iconP2.visible",
@@ -1114,10 +1127,23 @@ impl Playing {
             self.looks.insert(*look, number.unwrap_or(1.0) as f32);
             return;
         }
+        // the game over a script chooses: who falls, the sound of the fall, the music after it and at the retry
+        const GAME_OVER: [&str; 4] = ["GameOverSubstate.characterName", "GameOverSubstate.deathSoundName", "GameOverSubstate.loopSoundName", "GameOverSubstate.endSoundName"];
+        if let (Some(at), Some(text)) = (GAME_OVER.iter().position(|field| *field == name), value.as_str()) {
+            self.play.chart.game_over[at] = text.to_owned();
+            return;
+        }
         match (name, number) {
             ("health", Some(health)) => self.play.health = health.clamp(0.0, 2.0),
             ("songSpeed", Some(speed)) => self.speed = speed as f32,
             ("songScore", Some(score)) => self.play.score = score as i64,
+            ("songMisses", Some(misses)) => self.play.misses = misses as u32,
+            ("combo", Some(combo)) => self.play.combo = combo as u32,
+            ("cpuControlled", Some(on)) => self.play.botplay = on != 0.0,
+            ("practiceMode", Some(on)) => self.settings.practice = on != 0.0,
+            ("instakillOnMiss", Some(on)) => self.play.instakill = on != 0.0,
+            ("healthGain", Some(by)) => self.play.health_gain = by,
+            ("healthLoss", Some(by)) => self.play.health_loss = by,
             (_, Some(number)) => {
                 if !self.scene.as_mut().is_some_and(|scene| scene.set_property(name, number)) {
                     eprintln!("Lua: setProperty {name} is not known here");
@@ -1212,18 +1238,30 @@ impl Playing {
         self.lua.set("rating", play.accuracy().unwrap_or(0.0));
         self.lua.set("ratingFC", play.full_combo());
         self.lua.set("startedCountdown", true);
-        let mut props = vec![("health", play.health), ("songPosition", self.position), ("songScore", play.score as f64), ("songMisses", play.misses as f64), ("combo", play.combo as f64), ("songHits", hits as f64), ("songSpeed", self.speed as f64)];
+        let accuracy = play.accuracy();
+        let mut props = vec![("health", play.health), ("songPosition", self.position), ("songScore", play.score as f64), ("songMisses", play.misses as f64), ("combo", play.combo as f64), ("songHits", hits as f64), ("songSpeed", self.speed as f64),
+            ("songLength", self.length()), ("ratingPercent", accuracy.unwrap_or(0.0)), ("playbackRate", self.settings.playback_rate), ("healthGain", play.health_gain), ("healthLoss", play.health_loss),
+            ("cpuControlled", play.botplay as u8 as f64), ("practiceMode", self.settings.practice as u8 as f64), ("instakillOnMiss", play.instakill as u8 as f64),
+            ("startingSong", !self.started as u8 as f64), ("endingSong", self.end_asked as u8 as f64)];
         props.extend(LOOKS.iter().map(|name| (*name, self.looks.get(name).copied().unwrap_or(1.0) as f64)));
+        let mut texts = vec![("ratingName", accuracy.map_or("?", funkin_core::play::rating_name).to_owned()), ("ratingFC", play.full_combo().to_owned()), ("SONG.song", self.entry.title.clone()), ("curStage", play.chart.stage.clone())];
+        props.extend([("SONG.speed", play.chart.speed), ("SONG.bpm", play.chart.bpm)]);
         if let Some(scene) = &self.scene {
-            for name in ["defaultCamZoom", "camGame.zoom", "camHUD.zoom", "cameraSpeed", "camFollow.x", "camFollow.y", "isCameraOnForcedPos", "boyfriend.x", "boyfriend.y", "dad.x", "dad.y", "gf.x", "gf.y", "boyfriend.alpha", "dad.alpha", "gf.alpha", "boyfriend.visible", "dad.visible", "gf.visible", "boyfriend.midpoint.x", "boyfriend.midpoint.y", "dad.midpoint.x", "dad.midpoint.y", "gf.midpoint.x", "gf.midpoint.y"] {
+            for name in CHARACTER_TEXTS.into_iter().flatten() {
+                texts.extend(scene.text_property(name).map(|text| (name, text)));
+            }
+            for name in ["camGame.scroll.x", "camGame.scroll.y", "camZooming", "gfSpeed", "boyfriend.flipX", "dad.flipX", "gf.flipX", "boyfriend.scale.x", "boyfriend.scale.y", "dad.scale.x", "dad.scale.y", "gf.scale.x", "gf.scale.y",
+                "boyfriend.animation.curAnim.finished", "dad.animation.curAnim.finished", "gf.animation.curAnim.finished", "boyfriend.animation.finished", "dad.animation.finished", "gf.animation.finished", "defaultCamZoom", "camGame.zoom", "camHUD.zoom", "cameraSpeed", "camFollow.x", "camFollow.y", "isCameraOnForcedPos", "boyfriend.x", "boyfriend.y", "dad.x", "dad.y", "gf.x", "gf.y", "boyfriend.alpha", "dad.alpha", "gf.alpha", "boyfriend.visible", "dad.visible", "gf.visible", "boyfriend.midpoint.x", "boyfriend.midpoint.y", "dad.midpoint.x", "dad.midpoint.y", "gf.midpoint.x", "gf.midpoint.y"] {
                 props.extend(scene.property(name).map(|value| (name, value)));
             }
         }
         let mut shared = self.lua.shared.borrow_mut();
-        for (name, value) in props {
+        // what is true or false is told so (to Lua, the number 0 is true)
+        let values = props.into_iter().map(|(name, value)| (name, if is_flag(name) { serde_json::json!(value != 0.0) } else { serde_json::json!(value) }));
+        for (name, value) in values.chain(texts.into_iter().map(|(name, text)| (name, serde_json::json!(text)))) {
             match shared.props.get_mut(name) {
-                Some(kept) => *kept = serde_json::json!(value),
-                None => drop(shared.props.insert(name.to_owned(), serde_json::json!(value))),
+                Some(kept) => *kept = value,
+                None => drop(shared.props.insert(name.to_owned(), value)),
             }
         }
         // the notes on their way: from the first still in play to two seconds ahead, with their states
@@ -1797,6 +1835,23 @@ fn start_scripts(base: &Path, paths: &Paths, entry: &SongEntry, chart: &Chart, s
     }).collect();
     let globals: Vec<(&str, serde_json::Value)> = globals.into_iter().chain(defaults.iter().map(|(name, value)| (name.as_str(), value.clone()))).collect();
     let mut shared = lua::Shared::new(settings.mod_settings.clone(), &entry.source, paths.clone());
+    // what getPropertyFromClass reads of the Haxe engine's classes: the player's options and the song as it was opened
+    shared.class_props = [
+        ("ClientPrefs.data.downScroll", json!(settings.downscroll)), ("ClientPrefs.data.middleScroll", json!(settings.middlescroll)), ("ClientPrefs.data.opponentStrums", json!(settings.opponent_strums)),
+        ("ClientPrefs.data.ghostTapping", json!(settings.ghost_tapping)), ("ClientPrefs.data.noReset", json!(settings.no_reset)), ("ClientPrefs.data.guitarHeroSustains", json!(settings.one_note_holds)),
+        ("ClientPrefs.data.hitsoundVolume", json!(settings.hitsound_volume)), ("ClientPrefs.data.ratingOffset", json!(settings.rating_offset)), ("ClientPrefs.data.sickWindow", json!(settings.sick_window)),
+        ("ClientPrefs.data.goodWindow", json!(settings.good_window)), ("ClientPrefs.data.badWindow", json!(settings.bad_window)), ("ClientPrefs.data.safeFrames", json!(settings.safe_frames)),
+        ("ClientPrefs.data.noteOffset", json!(settings.offset_ms)), ("ClientPrefs.data.splashAlpha", json!(settings.splash_alpha)), ("ClientPrefs.data.hideHud", json!(settings.hide_hud)),
+        ("ClientPrefs.data.timeBarType", json!(settings::TIME_BARS[settings.time_bar])), ("ClientPrefs.data.flashing", json!(settings.flashing)), ("ClientPrefs.data.camZooms", json!(settings.cam_zooms)),
+        ("ClientPrefs.data.scoreZoom", json!(settings.score_zoom)), ("ClientPrefs.data.healthBarAlpha", json!(settings.health_bar_alpha)), ("ClientPrefs.data.showFPS", json!(settings.show_fps)),
+        ("ClientPrefs.data.comboStacking", json!(settings.combo_stacking)), ("ClientPrefs.data.lowQuality", json!(settings.low_quality)), ("ClientPrefs.data.antialiasing", json!(settings.antialiasing)),
+        ("ClientPrefs.data.shaders", json!(settings.shaders)), ("ClientPrefs.data.framerate", json!(settings.framerate)), ("ClientPrefs.data.language", json!(settings.language)),
+        ("PlayState.isStoryMode", json!(story)), ("PlayState.isPixelStage", json!(chart.stage.starts_with("school"))), ("PlayState.chartingMode", json!(false)), ("PlayState.curStage", json!(chart.stage)),
+        ("PlayState.SONG.song", json!(entry.title)), ("PlayState.SONG.speed", json!(chart.speed)), ("PlayState.SONG.bpm", json!(bpm)), ("PlayState.SONG.stage", json!(chart.stage)),
+        ("PlayState.SONG.player1", json!(chart.player)), ("PlayState.SONG.player2", json!(chart.opponent)), ("PlayState.SONG.gfVersion", json!(chart.gf)),
+        ("Conductor.bpm", json!(bpm)), ("Conductor.crochet", json!(crochet)), ("Conductor.stepCrochet", json!(crochet / 4.0)),
+        ("FlxG.width", json!(WIDTH)), ("FlxG.height", json!(HEIGHT)),
+    ].into_iter().map(|(name, value)| (name.to_owned(), value)).collect();
     (shared.note_keys, shared.save_dir, shared.song, shared.language) = (settings.keys, base.join("funkin-rs-lua-saves"), song, settings.language.clone());
     lua::Scripts::start(&files, &globals, shared)
 }

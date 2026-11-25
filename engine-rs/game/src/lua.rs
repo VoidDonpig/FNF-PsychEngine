@@ -152,6 +152,8 @@ pub struct Shared {
     /// work on; what they changed (id, score, unlocked just now) is the game's to keep.
     pub achievements: Option<(Vec<funkin_core::achievements::Listed>, funkin_core::save::Save)>,
     pub achieved: Vec<(String, Option<f64>, bool)>,
+    /// What getPropertyFromClass reads that stays as it is through a song, by "Class.field" (the class without its package).
+    pub class_props: HashMap<String, serde_json::Value>,
 }
 
 struct Script {
@@ -889,6 +891,74 @@ impl Scripts {
             let mut shared = shared.borrow_mut();
             let of_sprite = args.split_once('.').and_then(|(tag, field)| shared.sprite(tag)?.get(field));
             from_json(lua, &of_sprite.or_else(|| shared.props.get(&args).cloned()).unwrap_or_default())
+        });
+        // shortcut: the classes of the Haxe engine scripts read from are the few here: the options (ClientPrefs.data), the
+        // song and the play screen (PlayState, its `instance` being what getProperty reads), the Conductor, FlxG's size,
+        // music and camera; setPropertyFromClass reaches the play screen and the game over's names
+        function!("getPropertyFromClass", |lua, shared, args: (String, String)| {
+            let shared = shared.borrow();
+            let class = args.0.rsplit('.').next().unwrap_or("");
+            let live = match (class, args.1.as_str()) {
+                ("PlayState", field) => field.strip_prefix("instance."),
+                ("Conductor", "songPosition") | ("FlxG", "sound.music.time") => Some("songPosition"),
+                ("FlxG", "sound.music.length") => Some("songLength"),
+                ("FlxG", "camera.zoom") => Some("camGame.zoom"),
+                _ => None,
+            };
+            let found = live.and_then(|name| shared.props.get(name)).or_else(|| shared.class_props.get(&format!("{class}.{}", args.1)));
+            if found.is_none() {
+                eprintln!("Lua: getPropertyFromClass {}.{} is not known here", args.0, args.1);
+            }
+            from_json(lua, &found.cloned().unwrap_or_default())
+        });
+        function!("setPropertyFromClass", |_lua, shared, args: (String, String, Value)| {
+            let class = args.0.rsplit('.').next().unwrap_or("").to_owned();
+            let name = match (class.as_str(), args.1.strip_prefix("instance.")) {
+                ("PlayState", Some(field)) => field.to_owned(),
+                ("FlxG", _) if args.1 == "camera.zoom" => "camGame.zoom".to_owned(),
+                _ => format!("{class}.{}", args.1),
+            };
+            shared.borrow_mut().requests.push(Request::SetProperty { name, value: to_json(&args.2) });
+            Ok(args.2)
+        });
+        g.set("getTranslationPhrase", lua.create_function(|_, args: (String, Option<String>, Option<Vec<Value>>)| {
+            let values: Vec<String> = args.2.unwrap_or_default().iter().map(|value| value.to_string().unwrap_or_default()).collect();
+            Ok(funkin_core::lang::phrase_with(&args.0, args.1.as_deref().unwrap_or(&args.0), &values.iter().map(String::as_str).collect::<Vec<_>>()))
+        })?)?;
+        g.set("getFileTranslation", lua.create_function(|_, args: String| Ok(funkin_core::lang::phrase(&args, &args)))?)?;
+        // where a script's sprite lies among the others: those behind the characters count from 0, then the three
+        // characters (gfGroup, dadGroup, boyfriendGroup), then those in front
+        // shortcut: a sprite cannot lie between two characters; one put there goes behind all three
+        function!("getObjectOrder", |_lua, shared, args: (String, Option<String>)| {
+            let shared = shared.borrow();
+            let stage = |sprite: &Sprite| sprite.added && sprite.camera == Cam::Game;
+            let behind = shared.sprites.iter().filter(|(_, sprite)| stage(sprite) && !sprite.front).count();
+            let character = ["gfGroup", "dadGroup", "boyfriendGroup", "gf", "dad", "boyfriend"].iter().position(|name| *name == args.0).map(|at| behind + at % 3);
+            let place = |front: bool, tag: &str| shared.sprites.iter().filter(|(_, sprite)| stage(sprite) && sprite.front == front).position(|(name, _)| name == tag);
+            Ok(character.or_else(|| place(false, &args.0)).or_else(|| place(true, &args.0).map(|at| behind + 3 + at)).map_or(-1, |at| at as i64))
+        });
+        function!("setObjectOrder", |_lua, shared, args: (String, i64, Option<String>)| {
+            let mut shared = shared.borrow_mut();
+            let Some(from) = shared.sprites.iter().position(|(name, _)| *name == args.0) else {
+                eprintln!("Lua: setObjectOrder: Object {} doesn't exist!", args.0);
+                return Ok(());
+            };
+            let (name, mut sprite) = shared.sprites.remove(from);
+            let stage = |sprite: &Sprite| sprite.added && sprite.camera == Cam::Game;
+            let behind: Vec<usize> = shared.sprites.iter().enumerate().filter(|(_, (_, other))| stage(other) && !other.front).map(|(at, _)| at).collect();
+            let front: Vec<usize> = shared.sprites.iter().enumerate().filter(|(_, (_, other))| stage(other) && other.front).map(|(at, _)| at).collect();
+            let place = args.1.max(0) as usize;
+            // its place in the list of all sprites: before the one that has that place now, or after the last of its side
+            let count = shared.sprites.len();
+            let to = if place < behind.len() + 3 {
+                sprite.front = false;
+                behind.get(place).copied().unwrap_or(behind.last().map_or(0, |last| last + 1))
+            } else {
+                sprite.front = true;
+                front.get(place - behind.len() - 3).copied().unwrap_or(count)
+            };
+            shared.sprites.insert(to.min(count), (name, sprite));
+            Ok(())
         });
         function!("getHealth", |lua, shared, _args: ()| from_json(lua, &shared.borrow().props.get("health").cloned().unwrap_or_default()));
         function!("getSongPosition", |lua, shared, _args: ()| from_json(lua, &shared.borrow().props.get("songPosition").cloned().unwrap_or_default()));
@@ -1632,6 +1702,18 @@ mod tests {
         scripts.call("onBeatHit", ());
         assert_eq!(scripts.requests(), [Request::SetProperty { name: "camGame.zoom".to_owned(), value: serde_json::json!(2.5) }]);
         assert_eq!(scripts.shared.borrow().vars["list"], serde_json::json!([1, 2, "test"]));
+    }
+
+    #[test]
+    fn sprites_are_put_in_order_among_each_other_and_the_characters() {
+        let scripts = run("for _, tag in ipairs({'a', 'b', 'c'}) do makeLuaSprite(tag, nil, 0, 0); addLuaSprite(tag, tag == 'c') end
+            before = {getObjectOrder('a'), getObjectOrder('b'), getObjectOrder('gfGroup'), getObjectOrder('boyfriend'), getObjectOrder('c'), getObjectOrder('none')}
+            setObjectOrder('a', getObjectOrder('boyfriendGroup') + 1); setObjectOrder('c', 0); setObjectOrder('b', getObjectOrder('dadGroup'))
+            setVar('orders', {before, {getObjectOrder('c'), getObjectOrder('b'), getObjectOrder('a')}})");
+        // (b, asked between two characters, stays behind them all: the last of those behind)
+        assert_eq!(scripts.shared.borrow().vars["orders"], serde_json::json!([[0, 1, 2, 4, 5, -1], [0, 1, 5]]));
+        let shared = scripts.shared.borrow();
+        assert_eq!(shared.sprites.iter().map(|(name, sprite)| (name.as_str(), sprite.front)).collect::<Vec<_>>(), [("c", false), ("b", false), ("a", true)]);
     }
 
     #[test]

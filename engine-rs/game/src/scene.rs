@@ -1511,6 +1511,11 @@ impl Scene {
             "camFollow.x" => self.target.x as f64,
             "camFollow.y" => self.target.y as f64,
             "isCameraOnForcedPos" => self.pinned.is_some() as u8 as f64,
+            // (the camera's corner, as Flixel has it)
+            "camGame.scroll.x" => (self.camera.x - SCREEN.x / 2.0) as f64,
+            "camGame.scroll.y" => (self.camera.y - SCREEN.y / 2.0) as f64,
+            "camZooming" => self.bumping as u8 as f64,
+            "gfSpeed" => self.gf_speed as f64,
             _ => {
                 let (who, field) = name.split_once('.')?;
                 let character = character(match who { "boyfriend" => "bf", "dad" => "dad", "gf" => "gf", _ => return None })?;
@@ -1521,9 +1526,24 @@ impl Scene {
                     "midpoint.y" => character.middle().y as f64,
                     "alpha" => character.tint.a as f64,
                     "visible" => (character.tint.a > 0.0) as u8 as f64,
+                    "flipX" => character.flip_x as u8 as f64,
+                    "scale.x" | "scale.y" => character.scale as f64,
+                    "animation.curAnim.finished" | "animation.finished" => character.finished() as u8 as f64,
                     _ => return None,
                 }
             }
+        })
+    }
+
+    /// As `property`, for what is text: a character's name, the animation it plays, the suffix of its idle move.
+    pub fn text_property(&self, name: &str) -> Option<String> {
+        let (who, field) = name.split_once('.')?;
+        let character = [&self.opponent, &self.player, &self.gf][match who { "boyfriend" => 1, "dad" => 0, "gf" => 2, _ => return None }].as_ref()?;
+        Some(match field {
+            "curCharacter" => character.name.clone(),
+            "animation.curAnim.name" | "animation.name" => character.current.clone(),
+            "idleSuffix" => character.idle_suffix.clone(),
+            _ => return None,
         })
     }
 
@@ -1540,6 +1560,11 @@ impl Scene {
             "camFollow.y" => self.pinned = Some(vec2(self.pinned.unwrap_or(self.target).x, value)),
             "isCameraOnForcedPos" if value == 0.0 => self.pinned = None,
             "isCameraOnForcedPos" => self.pinned = Some(self.pinned.unwrap_or(self.target)),
+            // (it goes back to whom it follows, as Flixel's does)
+            "camGame.scroll.x" => self.camera.x = value + SCREEN.x / 2.0,
+            "camGame.scroll.y" => self.camera.y = value + SCREEN.y / 2.0,
+            "camZooming" => self.bumping = value != 0.0,
+            "gfSpeed" => self.gf_speed = (value.round() as i64).max(1),
             // cameraSetTarget: the camera turns to a character (0 the opponent, 1 the player, 2 the girlfriend) until the
             // next section, as the Haxe engine's moveCamera
             "cameraTarget" => self.turned = Some((value as usize, self.position)),
@@ -1555,6 +1580,7 @@ impl Scene {
                     "visible" if value == 0.0 => character.tint.a = 0.0,
                     "visible" if character.tint.a == 0.0 => character.tint.a = 1.0,
                     "visible" => {}
+                    "flipX" => character.flip_x = value != 0.0,
                     _ => return false,
                 }
             }
