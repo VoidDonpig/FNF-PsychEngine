@@ -113,6 +113,7 @@ mod tools {
     }
 
     pub fn set(text: &str) {
+        // shortcut: the first tool that starts gets the text; one that starts and then fails is not followed by the next
         for (line, _) in tools() {
             let Ok(mut child) = command(&line, false).stdin(Stdio::piped()).stdout(Stdio::null()).spawn() else { continue };
             // the text goes in from a helper thread (a full pipe must not block the frame); the tool is left running when it

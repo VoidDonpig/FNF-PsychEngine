@@ -1137,6 +1137,7 @@ impl ChartEditor {
         }
         // pasted ones following the mouse
         if let Some(floating) = &self.floating {
+            // shortcut: a pasted hold shows its head only until it is put down; draw its tail too if that is missed
             for (event, thing) in &floating.things {
                 let y = self.y_of(floating.at + thing[0].as_f64().unwrap_or(0.0));
                 let column = if *event { 0 } else { floating.column + thing[1].as_u64().unwrap_or(0) as usize + 1 };

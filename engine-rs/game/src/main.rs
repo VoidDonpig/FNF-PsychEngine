@@ -480,6 +480,7 @@ impl Playing {
         };
         let video = opening.and_then(|name| paths.video(name)).and_then(|path| video::Video::open(&path, true, true, false, false).map_err(|error| eprintln!("{error}")).ok());
         let end_video = closing.and_then(|name| paths.video(name));
+        lua.shared.borrow_mut().class_props.insert("PlayState.isPixelStage".to_owned(), serde_json::json!(scene.as_ref().is_some_and(|scene| scene.pixel)));
         Ok(Playing { charting, video, end_video, speech: None, countdown_asked: false, countdown_held: false, entry: entry.clone(), play, song, player_voice, own_skin: None, music_fade: None, lua, looks: Default::default(), renamed: Default::default(), note_art: HashMap::new(), strums: strums(settings), flash: None, sounds: HashMap::new(), fades: Vec::new(), music_volume: 1.0, bar_colors: Default::default(), lua_step: i64::MIN, lua_section: usize::MAX, lua_created: false, end_asked: false, end_held: false, base: base.to_path_buf(), staged, bowing: false, tune: false, paused_at: 0.0, pause_scroll: 0.0, deaths: 0, scene, waited: 0.0, clock: Default::default(), ticked: std::time::Instant::now(), started: false, paused: None, choosing: None, skip_time: 0.0, skip_held: 0.0, difficulties, story, taunt_until: None, start_at, position: -lead_in, settings: settings.clone(), held_keys: Vec::new(), flash_until: [[f64::MIN; 4]; 2], judgement: None, last_hit: f64::MIN, lanes_used: [false; 4], idled: false, idle_for: 0.0, sang_for: 0.0,
             paths, cutscene, lead_in, counted: i64::MIN, popups: Vec::new(), splashes: Vec::new(), dead: None, next_event: 0, speed, speed_change: None }.with(settings))
     }
@@ -1850,7 +1851,7 @@ fn start_scripts(base: &Path, paths: &Paths, entry: &SongEntry, chart: &Chart, s
         ("ClientPrefs.data.scoreZoom", json!(settings.score_zoom)), ("ClientPrefs.data.healthBarAlpha", json!(settings.health_bar_alpha)), ("ClientPrefs.data.showFPS", json!(settings.show_fps)),
         ("ClientPrefs.data.comboStacking", json!(settings.combo_stacking)), ("ClientPrefs.data.lowQuality", json!(settings.low_quality)), ("ClientPrefs.data.antialiasing", json!(settings.antialiasing)),
         ("ClientPrefs.data.shaders", json!(settings.shaders)), ("ClientPrefs.data.framerate", json!(settings.framerate)), ("ClientPrefs.data.language", json!(settings.language)),
-        ("PlayState.isStoryMode", json!(story)), ("PlayState.isPixelStage", json!(chart.stage.starts_with("school"))), ("PlayState.chartingMode", json!(false)), ("PlayState.curStage", json!(chart.stage)),
+        ("PlayState.isStoryMode", json!(story)), ("PlayState.chartingMode", json!(false)), ("PlayState.curStage", json!(chart.stage)),
         ("PlayState.SONG.song", json!(entry.title)), ("PlayState.SONG.speed", json!(chart.speed)), ("PlayState.SONG.bpm", json!(bpm)), ("PlayState.SONG.stage", json!(chart.stage)),
         ("PlayState.SONG.player1", json!(chart.player)), ("PlayState.SONG.player2", json!(chart.opponent)), ("PlayState.SONG.gfVersion", json!(chart.gf)),
         ("Conductor.bpm", json!(bpm)), ("Conductor.crochet", json!(crochet)), ("Conductor.stepCrochet", json!(crochet / 4.0)),

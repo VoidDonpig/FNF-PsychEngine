@@ -34,6 +34,10 @@ function cameraSetTarget(target)
     setProperty('cameraTarget', ({dad = 0, boyfriend = 1, gf = 2})[who(target)])
     return target
 end
+function getCameraScrollX() return getProperty('camGame.scroll.x') end
+function getCameraScrollY() return getProperty('camGame.scroll.y') end
+function setCameraScroll(x, y) setProperty('camGame.scroll.x', x); setProperty('camGame.scroll.y', y) end
+function addCameraScroll(x, y) setCameraScroll(getCameraScrollX() + (x or 0), getCameraScrollY() + (y or 0)) end
 function getCameraFollowX() return getProperty('camFollow.x') end
 function getCameraFollowY() return getProperty('camFollow.y') end
 function setCameraFollowPoint(x, y) setProperty('camFollow.x', x); setProperty('camFollow.y', y) end

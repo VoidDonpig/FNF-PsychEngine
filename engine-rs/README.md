@@ -195,7 +195,7 @@ Done:
   getPropertyFromClass/setPropertyFromClass for the options (`ClientPrefs.data`), the song and the play screen
   (PlayState, its `instance`), the Conductor, FlxG's size, music and camera zoom, and the game over's character and
   sounds (GameOverSubstate); getObjectOrder/setObjectOrder among the scripts' sprites and around the characters;
-  getTranslationPhrase, getFileTranslation. Videos: weekend 1's in story mode (before Darnell, after 2hot
+  getTranslationPhrase, getFileTranslation; setCameraScroll, addCameraScroll, getCameraScrollX/Y. Videos: weekend 1's in story mode (before Darnell, after 2hot
   and Blazin), and Lua's startVideo (as a cutscene the countdown or the end waits for, or over the song; with playOnLoad false
   it waits, black, for callMethod('videoCutscene.play'));
   mp4 files with H.264 pictures and AAC sound, decoded by OpenH264 (built in) and symphonia; holding Accept for
