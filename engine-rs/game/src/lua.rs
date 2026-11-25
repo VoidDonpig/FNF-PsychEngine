@@ -1007,7 +1007,7 @@ impl Sprite {
             }
         }
         match (&self.solid, self.frame(), &self.art) {
-            (Some((_, rgb)), _, _) => draw_rectangle(corner.x, corner.y, size.x, size.y, Color { a: self.alpha as f32, ..Color::from_hex(*rgb & 0xFFFFFF) }),
+            (Some((bitmap, rgb)), _, _) => draw_rectangle_bitmap(corner.x, corner.y, size.x, size.y, Color { a: self.alpha as f32, ..Color::from_hex(*rgb & 0xFFFFFF) }, bitmap.map(|side| side as f32)),
             (_, Some((frame, moved)), Some(art)) => {
                 let other = self.playing.as_ref().and_then(|(name, time)| {
                     let animation = self.animations.get(name).filter(|animation| !animation.frames.is_empty())?;
@@ -1657,7 +1657,6 @@ impl Scripts {
         // mods' shaders (`shaders/<name>.frag`), on the scripts' sprites and the three characters
         // (the game's own pictures take them too: strums, notes, splashes, rating and combo pictures, by the names the Haxe
         // engine has them under; the stages the game draws in code have no name a script can reach in the Haxe engine either)
-        // shortcut: a sprite that is a plain rectangle (makeGraphic) is one dot to its shader (openfl_TextureSize 1 by 1).
         function!("initLuaShader", |_lua, shared, args: (String, Option<Value>)| {
             let mut shared = shared.borrow_mut();
             Ok(shared.shaders_on && shared.shader(&args.0).is_some())

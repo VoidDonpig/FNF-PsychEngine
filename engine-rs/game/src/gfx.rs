@@ -759,6 +759,9 @@ struct Context {
     background: Color,
     camera: Mat4,
     models: Vec<Mat4>,
+    /// What a mod's shader is told the picture's size is, when it is not the picture's own (a script's makeGraphic rectangle: the
+    /// white dot stands for a bitmap of that size).
+    shader_size: Option<[f32; 2]>,
     recolor: Option<[Vec3; 3]>,
     /// How much of everything drawn now shows (a whole camera faded, as a script fades the HUD's).
     fade: f32,
@@ -946,7 +949,7 @@ pub fn open(conf: Conf) -> Result<(String, Option<String>), String> {
     let now = Instant::now();
     let mut context = Context {
         event_loop: Some(event_loop), app, window, instance, surface: Some(surface), device, queue, config, format, pipeline, adding, layout, samplers, pictures: 0, white: None, letters: None,
-        vertices: Vec::new(), calls: Vec::new(), module: shader, shader: None, shaders: 0, layers: Vec::new(), layer_open: None, piece: None, layer_stages: Vec::new(), cut: false, effect: None, rain: None, buffer: None, background: BLACK, camera: Mat4::IDENTITY, models: Vec::new(), recolor: None, fade: 1.0, blocks: 0.0, add: false,
+        vertices: Vec::new(), calls: Vec::new(), module: shader, shader: None, shaders: 0, layers: Vec::new(), layer_open: None, piece: None, layer_stages: Vec::new(), cut: false, effect: None, rain: None, buffer: None, background: BLACK, camera: Mat4::IDENTITY, models: Vec::new(), shader_size: None, recolor: None, fade: 1.0, blocks: 0.0, add: false,
         down: HashSet::new(), pressed: HashSet::new(), released: HashSet::new(), last_pressed: None, typed: VecDeque::new(), alt_enter: false, focused: true, mouse: Mouse::default(),
         started: now, frame_began: now, frame_time: 1.0 / 60.0, shown: now, display_lag: 0.0, due: now, open: true,
     };
@@ -1017,7 +1020,7 @@ impl Context {
         }
         // a mod's shader is told how large the picture is (openfl_TextureSize, the first of its uniforms)
         if let Some(shader) = &self.shader {
-            let size = [picture.0.width as f64, picture.0.height as f64];
+            let size = self.shader_size.map_or([picture.0.width as f64, picture.0.height as f64], |size| size.map(f64::from));
             if shader.get("openfl_TextureSize").as_deref() != Some(&size) {
                 shader.set("openfl_TextureSize", &size);
             }
@@ -1632,6 +1635,13 @@ pub fn draw_texture_ex(picture: &Texture2D, x: f32, y: f32, color: Color, params
 
 pub fn draw_rectangle(x: f32, y: f32, width: f32, height: f32, color: Color) {
     draw_rectangle_turned(x, y, width, height, 0.0, color);
+}
+
+/// A rectangle whose shader sees a bitmap of `bitmap` pixels (openfl_TextureSize), the uv still running 0 to 1 across it.
+pub fn draw_rectangle_bitmap(x: f32, y: f32, width: f32, height: f32, color: Color, bitmap: [f32; 2]) {
+    with(|context| context.shader_size = Some(bitmap));
+    draw_rectangle(x, y, width, height, color);
+    with(|context| context.shader_size = None);
 }
 
 /// The same, turned around its middle by `rotation` radians.
