@@ -55,11 +55,46 @@ vec4 funkin_tinted(vec4 c) { return vec4(c.rgb * funkin_color.rgb * mix(c.a, 1.0
 
 const TYPES: [&str; 12] = ["float", "int", "bool", "vec2", "vec3", "vec4", "ivec2", "ivec3", "ivec4", "mat2", "mat3", "mat4"];
 
+/// `texture(sampler, uv, bias)`, also `texture2D` and `flixel_texture2D`, as GLSL and OpenFL take it: the bias (a shift of the
+/// mip level) is left out, as every read here is of the picture itself (the macros of the header take two arguments).
+fn without_bias(source: &str) -> String {
+    let (mut out, mut rest) = (String::new(), source);
+    while let Some(at) = ["texture(", "texture2D(", "flixel_texture2D("].iter().filter_map(|name| rest.find(name).map(|at| (at, name.len()))).min() {
+        let (start, name_len) = at;
+        let (name, after) = (&rest[start..start + name_len], &rest[start + name_len..]);
+        // (a longer name ending in these, like `mytexture(`, is not the call)
+        if rest[..start].chars().next_back().is_some_and(|before| before.is_alphanumeric() || before == '_') {
+            out.push_str(&rest[..start + name_len]);
+            rest = after;
+            continue;
+        }
+        out.push_str(&rest[..start]);
+        // the arguments: up to the bracket that closes this one, split at commas outside brackets
+        let (mut depth, mut parts, mut from, mut close) = (0, Vec::new(), 0, None);
+        for (index, letter) in after.char_indices() {
+            match letter {
+                '(' | '[' => depth += 1,
+                ')' | ']' if depth == 0 => { parts.push(&after[from..index]); close = Some(index); break }
+                ')' | ']' => depth -= 1,
+                ',' if depth == 0 => { parts.push(&after[from..index]); from = index + 1 }
+                _ => {}
+            }
+        }
+        let Some(close) = close else { out.push_str(&rest[start..]); return out };
+        out.push_str(name);
+        out.push_str(&parts.iter().take(2).map(|part| without_bias(part)).collect::<Vec<_>>().join(","));
+        out.push(')');
+        rest = &after[close + 1..];
+    }
+    out.push_str(rest);
+    out
+}
+
 /// Takes apart one part of a shader written for OpenFL (its fragment shader, or `vertex`): its uniforms, pictures and
 /// varyings set aside, and the values it gives its globals outside any function (which only some drivers take) given
 /// at the start of `main` instead.
 fn gather(source: &str, vertex: bool) -> Result<Gathered, String> {
-    let source = without_comments(source);
+    let source = without_bias(&without_comments(source));
     let (mut block, mut pictures, mut defaults, mut varyings) = (Vec::new(), Vec::new(), Vec::new(), Vec::new());
     let (mut body, mut hoisted, mut depth, mut entry) = (String::new(), String::new(), 0usize, "main".to_owned());
     // statement by statement: up to each `;`, `{` or `}` outside brackets, and each line that starts with `#`
@@ -456,6 +491,9 @@ mod tests {
         // a vertex shader that moves each corner by 100 pixels through openfl_Matrix and openfl_Position
         let moved = translate_pair(None, Some("#pragma header\nvoid main() {\n#pragma body\ngl_Position = openfl_Matrix * (openfl_Position + vec4(100.0, 0.0, 0.0, 0.0));\n}")).unwrap_or_else(|error| panic!("{error}"));
         assert!(moved.vertex.is_some());
+        // the three-argument form: the bias is left out (also nested, and in the other spellings)
+        assert_eq!(without_bias("a = texture(bitmap, uv, -1.0) + texture2D(t, f(uv, 2.0), 0.5) + texture(t, uv) + mytexture(a, b, c);"), "a = texture(bitmap, uv) + texture2D(t, f(uv, 2.0)) + texture(t, uv) + mytexture(a, b, c);");
+        translate("#pragma header\nvoid main() { gl_FragColor = texture(bitmap, openfl_TextureCoordv, -0.5); }").unwrap_or_else(|error| panic!("{error}"));
         // the scroll comes off the position and the matrix puts the view's corner at (-1, 1): same screen place as the built-in path
         assert!(VERTEX_HEADER.contains("(-1.0 - funkin_view.y) / funkin_view.x") && VERTEX_HEADER.contains("-1.0, 1.0, 0.0, 1.0)"));
         let (view, world) = ([0.002f32, -0.5, -0.004, 1.0], [300.0f32, 100.0]);
