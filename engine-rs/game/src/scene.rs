@@ -1659,6 +1659,15 @@ impl Scene {
     }
 
     /// Hud shake offset for this frame, in pixels.
+    /// How many of the stage's objects lie behind all the characters, between the first and the second, the second and the third, and in front.
+    pub fn object_counts(&self) -> [usize; 4] {
+        let mut counts = [0; 4];
+        for layer in &self.backdrop {
+            counts[if layer.def.front { 3 } else { layer.def.after.min(2) }] += 1;
+        }
+        counts
+    }
+
     pub fn hud_shake(&self) -> Vec2 {
         let (strength, left) = self.shake[1];
         if left > 0.0 { vec2(rand::gen_range(-1.0, 1.0), rand::gen_range(-1.0, 1.0)) * strength * SCREEN } else { Vec2::ZERO }

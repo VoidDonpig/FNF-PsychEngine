@@ -1473,6 +1473,7 @@ impl Playing {
         let first = self.play.first_open();
         let count = self.play.chart.notes[first..].iter().take_while(|note| note.time < self.position + 2000.0).count();
         shared.notes_window = (first, count);
+        shared.stage_objects = self.scene.as_ref().map_or([0; 4], |scene| scene.object_counts());
         for index in first.saturating_sub(16)..first + count {
             let state = match self.play.state[index] { NoteState::Pending => 0, NoteState::Held => 1, NoteState::Done => 2, NoteState::Missed => 3 };
             shared.notes[index].state = state;

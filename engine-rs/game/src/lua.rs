@@ -263,6 +263,8 @@ pub struct Shared {
     /// and how many.
     pub notes: Vec<NoteView>,
     pub notes_window: (usize, usize),
+    /// How many of the stage file's objects lie behind all the characters, between the first and second, between the second and third, and in front.
+    pub stage_objects: [usize; 4],
     /// The keys of the four lanes, which keyPressed("left") and the like ask about.
     pub note_keys: [[Option<KeyCode>; 2]; 4],
     /// Where the scripts' own saves are kept, and those open (by name).
@@ -1142,6 +1144,8 @@ fn indices(value: &Value) -> Vec<u32> {
 enum StageItem {
     /// The sprite at this place of `sprites`.
     Sprite(usize),
+    /// One of the stage file's objects (they are not the scripts' sprites).
+    Stage,
     /// 0 gf, 1 dad, 2 boyfriend.
     Character(usize),
 }
@@ -1151,6 +1155,7 @@ impl Shared {
     fn stage_row(&self) -> Vec<StageItem> {
         let mut row = Vec::new();
         for layer in 0..4u8 {
+            row.extend(std::iter::repeat_n(StageItem::Stage, self.stage_objects[layer as usize]));
             row.extend(self.sprites.iter().enumerate().filter(|(_, (_, sprite))| sprite.added && sprite.camera == Cam::Game && if sprite.front { layer == 3 } else { layer == sprite.between.min(2) }).map(|(at, _)| StageItem::Sprite(at)));
             if layer < 3 {
                 row.push(StageItem::Character(layer as usize));
@@ -3251,6 +3256,18 @@ mod tests {
         scripts.close_substate();
         scripts.tick(0.5);
         assert_eq!(time(&scripts, "under"), Some(0.5));
+    }
+
+    #[test]
+    fn an_object_put_at_the_order_of_dad_lies_behind_the_characters_that_follow_him() {
+        // two stage objects behind everything; the Haxe engine's insert after a remove puts it just after dad, whose number was read with it in
+        let file = std::env::temp_dir().join(format!("funkin-lua-test-order-{}.lua", std::process::id()));
+        std::fs::write(&file, "makeLuaSprite('mid', nil, 0, 0); addLuaSprite('mid'); setObjectOrder('mid', getObjectOrder('dadGroup') + 1)
+            makeLuaSprite('back', nil, 0, 0); addLuaSprite('back'); setObjectOrder('back', getObjectOrder('dadGroup'))
+            setVar('orders', {getObjectOrder('dadGroup'), getObjectOrder('mid'), getObjectOrder('back'), getObjectOrder('boyfriendGroup')})").unwrap();
+        let scripts = Scripts::start(&[file.clone()], &[], Shared { stage_objects: [2, 0, 0, 0], ..Default::default() });
+        let _ = std::fs::remove_file(file);
+        assert_eq!(scripts.shared.borrow().vars["orders"], serde_json::json!([3, 6, 4, 5]));
     }
 
     #[test]
