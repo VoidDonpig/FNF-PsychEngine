@@ -245,6 +245,25 @@ fn shown(kind: &Kind, settings: &mut Settings) -> String {
 }
 
 /// Changes an option by `steps` (Left/Right, times ten with Shift), or flips it (`steps` 0, Enter).
+/// How fast a number runs while Left or Right is held, in its own units a second: the Haxe options' `scrollSpeed`
+/// (Option.hx's 50 for a whole number, its 0.5 for a percentage, and what each option sets in source/options/*.hx).
+// shortcut: Haxe's FLOAT options (the hit windows, Safe Frames and the Gameplay Changers' numbers) do not move at all while held (its hold code only
+// writes INT and PERCENT values); here they run at the pace they declare.
+fn hold_pace(key: &str) -> f64 {
+    match key {
+        "hitsound_volume" | "splash_alpha" | "health_bar_alpha" | "volume" => 1.6,
+        "rating_offset" => 20.0,
+        "sick_window" => 15.0,
+        "good_window" => 30.0,
+        "bad_window" => 60.0,
+        "safe_frames" => 5.0,
+        "scroll_speed" => 2.0,
+        "playback_rate" => 1.0,
+        "health_gain" | "health_loss" => 2.5,
+        _ => 50.0,
+    }
+}
+
 fn change(kind: &Kind, settings: &mut Settings, steps: f64) {
     match *kind {
         Kind::Flag(get) if steps == 0.0 => *get(settings) ^= true,
@@ -391,7 +410,10 @@ impl OptionsMenu {
         let selected = options[self.row];
         self.draw_page(menus, skin, &title, &rows, &phrase(&format!("description_{}", selected.name), selected.about), dt);
         // held, a number keeps going after half a second
-        let held = if matches!(selected.kind, Kind::Number(..)) { self.held_steps(dt) } else { 0.0 };
+        let held = match selected.kind {
+            Kind::Number(_, _, _, step, _) => self.held_steps(dt, hold_pace(selected.key) / step),
+            _ => 0.0,
+        };
         if steps != 0.0 || held != 0.0 {
             change(&selected.kind, settings, if steps != 0.0 { steps * fast } else { held * fast });
             if steps != 0.0 {
@@ -425,16 +447,14 @@ impl OptionsMenu {
         back && self.direct
     }
 
-    /// Steps Left or Right held down has made this frame: none for half a second, then twenty-five a second.
-    // shortcut: one pace for every number; the Haxe engine gives each option its own (most scroll 50 a second). Give
-    // OPTIONS a pace of its own if one feels wrong.
-    fn held_steps(&mut self, dt: f32) -> f64 {
+    /// Steps Left or Right held down has made this frame: none for half a second, then `rate` a second.
+    fn held_steps(&mut self, dt: f32, rate: f64) -> f64 {
         let (left, right) = (crate::controls::down(Ui::Left), crate::controls::down(Ui::Right));
         if left == right {
             self.held = 0.0;
             return 0.0;
         }
-        let ticks = |held: f32| ((held - 0.5) * 25.0).floor().max(0.0);
+        let ticks = |held: f32| ((held - 0.5) * rate as f32).floor().max(0.0);
         let before = self.held;
         self.held += dt;
         (ticks(self.held) - ticks(before)) as f64 * if right { 1.0 } else { -1.0 }
@@ -582,7 +602,7 @@ impl OptionsMenu {
         } else if !matches!(option.kind, ModKind::Bool | ModKind::Key) {
             let steps = pressed(Ui::Right) as i32 - pressed(Ui::Left) as i32;
             // (only how long it has been held counts here, not its steps)
-            self.held_steps(dt);
+            self.held_steps(dt, 25.0);
             if steps != 0 {
                 let next = option.stepped(&value, steps as f64);
                 self.hold_value = next.as_f64().unwrap_or(0.0);
@@ -960,6 +980,18 @@ impl OptionsMenu {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn every_number_has_a_pace_that_fits_its_range() {
+        assert_eq!((hold_pace("rating_offset"), hold_pace("bad_window"), hold_pace("splash_alpha"), hold_pace("framerate")), (20.0, 60.0, 1.6, 50.0));
+        for option in OPTIONS {
+            if let Kind::Number(_, low, high, step, _) = option.kind {
+                // a held key must cross the whole range in under a minute and not skip more than a step a frame at 60 FPS
+                let rate = hold_pace(option.key) / step;
+                assert!(rate > 0.0 && rate / 60.0 <= 1.5 && (high - low) / hold_pace(option.key) < 60.0, "{}", option.key);
+            }
+        }
+    }
 
     #[test]
     fn options_change_within_their_limits() {
