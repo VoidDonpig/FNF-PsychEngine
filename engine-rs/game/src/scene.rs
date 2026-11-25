@@ -896,6 +896,9 @@ pub struct Character {
     /// (the Haxe engine's sprites do, and character positions are written for that): this is that shift.
     grow: Vec2,
     camera_offset: Vec2,
+    /// The file's `position`, already in `position`: a script's own Character leaves it out (Haxe's Character keeps x and y as given;
+    /// only PlayState adds positionArray when it places one).
+    file_position: Vec2,
     /// Sing poses are held for this many 16th notes after the last note.
     sing_steps: f32,
     current: String,
@@ -996,6 +999,7 @@ impl Character {
             size,
             grow: frame_size * (scale - 1.0) / 2.0,
             camera_offset: pair(&json["camera_position"]),
+            file_position: pair(&json["position"]),
             sing_steps: json["sing_duration"].as_f64().unwrap_or(4.0) as f32,
             current,
             time: 0.0,
@@ -1086,10 +1090,10 @@ impl Character {
         self.position + self.size / 2.0
     }
 
-    /// For the scripts' own characters (createInstance objects.Character): where it stands now (its file's offset in), that
+    /// For the scripts' own characters (createInstance objects.Character): where it stands now (as given: the file's `position` is not in it), that
     /// it moved on by `dt`, plays a pose (false when it has none of that name), dances, is drawn at a place, and its size.
     pub(crate) fn script_position(&self) -> Vec2 {
-        self.position
+        self.position - self.file_position
     }
 
     pub(crate) fn script_tick(&mut self, dt: f32) {

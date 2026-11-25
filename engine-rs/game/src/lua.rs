@@ -2682,7 +2682,7 @@ impl Scripts {
                     shared.cameras.push((tag, Layer { zoom: 1.0, alpha: 1.0, angle: 0.0, x: 0.0, y: 0.0, visible: true }));
                     return Ok(Some(true));
                 }
-                // (x, y, the character's file, whether it stands on the player's side; its file's offset is in its x and y)
+                // (x, y, the character's file, whether it stands on the player's side; x and y are as given, the file's `position` is not added, as in Haxe)
                 "Character" => {
                     let Some(paths) = shared.paths.clone() else { return Ok(None) };
                     let name = word(2).unwrap_or_else(|| "bf".to_owned());
