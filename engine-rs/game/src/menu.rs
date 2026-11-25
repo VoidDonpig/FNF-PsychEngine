@@ -156,7 +156,7 @@ pub fn wrap(text: &str, width: f32, measure: impl Fn(&str) -> f32) -> Vec<String
 }
 
 /// Opens a web page in the player's browser. Links come from mods' files, so only web addresses pass, and no shell sees them.
-fn open_link(link: &str) {
+pub(crate) fn open_link(link: &str) {
     if !(link.starts_with("https://") || link.starts_with("http://")) {
         return;
     }
@@ -502,6 +502,43 @@ pub struct Menus {
     player: Player,
     /// A mod that asks for it was moved or switched: leaving the mods menu starts the game over.
     restart: bool,
+    /// The answer of the update check still on its way (None once it came, or when no check was asked for).
+    update: Option<std::sync::mpsc::Receiver<String>>,
+    /// The outdated-version screen over the main menu: the newest version, when it came up, and when it was answered (OutdatedSubState).
+    outdated: Option<(String, f64, Option<f64>)>,
+}
+
+/// Where the fork's newest version is written (Haxe: CoolUtil.checkForUpdates asks upstream's file instead).
+const VERSION_URL: &str = "https://raw.githubusercontent.com/VoidDonpig/FNF-PsychEngine/main/gitVersion.txt";
+const RELEASES_URL: &str = "https://github.com/VoidDonpig/FNF-PsychEngine/releases";
+
+/// The version a gitVersion.txt holds: its first line, trimmed. Nothing for an empty answer.
+fn newest_version(body: &str) -> Option<String> {
+    Some(body.lines().next()?.trim().to_owned()).filter(|version| !version.is_empty())
+}
+
+/// Whether the version online is not the one running (not "newer": the Haxe engine compares with !=).
+fn is_outdated(online: &str, running: &str) -> bool {
+    online != running.trim()
+}
+
+/// Asks for the newest version on a thread of its own, with the system's curl (Windows 10, macOS and Linux have one). Any failure means silence.
+fn ask_for_version() -> std::sync::mpsc::Receiver<String> {
+    let (send, receive) = std::sync::mpsc::channel();
+    std::thread::spawn(move || {
+        let mut command = std::process::Command::new("curl");
+        command.args(["--silent", "--fail", "--location", "--max-time", "10", VERSION_URL]).stdin(std::process::Stdio::null()).stderr(std::process::Stdio::null());
+        #[cfg(windows)]
+        {
+            // (no console window comes up with it)
+            use std::os::windows::process::CommandExt;
+            command.creation_flags(0x0800_0000);
+        }
+        if let Some(version) = command.output().ok().filter(|out| out.status.success()).and_then(|out| newest_version(&String::from_utf8_lossy(&out.stdout))) {
+            let _ = send.send(version);
+        }
+    });
+    receive
 }
 
 /// Where a step of (dx, dy) leads from `selected` in a grid of `count` things, four to a row. Rows wrap around, and so does the list.
@@ -597,8 +634,13 @@ impl Menus {
             art, look: None, letters: String::new(), secret: None, jingle: None, fade: None, hue: 0.0,
             alphabet: Alphabet::load(&paths), paths, audio: None, music_at: 0.0, intro: true, wacky: [wacky.0.to_owned(), wacky.1.to_owned()], flash: (f64::MIN, 1.0), chosen: None,
             main_row: 0, main_side: 0, main_slide: 0.0, main_spots: Vec::new(), main_pointed: false, week: 0, week_scroll: 0.0, difficulty: "Normal".to_owned(), rows: Vec::new(), song: 0, song_scroll: 0.0, editor: 0, editor_scroll: 0.0, editor_folder: 0, said: None, tint: Vec3::ONE, shown: (0.0, 0.0),
-            credits: Vec::new(), credit: 0, credit_scroll: 0.0, mods: Vec::new(), mod_row: 0, mods_changed: false, mod_center: 2, mod_focus: None, mod_hover: None, mod_dragging: false, mods_scan: 0.0, reload: false, flashing: true, shaders: true, achievement: 0, achievement_scroll: 0.0, listed: Rc::new(all_achievements(base)), chime: false, held: 0.0, preview: false, asking: None, player: Player::default(), restart: false,
+            credits: Vec::new(), credit: 0, credit_scroll: 0.0, mods: Vec::new(), mod_row: 0, mods_changed: false, mod_center: 2, mod_focus: None, mod_hover: None, mod_dragging: false, mods_scan: 0.0, reload: false, flashing: true, shaders: true, achievement: 0, achievement_scroll: 0.0, listed: Rc::new(all_achievements(base)), chime: false, held: 0.0, preview: false, asking: None, player: Player::default(), restart: false, update: None, outdated: None,
         }
+    }
+
+    /// Starts the check for a newer version of the game (once per run; the screen shows when the main menu is reached).
+    pub fn check_for_updates(&mut self) {
+        self.update = Some(ask_for_version());
     }
 
     /// Lets go of every picture loaded: each is read again when next shown (the Anti-Aliasing option changed).
@@ -753,7 +795,11 @@ impl Menus {
         let go = match page {
             _ if self.asking.is_some() => self.ask(skin),
             Page::Title => self.title(skin, &save.egg),
-            Page::Main => self.main_menu(skin),
+            Page::Main => {
+                let go = self.main_menu(skin);
+                self.outdated_screen(skin);
+                go
+            }
             Page::Story => self.story(skin, weeks, songs, save),
             Page::Freeplay => self.freeplay(skin, weeks, songs, save),
             Page::Mods => self.mods_menu(skin),
@@ -915,7 +961,9 @@ impl Menus {
         const MIDDLE: [&str; 4] = ["story_mode", "freeplay", "mods", "credits"];
         let (now, dt) = (get_time(), get_frame_time().min(0.1));
         let since = self.chosen.map(|at| (now - at) as f32);
-        if since.is_none() {
+        // the outdated screen over it holds the menu still
+        let frozen = self.outdated.is_some();
+        if since.is_none() && !frozen {
             let step = pressed(&DOWN) as usize + pressed(&UP) as usize * (MIDDLE.len() - 1);
             if step != 0 && self.main_side == 0 {
                 self.main_row = (self.main_row + step) % MIDDLE.len();
@@ -988,6 +1036,7 @@ impl Menus {
         label(skin, "Friday Night Funkin' v0.2.8", 12.0, HEIGHT - 24.0, 16, WHITE, false);
 
         match since {
+            _ if frozen => Go::Stay,
             Some(t) if t >= 1.0 => match (self.main_side, self.main_row) {
                 (1, _) => Go::Options,
                 (-1, _) => Go::Page(Page::Achievements),
@@ -1009,6 +1058,58 @@ impl Menus {
             }
             None if pressed(&Ui::Debug1) => Go::Page(Page::Editors),
             None => Go::Stay,
+        }
+    }
+
+    /// The "outdated version" screen (OutdatedSubState): Enter opens the releases page, Escape goes on; either fades it out.
+    fn outdated_screen(&mut self, skin: &Skin) {
+        if self.outdated.is_none() {
+            // shown once per run, when the answer is in and the main menu is up
+            let Some(answer) = self.update.as_ref().map(|receive| receive.try_recv()) else { return };
+            match answer {
+                Err(std::sync::mpsc::TryRecvError::Empty) => return,
+                Ok(online) if is_outdated(&online, funkin_core::ENGINE_VERSION) && self.chosen.is_none() => self.outdated = Some((online, get_time(), None)),
+                _ => {}
+            }
+            self.update = None;
+            if self.outdated.is_none() {
+                return;
+            }
+        }
+        let now = get_time();
+        let Some((online, since, left)) = &mut self.outdated else { return };
+        let (online, since) = (online.clone(), *since);
+        if left.is_none() && (pressed(&ACCEPT) || pressed(&BACK)) {
+            if pressed(&ACCEPT) {
+                open_link(RELEASES_URL);
+            }
+            *left = Some(now);
+            self.sound("cancelMenu", 1.0);
+        }
+        let left = self.outdated.as_ref().and_then(|state| state.2);
+        // fading in over 0.6 s (sine in); out over 0.9 s (background) and 1 s (text) once answered
+        let sine_in = |t: f64| 1.0 - (t.clamp(0.0, 1.0) * std::f64::consts::FRAC_PI_2).cos();
+        let sine_out = |t: f64| (t.clamp(0.0, 1.0) * std::f64::consts::FRAC_PI_2).sin();
+        let (back, text) = match left {
+            None => (sine_in((now - since) / 0.6) * 0.8, sine_in((now - since) / 0.6)),
+            Some(at) => (0.8 * (1.0 - sine_out((now - at) / 0.9)), 1.0 - sine_out((now - at) / 1.0)),
+        };
+        if left.is_some_and(|at| now - at >= 1.0) {
+            self.outdated = None;
+            return;
+        }
+        draw_rectangle(0.0, 0.0, WIDTH, HEIGHT, Color::new(0.0, 0.0, 0.0, back as f32));
+        let rule = "-----------------------------------------------";
+        let lines = [
+            "Sup bro, looks like you're running an outdated version of".to_owned(), format!("Psych Engine ({})", funkin_core::ENGINE_VERSION), String::new(), rule.to_owned(), String::new(),
+            format!("Press ENTER to update to the latest version {online}"), String::new(), "Press ESCAPE to proceed anyway.".to_owned(), String::new(),
+            "You can disable this warning by unchecking the".to_owned(), "\"Check for Updates\" setting in the Options Menu".to_owned(), String::new(), rule.to_owned(), String::new(), "Thank you for using the Engine!".to_owned(),
+        ];
+        let step = 37.0;
+        let top = (HEIGHT - lines.len() as f32 * step) / 2.0;
+        for (row, line) in lines.iter().enumerate() {
+            let width = measure_text(line, skin.font.as_ref(), 32, 1.0).width;
+            label(skin, line, (WIDTH - width) / 2.0, top + row as f32 * step, 32, white(text as f32), false);
         }
     }
 
@@ -1898,6 +1999,15 @@ impl Menus {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn the_online_version_is_the_first_line_and_only_equal_ones_are_current() {
+        assert_eq!(newest_version("1.0.5\r\nsecond"), Some("1.0.5".to_owned()));
+        assert_eq!(newest_version("  1.0.4  \n"), Some("1.0.4".to_owned()));
+        assert_eq!((newest_version(""), newest_version("\n1.0.5")), (None, None));
+        assert!(is_outdated("1.0.5", "1.0.4") && is_outdated("0.9", "1.0.4"), "any difference counts, as in Haxe");
+        assert!(!is_outdated("1.0.4", " 1.0.4 "));
+    }
 
     #[test]
     fn turning_colours_takes_red_to_green_and_back() {

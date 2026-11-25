@@ -5,7 +5,7 @@ use serde_json::{json, Map, Value};
 
 pub const METADATA_VERSION: &str = "2.2.3";
 pub const CHART_VERSION: &str = "2.0.0";
-const ENGINE: &str = "Psych Engine v1.0.4";
+const ENGINE: &str = "Psych Engine v";
 
 /// The stages Psych and V-Slice name differently (Psych's name, V-Slice's).
 const STAGES: [(&str, &str); 6] = [("stage", "mainStage"), ("spooky", "spookyMansion"), ("philly", "phillyTrain"), ("limo", "limoRide"), ("mall", "mallXmas"), ("tank", "tankmanBattlefield")];
@@ -54,7 +54,7 @@ pub fn export(song: &Value, difficulties: &[String], pixel: bool) -> (Value, Val
         }
     }
     let mut notes = Vec::new();
-    let generated_by = format!("{ENGINE} - Chart Editor V-Slice Exporter");
+    let generated_by = format!("{ENGINE}{} - Chart Editor V-Slice Exporter", funkin_core::ENGINE_VERSION);
     let mut bpm = song["bpm"].as_f64().filter(|bpm| *bpm > 0.0).unwrap_or(100.0);
     let mut time_changes = vec![json!({"t": 0, "bpm": number(bpm)})];
     let mut time = 0.0;
@@ -216,7 +216,7 @@ pub fn to_psych(chart: &Value, metadata: &Value) -> Psych {
             "needsVoices": true, "speed": speed, "offset": 0,
             "player1": characters["player"], "player2": characters["opponent"], "gfVersion": characters["girlfriend"], "stage": stage,
             "format": "psych_v1_convert", "artist": metadata["artist"], "charter": metadata["charter"],
-            "generatedBy": format!("{ENGINE} - Chart Editor V-Slice Importer"),
+            "generatedBy": format!("{ENGINE}{} - Chart Editor V-Slice Importer", funkin_core::ENGINE_VERSION),
         })));
     }
 
@@ -270,7 +270,7 @@ mod tests {
     fn a_psych_chart_exports_as_vslice_hx_does() {
         let (chart, metadata) = export(&psych_chart(), &names(), false);
         let notes = json!([{"t": 0, "d": 0}, {"t": 600, "d": 5, "l": 300}, {"t": 2400, "d": 4, "k": "Hurt Note"}, {"t": 4000, "d": 1}, {"t": 4400, "d": 6}]);
-        let by = "Psych Engine v1.0.4 - Chart Editor V-Slice Exporter";
+        let by = format!("{ENGINE}{} - Chart Editor V-Slice Exporter", funkin_core::ENGINE_VERSION);
         assert_eq!(chart, json!({
             "scrollSpeed": {"easy": 2.5, "normal": 2.5},
             "events": [

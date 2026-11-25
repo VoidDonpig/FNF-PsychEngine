@@ -2056,7 +2056,7 @@ fn start_scripts(base: &Path, paths: &Paths, entry: &SongEntry, chart: &Chart, s
     let first = chart.sections.first();
     use serde_json::json;
     let globals = [
-        ("version", json!("1.0.4")), ("modFolder", json!(entry.source)), ("currentModDirectory", json!(entry.source)),
+        ("version", json!(funkin_core::ENGINE_VERSION)), ("modFolder", json!(entry.source)), ("currentModDirectory", json!(entry.source)),
         ("curBpm", json!(bpm)), ("bpm", json!(bpm)), ("scrollSpeed", json!(chart.speed)), ("crochet", json!(crochet)), ("stepCrochet", json!(crochet / 4.0)),
         ("songLength", json!(0)), ("songName", json!(entry.title)), ("songPath", json!(song)), ("loadedSongName", json!(entry.title)), ("loadedSongPath", json!(song)),
         ("curStage", json!(chart.stage)), ("isStoryMode", json!(story)), ("difficulty", json!(0)), ("difficultyName", json!(entry.difficulty)),
@@ -2355,6 +2355,10 @@ fn main() {
         Some("editors") => Page::Editors,
         _ => Page::Title,
     };
+    // the update check belongs to a normal start: not to a run that begins in a song, a week or the options
+    if settings.check_for_updates && matches!(first, Page::Title | Page::Main) && value("--play").is_none() && value("--story").is_none() && !flag("--options") {
+        menus.check_for_updates();
+    }
     let pixel_skin = Skin::load_pixel(&base, None).map_err(|error| eprintln!("No pixel note skin: {error}")).ok();
     let mut skins = (settings.note_skin, settings.splash_skin);
     let (mut skin, mut screen) = match Skin::load(&base, skins, None) {
