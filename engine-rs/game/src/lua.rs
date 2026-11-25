@@ -236,6 +236,9 @@ pub struct Shared {
     pub character_shaders: [Option<Shader>; 3],
     /// Who stood in each of those places when last looked (a shader goes with the character it was put on).
     pub character_names: [String; 3],
+    /// And those of the game's own pictures, by the key `game_object` gives their Haxe names ("strum5", "note12",
+    /// "splashes", "popup0"...).
+    pub game_shaders: HashMap<String, Shader>,
     /// And those of the stage file's objects, by their names (the names the stage has, as the play screen told).
     pub object_shaders: HashMap<String, Shader>,
     pub object_names: Vec<String>,
@@ -973,12 +976,37 @@ impl Shared {
         read.ok()
     }
 
+    /// The key of a picture the game draws itself, by the name scripts reach it with (`strumLineNotes.members[2]`,
+    /// `notes[0]`, `grpNoteSplashes`, `comboGroup.members[1]`); a group named without a number means all its members.
+    fn game_object(&self, object: &str) -> Option<String> {
+        let object = object.replace(".members[", "[");
+        let (group, index) = match object.split_once('[') {
+            Some((group, rest)) => (group, Some(rest.trim_end_matches(']').trim().parse::<usize>().ok()?)),
+            None => (object.as_str(), None),
+        };
+        Some(match (group, index) {
+            ("strumLineNotes", Some(index)) if index < 8 => format!("strum{index}"),
+            ("opponentStrums", Some(index)) if index < 4 => format!("strum{index}"),
+            ("playerStrums", Some(index)) if index < 4 => format!("strum{}", index + 4),
+            ("strumLineNotes", None) => "strums".to_owned(),
+            ("unspawnNotes", Some(index)) => format!("note{index}"),
+            ("notes", Some(index)) if index < self.notes_window.1 => format!("note{}", self.notes_window.0 + index),
+            ("notes" | "unspawnNotes", None) => "notes".to_owned(),
+            ("grpNoteSplashes", Some(index)) => format!("splash{index}"),
+            ("grpNoteSplashes", None) => "splashes".to_owned(),
+            ("comboGroup", Some(index)) => format!("popup{index}"),
+            ("comboGroup", None) => "popups".to_owned(),
+            _ => return None,
+        })
+    }
+
     /// The shader something is drawn through: a script's sprite by its tag, or a character by the Haxe engine's name.
     fn shader_of(&mut self, object: &str) -> Option<Shader> {
         match (character_slot(object), camera_slot(object)) {
             (Some(slot), _) => self.character_shaders[slot].clone(),
             (_, Some(slot)) => self.camera_shaders[slot].clone(),
             _ if self.object_names.iter().any(|name| name == object) => self.object_shaders.get(object).cloned(),
+            _ if self.sprite(object).is_none() && self.game_object(object).is_some() => self.game_shaders.get(&self.game_object(object)?).cloned(),
             _ => self.sprite(object)?.shader.clone(),
         }
     }
@@ -1362,9 +1390,9 @@ impl Scripts {
             Ok(())
         });
         // mods' shaders (`shaders/<name>.frag`), on the scripts' sprites and the three characters
-        // shortcut: on the game's own pictures other than the characters, the stage file's objects and the HUD's bars,
-        // icons and texts (the notes, the ratings, the stages the game draws in code) they are not taken. A sprite that
-        // is a plain rectangle (makeGraphic) is one dot to its shader (openfl_TextureSize 1 by 1).
+        // (the game's own pictures take them too: strums, notes, splashes, rating and combo pictures, by the names the Haxe
+        // engine has them under; the stages the game draws in code have no name a script can reach in the Haxe engine either)
+        // shortcut: a sprite that is a plain rectangle (makeGraphic) is one dot to its shader (openfl_TextureSize 1 by 1).
         function!("initLuaShader", |_lua, shared, args: (String, Option<Value>)| {
             let mut shared = shared.borrow_mut();
             Ok(shared.shaders_on && shared.shader(&args.0).is_some())
@@ -1386,6 +1414,13 @@ impl Scripts {
             }
             // (an object of the stage's file, by its name there)
             let of_stage = shared.object_names.contains(&args.0);
+            // (the game's own: strums, notes, splashes, rating and combo pictures)
+            if character_slot(&args.0).is_none() && shared.sprite(&args.0).is_none() && !of_stage {
+                if let Some(key) = shared.game_object(&args.0) {
+                    shared.game_shaders.insert(key, shader.fresh());
+                    return Ok(true);
+                }
+            }
             match (character_slot(&args.0), shared.sprite(&args.0)) {
                 (Some(slot), _) => shared.character_shaders[slot] = Some(shader.fresh()),
                 (None, Some(sprite)) => sprite.shader = Some(shader.fresh()),
@@ -1398,6 +1433,11 @@ impl Scripts {
             let mut shared = shared.borrow_mut();
             if let Some(slot) = camera_slot(&args) {
                 return Ok(shared.camera_shaders[slot].take().is_some());
+            }
+            if character_slot(&args).is_none() && shared.sprite(&args).is_none() {
+                if let Some(key) = shared.game_object(&args) {
+                    return Ok(shared.game_shaders.remove(&key).is_some());
+                }
             }
             Ok(match (character_slot(&args), shared.sprite(&args)) {
                 (Some(slot), _) => shared.character_shaders[slot].take().is_some(),

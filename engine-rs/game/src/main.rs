@@ -451,6 +451,12 @@ struct Playing {
 }
 
 impl Playing {
+    /// The mod's shader a script put on a picture the game draws itself: on that one (`specific`), else on all its kind.
+    fn game_shader(&self, specific: &str, group: &str) -> Option<gfx::Shader> {
+        let shared = self.lua.shared.borrow();
+        shared.game_shaders.get(specific).or_else(|| shared.game_shaders.get(group)).cloned()
+    }
+
     /// `story`: played in story mode, where some songs open with a talk.
     /// `seen`: the talk and the stage's own opening scene were seen already (a retry): they do not come again.
     /// `charting`: the chart editor's chart, played as it is (a play-test) instead of the file's.
@@ -1771,6 +1777,7 @@ impl Playing {
                 // outside story mode the arrows drop in one after the other, over a second each
                 let arrived = if self.story { 1.0 } else { ((self.waited as f32 / 1000.0 - 0.5 - 0.2 * lane as f32).clamp(0.0, 1.0) - 1.0).powi(2) };
                 let (shown, at) = ((1.0 - arrived).sqrt() * strum.alpha, middle(strum) - vec2(0.0, 10.0 * (1.0 - (1.0 - arrived).sqrt())));
+                shade(self.game_shader(&format!("strum{}", side * 4 + lane), "strums").as_ref());
                 turned(at, strum.angle, &|| {
                     if hit {
                         skin.frame(&format!("{} confirm0003", DIRECTIONS[lane]), at.x, at.y, None, Some(lane), shown);
@@ -1780,6 +1787,7 @@ impl Playing {
                         skin.frame(&format!("arrow{}0000", DIRECTIONS[lane].to_uppercase()), at.x, at.y, None, None, shown);
                     }
                 });
+                shade(None);
             }
         }
 
@@ -1854,13 +1862,17 @@ impl Playing {
                         // (the cap is turned over when notes come from above)
                         let (name, height) = if end { ("hold end", length * direction) } else { ("hold piece", length) };
                         let middle = (from + to) / 2.0;
+                        shade(self.game_shader(&format!("note{index}"), "notes").as_ref());
                         turned(middle, angle, &|| skin.frame_of(art, &format!("{} {name}0000", NOTE_NAMES[note.lane]), middle.x, middle.y, Some(vec2(skin.hold.x, height)), Some(note.lane).filter(|_| !painted), 0.6 * faint));
+                        shade(None);
                     }
                 }
                 if pass == 1 && matches!(state, NoteState::Pending | NoteState::Missed) && on_screen(along(note.time)) {
                     let tint = if note.kind == NoteKind::Hurt || painted { None } else { Some(note.lane) }; // hurt notes show as raw masks
                     let at = vec2(x, along(note.time));
+                    shade(self.game_shader(&format!("note{index}"), "notes").as_ref());
                     turned(at, strum.angle, &|| skin.frame_of(art, &format!("{}0000", NOTE_NAMES[note.lane]), at.x, at.y, None, tint, alpha));
+                    shade(None);
                 }
             }
         }
@@ -1868,23 +1880,27 @@ impl Playing {
         self.lua.draw_among(1, placed, true);
         // a burst on the strum for every "sick" hit
         if let Some(sheet) = &skin.splashes {
-            for &(lane, at) in &self.splashes {
+            for (member, &(lane, at)) in self.splashes.iter().enumerate() {
                 let frames = sheet.animation(&skin.splash_names[lane], &[]);
                 if let Some(&frame) = frames.get(((position - at) * 0.024) as usize) {
                     recolor(skin.colors(lane).and_then(|note| splash_editor::splash_colors(&skin.splash_rgb, note)));
                     // pixel stages show them as coarse as everything else there
                     coarse(if self.pixel() { PIXEL_ZOOM } else { 0.0 });
                     let at = middle(&self.strums[1][lane]);
+                    shade(self.game_shader(&format!("splash{member}"), "splashes").as_ref());
                     sheet.draw(frame, at.x - frame.size.x / 2.0, at.y - frame.size.y / 2.0, 1.0, false, Color::new(1.0, 1.0, 1.0, settings.splash_alpha as f32));
+                    shade(None);
                     (recolor(None), coarse(0.0));
                 }
             }
         }
-        for popup in &self.popups {
+        for (member, popup) in self.popups.iter().enumerate() {
             let age = ((self.position.max(position) - popup.born) / 1000.0) as f32;
             let fade = 1.0 - ((age * 1000.0 - popup.stays as f32) / 200.0).clamp(0.0, 1.0);
             let y = popup.at.y - popup.motion.0 * age + popup.motion.1 * age * age / 2.0;
+            shade(self.game_shader(&format!("popup{member}"), "popups").as_ref());
             draw_texture_ex(&popup.texture, popup.at.x, y, Color::new(1.0, 1.0, 1.0, fade), DrawTextureParams { dest_size: Some(popup.texture.size() * popup.scale), ..Default::default() });
+            shade(None);
         }
 
         // time left, over a bar that fills as the song goes
