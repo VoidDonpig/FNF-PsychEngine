@@ -24,6 +24,8 @@ pub enum Go {
     Stay,
     /// Play the chart as it is now (its text), from the start.
     Play(String),
+    /// Preview it (the Haxe editor's EditorPlayState): its notes alone, from where the editor is (ms), then back.
+    Preview(String, f64),
     Leave,
 }
 
@@ -451,6 +453,16 @@ impl ChartEditor {
         }
     }
 
+    fn preview(&mut self) -> Go {
+        self.stop();
+        Go::Preview(self.text(), self.position)
+    }
+
+    /// Back from a preview: where it began.
+    pub fn back_at(&mut self, ms: f64) {
+        self.wind(ms);
+    }
+
     fn wind(&mut self, ms: f64) {
         self.stop();
         self.position = ms.clamp(0.0, (self.length - 1.0).max(0.0));
@@ -543,6 +555,8 @@ impl ChartEditor {
             }
         } else if is_key_pressed(KeyCode::Enter) {
             return self.play_test();
+        } else if is_key_pressed(KeyCode::F12) {
+            return self.preview();
         } else if is_key_pressed(KeyCode::Escape) {
             if let Go::Leave = self.leave() {
                 return Go::Leave;
@@ -658,7 +672,7 @@ impl ChartEditor {
     /// The File, Edit and View menus (the Haxe editor's upper box); what the editor wants next when an entry leaves it.
     fn menus(&mut self) -> Option<Go> {
         let names = |names: &[&str]| names.iter().map(|name| name.to_string()).collect::<Vec<_>>();
-        let file = names(&["New", "Open Chart...", "Open Autosave...", "Open Events...", "Save", "Save As...", "Save Events", "Save Events As...", "Save (V-Slice)...", "Psych to V-Slice...", "V-Slice to Psych...", "Update (Legacy)...", "Reload Chart", "Playtest (Enter)", "Exit"]);
+        let file = names(&["New", "Open Chart...", "Open Autosave...", "Open Events...", "Save", "Save As...", "Save Events", "Save Events As...", "Save (V-Slice)...", "Psych to V-Slice...", "V-Slice to Psych...", "Update (Legacy)...", "Reload Chart", "Playtest (Enter)", "Preview (F12)", "Exit"]);
         let lock = if self.locked_events { "Unlock Events" } else { "Lock Events" };
         let edit = names(&["Undo", "Redo", "Select All", lock, "Autosave Settings...", "Clear All Notes", "Clear All Events"]);
         let labels = if self.labels { "Hide Note Labels" } else { "Show Note Labels" };
@@ -693,7 +707,8 @@ impl ChartEditor {
                 }
             }
             (0, 13) => return Some(self.play_test()),
-            (0, 14) => {
+            (0, 14) => return Some(self.preview()),
+            (0, 15) => {
                 if let Go::Leave = self.leave() {
                     return Some(Go::Leave);
                 }
@@ -2116,7 +2131,7 @@ impl ChartEditor {
         for (row, line) in lines.iter().enumerate() {
             draw_text_ex(line, x + 15.0, y + 30.0 + row as f32 * 18.0, TextParams { font: skin.font.as_ref(), font_size: 16, color: WHITE, ..Default::default() });
         }
-        let help = "Space: play  W/S, wheel: move  A/D: section  Click: note  Q/E: hold  Left/Right: snap  Z/X: zoom  Ctrl+Z/Y: undo/redo  Ctrl+S: save  Enter: play  Esc: leave";
+        let help = "Space: play  W/S, wheel: move  A/D: section  Click: note  Q/E: hold  Left/Right: snap  Z/X: zoom  Ctrl+Z/Y: undo/redo  Ctrl+S: save  Enter: play  F12: preview  Esc: leave";
         draw_text_ex(help, 10.0, HEIGHT - 10.0, TextParams { font: skin.font.as_ref(), font_size: 14, color: Color { a: 0.8, ..WHITE }, ..Default::default() });
         if let Some((words, when)) = &self.said {
             let alpha = (1.0 - (when.elapsed().as_secs_f64() - 2.0).max(0.0)) as f32;

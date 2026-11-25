@@ -358,6 +358,9 @@ struct Playing {
     end_held: bool,
     /// The chart editor's chart, when this is a play-test of it: the debug key and the song's end go back to the editor.
     charting: Option<String>,
+    /// A preview from the chart editor (its EditorPlayState): where it began (ms). The notes alone, over a dark
+    /// background, without the stage, the scripts or the countdown; Escape or F12 goes back to the editor.
+    preview: Option<f64>,
     /// A video playing, and the one the song ends with (Weekend 1's in story mode).
     video: Option<video::Video>,
     end_video: Option<PathBuf>,
@@ -498,7 +501,7 @@ impl Playing {
         let video = opening.and_then(|name| paths.video(name)).and_then(|path| video::Video::open(&path, true, true, false, false).map_err(|error| eprintln!("{error}")).ok());
         let end_video = closing.and_then(|name| paths.video(name));
         lua.shared.borrow_mut().class_props.insert("PlayState.isPixelStage".to_owned(), serde_json::json!(scene.as_ref().is_some_and(|scene| scene.pixel)));
-        Ok(Playing { charting, video, end_video, speech: None, countdown_asked: false, countdown_held: false, entry: entry.clone(), play, song, player_voice, own_skin: None, music_fade: None, lua, looks: Default::default(), renamed: Default::default(), note_art: HashMap::new(), strums: strums(settings), flash: None, sounds: HashMap::new(), fades: Vec::new(), music_volume: 1.0, bar_colors: Default::default(), lua_step: i64::MIN, lua_section: usize::MAX, lua_created: false, rating_set: Default::default(), music_held: false, music_pitch: None, end_asked: false, end_held: false, base: base.to_path_buf(), staged, bowing: false, tune: false, paused_at: 0.0, pause_scroll: 0.0, deaths: 0, scene, waited: 0.0, clock: Default::default(), ticked: std::time::Instant::now(), started: false, paused: None, choosing: None, skip_time: 0.0, skip_held: 0.0, difficulties, story, taunt_until: None, start_at, position: -lead_in, settings: settings.clone(), held_keys: Vec::new(), flash_until: [[f64::MIN; 4]; 2], judgement: None, last_hit: f64::MIN, lanes_used: [false; 4], idled: false, idle_for: 0.0, sang_for: 0.0,
+        Ok(Playing { charting, preview: None, video, end_video, speech: None, countdown_asked: false, countdown_held: false, entry: entry.clone(), play, song, player_voice, own_skin: None, music_fade: None, lua, looks: Default::default(), renamed: Default::default(), note_art: HashMap::new(), strums: strums(settings), flash: None, sounds: HashMap::new(), fades: Vec::new(), music_volume: 1.0, bar_colors: Default::default(), lua_step: i64::MIN, lua_section: usize::MAX, lua_created: false, rating_set: Default::default(), music_held: false, music_pitch: None, end_asked: false, end_held: false, base: base.to_path_buf(), staged, bowing: false, tune: false, paused_at: 0.0, pause_scroll: 0.0, deaths: 0, scene, waited: 0.0, clock: Default::default(), ticked: std::time::Instant::now(), started: false, paused: None, choosing: None, skip_time: 0.0, skip_held: 0.0, difficulties, story, taunt_until: None, start_at, position: -lead_in, settings: settings.clone(), held_keys: Vec::new(), flash_until: [[f64::MIN; 4]; 2], judgement: None, last_hit: f64::MIN, lanes_used: [false; 4], idled: false, idle_for: 0.0, sang_for: 0.0,
             paths, cutscene, lead_in, counted: i64::MIN, popups: Vec::new(), splashes: Vec::new(), dead: None, next_event: 0, speed, speed_change: None }.with(settings))
     }
 
@@ -549,6 +552,16 @@ impl Playing {
             items.insert(3, "Skip Time");
         }
         items
+    }
+
+    /// Makes it the chart editor's preview from `at` (ms): the notes from there alone, one beat to come in, no stage,
+    /// scripts or countdown, as the Haxe editor's EditorPlayState.
+    fn preview_from(&mut self, at: f64) {
+        (self.scene, self.lua, self.video, self.end_video, self.cutscene, self.speech) = (None, lua::Scripts::none(), None, None, None, None);
+        self.play.skip_to(at);
+        self.song.seek(at - self.play.chart.offset);
+        self.lead_in = 60000.0 / self.play.chart.bpm;
+        (self.preview, self.position) = (Some(at), at - self.lead_in);
     }
 
     /// Whether the stage wants the pixel look for notes and HUD.
@@ -832,6 +845,10 @@ impl Playing {
             return Flow::CharacterEditor;
         }
         // (as the Haxe engine does, the game pauses itself when another window comes to the front)
+        if self.preview.is_some() && (controls::pressed(Ui::Back) || controls::pressed(Ui::Pause) || is_key_pressed(KeyCode::F12)) {
+            self.song.stop_music();
+            return Flow::Quit;
+        }
         if !self.bowing && (controls::pressed(Ui::Pause) || (self.settings.auto_pause && !is_focused())) && !lua::Scripts::stopped(&self.lua.call("onPause", ())) {
             self.song.pause();
             // (the pause menu takes the place of a custom substate, as Flixel opens one substate at a time)
@@ -859,14 +876,14 @@ impl Playing {
         let now = match (self.started, self.music_held) {
             (true, false) => self.clock.advance(elapsed, self.start_at + self.song.position_ms() + self.play.chart.offset),
             (true, true) => self.position,
-            _ => self.waited - lead_in,
+            _ => self.waited - lead_in + self.preview.unwrap_or(0.0),
         };
         self.position = self.position.max(now);
 
         // the countdown: a sound on each of the four beats before the song, a picture on the last three
         let crochet = 60000.0 / self.play.chart.bpm;
         let beat = self.play.chart.beat_at(self.position).floor() as i64;
-        if beat != self.counted && (-4..0).contains(&beat) {
+        if beat != self.counted && (-4..0).contains(&beat) && self.preview.is_none() {
             self.counted = beat;
             self.lua.call("onCountdownTick", beat + 4);
             self.sound(&format!("{}{}", ["intro3", "intro2", "intro1", "introGo"][(beat + 4) as usize], self.ui_suffix()), 0.6, false);
@@ -2487,7 +2504,11 @@ fn main() {
                 }
                 // what the week goes on with, as its folder is called
                 let coming = || story.as_ref().and_then(|(_, rest, ..)| rest.first()).map_or(String::new(), |next| funkin_core::content::song_path(&songs[*next].title));
-                let editor = |playing: &Playing| chart_editor::ChartEditor::open(&base, &playing.entry, playing.charting.clone()).map_or_else(Screen::Failed, |editor| Screen::Editor(Box::new(editor)));
+                // (back from a preview, where it began)
+                let editor = |playing: &Playing| chart_editor::ChartEditor::open(&base, &playing.entry, playing.charting.clone()).map_or_else(Screen::Failed, |mut editor| {
+                    playing.preview.iter().for_each(|at| editor.back_at(*at));
+                    Screen::Editor(Box::new(editor))
+                });
                 match flow {
                     Flow::Continue => Screen::Playing(playing),
                     Flow::Editor => editor(&playing),
@@ -2582,6 +2603,10 @@ fn main() {
                     match go {
                         chart_editor::Go::Stay => Screen::Editor(editor),
                         chart_editor::Go::Play(text) => Playing::open(&base, &editor.entry, &songs, &settings, 0.0, false, true, Some(text)).map_or_else(Screen::Failed, |p| Screen::Playing(Box::new(p))),
+                        chart_editor::Go::Preview(text, at) => Playing::open(&base, &editor.entry, &songs, &settings, 0.0, false, true, Some(text)).map_or_else(Screen::Failed, |mut p| {
+                            p.preview_from(at);
+                            Screen::Playing(Box::new(p))
+                        }),
                         // (as the Haxe editor's File > Exit, back to the editors' list)
                         chart_editor::Go::Leave => Screen::Menu(Page::Editors),
                     }

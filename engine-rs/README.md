@@ -274,7 +274,8 @@ Done:
   as V-Slice files (Save (V-Slice)..., its artist, charter and difficulties asked for), and whole songs are converted
   both ways (Psych to V-Slice..., V-Slice to Psych...), as the Haxe editor's VSlice.hx does, into a folder chosen,
   asking before a file is written over. Update (Legacy)... makes an older chart file a Psych 1.0 one in place (the
-  one before kept as `.bak`).
+  one before kept as `.bak`). F12 (or File > Preview) plays the chart's notes from where the editor is, one beat to
+  come in, without the stage, the scripts or the countdown; Escape or F12 goes back to the editor there.
 - **Character editor**: 8 (Debug Key #2) during a song opens it on the song's opponent (Escape goes back to the song),
   and the editors' list has it too (on bf, in the mod folder chosen). As the Haxe editor: the character on week 1's
   stage beside the silhouettes of where the opponent and the player stand, the cross where the camera looks at it;
@@ -339,4 +340,3 @@ Not there yet:
   placed on screen (`openfl_Matrix` changes nothing); a camera takes its shader by setSpriteShader with its name (the Haxe engine's scripts use HScript's setFilters for
   that); `gl_FragCoord` counts from the top of the window. HScript is Haxe code run against the Haxe
   engine's own classes, so mods that use it cannot run here as they are.
-- **Editors**: the chart editor's Preview (F12), playing the chart from where the editor is.
