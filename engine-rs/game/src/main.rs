@@ -494,7 +494,10 @@ impl Playing {
         let settings = &Settings { botplay: settings.botplay || std::env::args().any(|arg| arg == "--bot"), ..settings.clone() };
         let mut play = Play::new(chart, settings.botplay);
         play.skip_to(start_at);
-        song.seek(start_at - play.chart.offset);
+        // (only then: a chart's offset is how far into the song its time 0 lies, the music itself starts at its start)
+        if start_at > 0.0 {
+            song.seek(start_at - play.chart.offset);
+        }
         // (in story mode too: the rest of the week follows the change, as storyDifficulty does in Haxe)
         let difficulties: Vec<String> = songs.iter().filter(|other| other.week == entry.week && other.title == entry.title).map(|other| other.difficulty.clone()).collect();
         atlas::forget_unused();
@@ -2091,7 +2094,7 @@ fn start_scripts(base: &Path, paths: &Paths, entry: &SongEntry, chart: &Chart, s
         ("ClientPrefs.data.noteOffset", json!(settings.offset_ms)), ("ClientPrefs.data.splashAlpha", json!(settings.splash_alpha)), ("ClientPrefs.data.hideHud", json!(settings.hide_hud)),
         ("ClientPrefs.data.timeBarType", json!(settings::TIME_BARS[settings.time_bar])), ("ClientPrefs.data.flashing", json!(settings.flashing)), ("ClientPrefs.data.camZooms", json!(settings.cam_zooms)),
         ("ClientPrefs.data.scoreZoom", json!(settings.score_zoom)), ("ClientPrefs.data.healthBarAlpha", json!(settings.health_bar_alpha)), ("ClientPrefs.data.showFPS", json!(settings.show_fps)),
-        ("ClientPrefs.data.comboStacking", json!(settings.combo_stacking)), ("ClientPrefs.data.lowQuality", json!(settings.low_quality)), ("ClientPrefs.data.antialiasing", json!(settings.antialiasing)),
+        ("ClientPrefs.data.comboStacking", json!(settings.combo_stacking)), ("ClientPrefs.data.lowQuality", json!(settings.low_quality)), ("ClientPrefs.data.antialiasing", json!(settings.antialiasing)), ("ClientPrefs.data.cacheOnGPU", json!(settings.cache_on_gpu)),
         ("ClientPrefs.data.shaders", json!(settings.shaders)), ("ClientPrefs.data.framerate", json!(settings.framerate)), ("ClientPrefs.data.language", json!(settings.language)),
         ("PlayState.isStoryMode", json!(story)), ("PlayState.chartingMode", json!(false)), ("PlayState.curStage", json!(chart.stage)),
         ("PlayState.SONG.song", json!(entry.title)), ("PlayState.SONG.speed", json!(chart.speed)), ("PlayState.SONG.bpm", json!(bpm)), ("PlayState.SONG.stage", json!(chart.stage)),
@@ -2598,7 +2601,7 @@ fn main() {
                             Some((week, rest, _, misses)) if rest.is_empty() && misses + play.misses == 0 && entry.difficulty.eq_ignore_ascii_case("hard") => Some(weeks[*week].file.as_str()),
                             _ => None,
                         };
-                        let run = Run { song: &entry.title, accuracy: play.accuracy().unwrap_or(0.0), practice: playing.settings.practice, botplay: play.botplay, idled: playing.idled, lowest_graphics: playing.settings.low_quality && !playing.settings.antialiasing && !playing.settings.shaders,
+                        let run = Run { song: &entry.title, accuracy: play.accuracy().unwrap_or(0.0), practice: playing.settings.practice, botplay: play.botplay, idled: playing.idled, lowest_graphics: playing.settings.low_quality && !playing.settings.antialiasing && !playing.settings.shaders && !playing.settings.cache_on_gpu,
                             lanes_used: playing.lanes_used.iter().filter(|used| **used).count(), flawless_week };
                         for id in earned(&run) {
                             if save.unlock(id) {
