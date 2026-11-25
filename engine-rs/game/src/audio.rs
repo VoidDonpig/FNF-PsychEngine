@@ -389,6 +389,43 @@ mod output {
         }
     }
 
+    /// The samples of the mix (floats, -1 to 1) as the device's kind of sample: out of range ones are held at the ends.
+    pub(super) fn convert<T: cpal::SizedSample + cpal::FromSample<f32>>(from: &[f32], to: &mut [T]) {
+        for (out, sample) in to.iter_mut().zip(from) {
+            *out = T::from_sample(sample.clamp(-1.0, 1.0));
+        }
+    }
+
+    /// The output stream for whichever kind of sample the device takes (cpal 0.15 offers all of these), fed by `mix`.
+    fn build(device: &cpal::Device, config: &cpal::StreamConfig, format: cpal::SampleFormat, mut mix: impl FnMut(&mut [f32], &cpal::OutputCallbackInfo) + Send + 'static) -> Result<cpal::Stream, String> {
+        use cpal::SampleFormat as F;
+        let failed = |error| eprintln!("Sound output: {error}");
+        macro_rules! converted {
+            ($kind:ty) => {{
+                let mut mixed: Vec<f32> = Vec::new();
+                device.build_output_stream(config, move |data: &mut [$kind], info: &cpal::OutputCallbackInfo| {
+                    mixed.resize(data.len(), 0.0);
+                    mix(&mut mixed, info);
+                    convert(&mixed, data);
+                }, failed, None)
+            }};
+        }
+        let stream = match format {
+            F::F32 => device.build_output_stream(config, mix, failed, None),
+            F::I8 => converted!(i8),
+            F::I16 => converted!(i16),
+            F::I32 => converted!(i32),
+            F::I64 => converted!(i64),
+            F::U8 => converted!(u8),
+            F::U16 => converted!(u16),
+            F::U32 => converted!(u32),
+            F::U64 => converted!(u64),
+            F::F64 => converted!(f64),
+            other => return Err(format!("output device wants {other:?} samples")),
+        };
+        stream.map_err(|e| e.to_string())
+    }
+
     impl Output {
         pub fn open(tracks: &[&Path], speed: f64) -> Result<Output, String> {
             let mut decoded = tracks_of(tracks).into_iter();
@@ -409,10 +446,7 @@ mod output {
 
             let device = cpal::default_host().default_output_device().ok_or("no output device")?;
             let config = device.default_output_config().map_err(|e| e.to_string())?;
-            if config.sample_format() != cpal::SampleFormat::F32 {
-                // shortcut: only float output (what WASAPI shared mode and PipeWire give). Convert here for devices that want integers.
-                return Err(format!("output device wants {:?} samples", config.sample_format()));
-            }
+            let format = config.sample_format();
             let channels = config.channels() as usize;
             let step = rate as f64 / config.sample_rate().0 as f64;
             let frames = loaded[0].0.len() / 2;
@@ -423,9 +457,9 @@ mod output {
             let device_rate = config.sample_rate().0 as f64;
             let mut cursor = 0.0f64;
             let mut raised = false;
-            let stream = device.build_output_stream(
-                &config.into(),
-                move |data: &mut [f32], info: &cpal::OutputCallbackInfo| {
+            let stream_config: cpal::StreamConfig = config.into();
+            // the mix is made in floats; a device that wants another kind of sample gets it converted (see `build`)
+            let mix = move |data: &mut [f32], info: &cpal::OutputCallbackInfo| {
                     if !std::mem::replace(&mut raised, true) {
                         crate::priority::raise_sound_thread();
                     }
@@ -474,10 +508,8 @@ mod output {
                     if master != 1.0 {
                         data.iter_mut().for_each(|sample| *sample *= master);
                     }
-                },
-                |error| eprintln!("Sound output: {error}"),
-                None,
-            ).map_err(|e| e.to_string())?;
+            };
+            let stream = build(&device, &stream_config, format, mix)?;
             stream.play().map_err(|e| e.to_string())?;
             Ok(Output { _stream: stream, shared, sounds, device_rate, volumes, rate: rate as f64, first, length_ms: frames as f64 / rate as f64 * 1000.0 })
         }
@@ -550,6 +582,27 @@ pub(crate) static ONE_SONG: std::sync::Mutex<()> = std::sync::Mutex::new(());
 #[cfg(test)]
 mod tests {
     use super::ONE_SONG;
+
+    #[cfg(feature = "audio")]
+    #[test]
+    fn the_mix_is_converted_to_the_kind_of_sample_a_device_wants() {
+        use super::output::convert;
+        let mix = [0.0, 1.0, -1.0, 2.0, -3.0];
+        let mut wide = [1i16; 5];
+        convert(&mix, &mut wide);
+        assert_eq!(wide, [0, i16::MAX, i16::MIN, i16::MAX, i16::MIN]);
+        let mut unsigned = [1u16; 5];
+        convert(&mix, &mut unsigned);
+        assert_eq!(unsigned[0], 32768);
+        assert_eq!((unsigned[1], unsigned[3]), (u16::MAX, u16::MAX));
+        assert!(unsigned[2] <= 1 && unsigned[4] <= 1);
+        let mut float = [0f64; 5];
+        convert(&mix, &mut float);
+        assert_eq!(float, [0.0, 1.0, -1.0, 1.0, -1.0]);
+        let mut long = [0i32; 2];
+        convert(&mix, &mut long);
+        assert!(long[1] > i32::MAX - 256);
+    }
 
     #[cfg(feature = "audio")]
     #[test]
