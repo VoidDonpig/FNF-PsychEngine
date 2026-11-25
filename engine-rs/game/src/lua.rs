@@ -376,6 +376,11 @@ fn class_read(shared: &Shared, class: &str, field: &str) -> Option<serde_json::V
         ("Conductor", "songPosition") | ("FlxG", "sound.music.time") => Some("songPosition"),
         ("FlxG", "sound.music.length") => Some("songLength"),
         ("FlxG", "camera.zoom") => Some("camGame.zoom"),
+        ("FlxG", "camera.angle") => Some("camGame.angle"),
+        ("FlxG", "camera.x") => Some("camGame.x"),
+        ("FlxG", "camera.y") => Some("camGame.y"),
+        ("FlxG", "camera.scroll.x") => Some("camGame.scroll.x"),
+        ("FlxG", "camera.scroll.y") => Some("camGame.scroll.y"),
         _ => None,
     };
     if let Some(found) = live.and_then(|name| shared.props.get(name)) {
@@ -1637,7 +1642,7 @@ impl Scripts {
             let mut shared = shared.borrow_mut();
             let name = match (class.as_str(), args.1.strip_prefix("instance.")) {
                 ("PlayState", Some(field)) => field.to_owned(),
-                ("FlxG", _) if args.1 == "camera.zoom" => "camGame.zoom".to_owned(),
+                ("FlxG", _) if matches!(args.1.as_str(), "camera.zoom" | "camera.angle" | "camera.x" | "camera.y") => format!("camGame.{}", &args.1["camera.".len()..]),
                 // the song's music (FlxG.sound.music): what the sound functions do to the tag ""
                 ("FlxG", _) if matches!(args.1.as_str(), "sound.music.volume" | "sound.music.time" | "sound.music.pitch") => {
                     let number = value.as_f64().unwrap_or(0.0);
@@ -1650,6 +1655,10 @@ impl Scripts {
             // what a script wrote is what it reads back next; the game acts on the names it knows (main.rs set_property)
             if shared.class_props.contains_key(&name) {
                 shared.class_props.insert(name.clone(), value.clone());
+            }
+            // (the game's camera: read back at once, before the game has run the request)
+            if name.starts_with("camGame.") && shared.props.contains_key(&name) {
+                shared.props.insert(name.clone(), value.clone());
             }
             shared.requests.push(Request::SetProperty { name, value });
             Ok(args.2)

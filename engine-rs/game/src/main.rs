@@ -1438,7 +1438,7 @@ impl Playing {
                 texts.extend(scene.text_property(name).map(|text| (name, text)));
             }
             for name in ["camGame.scroll.x", "camGame.scroll.y", "camZooming", "gfSpeed", "boyfriend.flipX", "dad.flipX", "gf.flipX", "boyfriend.scale.x", "boyfriend.scale.y", "dad.scale.x", "dad.scale.y", "gf.scale.x", "gf.scale.y",
-                "boyfriend.animation.curAnim.finished", "dad.animation.curAnim.finished", "gf.animation.curAnim.finished", "boyfriend.animation.finished", "dad.animation.finished", "gf.animation.finished", "defaultCamZoom", "camGame.zoom", "camHUD.zoom", "cameraSpeed", "camFollow.x", "camFollow.y", "isCameraOnForcedPos", "boyfriend.x", "boyfriend.y", "dad.x", "dad.y", "gf.x", "gf.y", "boyfriend.alpha", "dad.alpha", "gf.alpha", "boyfriend.visible", "dad.visible", "gf.visible", "boyfriend.midpoint.x", "boyfriend.midpoint.y", "dad.midpoint.x", "dad.midpoint.y", "gf.midpoint.x", "gf.midpoint.y"] {
+                "boyfriend.animation.curAnim.finished", "dad.animation.curAnim.finished", "gf.animation.curAnim.finished", "boyfriend.animation.finished", "dad.animation.finished", "gf.animation.finished", "defaultCamZoom", "camGame.zoom", "camGame.angle", "camGame.x", "camGame.y", "camHUD.zoom", "cameraSpeed", "camFollow.x", "camFollow.y", "isCameraOnForcedPos", "boyfriend.x", "boyfriend.y", "dad.x", "dad.y", "gf.x", "gf.y", "boyfriend.alpha", "dad.alpha", "gf.alpha", "boyfriend.visible", "dad.visible", "gf.visible", "boyfriend.midpoint.x", "boyfriend.midpoint.y", "dad.midpoint.x", "dad.midpoint.y", "gf.midpoint.x", "gf.midpoint.y"] {
                 props.extend(scene.property(name).map(|value| (name, value)));
             }
         }

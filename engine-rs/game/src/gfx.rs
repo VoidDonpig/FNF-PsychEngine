@@ -441,6 +441,9 @@ pub struct DrawTextureParams {
 pub struct Camera2D {
     pub target: Vec2,
     pub zoom: Vec2,
+    /// FlxCamera's angle (degrees, about the middle of the view) and x/y (the view moved on screen, in pixels).
+    pub turn: f32,
+    pub shift: Vec2,
 }
 
 #[repr(C)]
@@ -1567,7 +1570,15 @@ pub fn shade_piece(shader: Option<&Shader>) {
 
 pub fn set_camera(camera: &Camera2D) {
     // up on screen is up for the graphics card, and down for the game
-    with(|context| context.camera = Mat4::from_scale(vec3(camera.zoom.x, -camera.zoom.y, 1.0)) * Mat4::from_translation(vec3(-camera.target.x, -camera.target.y, 0.0)));
+    with(|context| {
+        let to_screen = Mat4::from_scale(vec3(camera.zoom.x, -camera.zoom.y, 1.0)) * Mat4::from_translation(vec3(-camera.target.x, -camera.target.y, 0.0));
+        context.camera = if camera.turn == 0.0 && camera.shift == Vec2::ZERO { to_screen } else {
+            // turned and moved in pixels of the screen (y down), on top of the usual: then to the screen's -1..1 as before
+            let (width, height) = (crate::WIDTH, crate::HEIGHT);
+            let pixels = Mat4::from_scale(vec3(2.0 / width, -2.0 / height, 1.0));
+            pixels * Mat4::from_translation(camera.shift.extend(0.0)) * Mat4::from_rotation_z(camera.turn.to_radians()) * pixels.inverse() * to_screen
+        };
+    });
 }
 
 /// Until `pop_model_matrix`, everything drawn is moved by `model` first.

@@ -1183,6 +1183,9 @@ pub struct Scene {
     target: Vec2,
     default_zoom: f32,
     zoom: f32,
+    /// The game camera's FlxCamera.angle and x/y (script set); shaders' positions do not follow a turn.
+    turn: f32,
+    shift: Vec2,
     /// Zoom of the notes and the rest of the HUD (it bumps on the beat too).
     pub hud_zoom: f32,
     /// The beat bumps start once the opponent has sung a note.
@@ -1353,6 +1356,8 @@ impl Scene {
             target: Vec2::ZERO,
             default_zoom,
             zoom: default_zoom,
+            turn: 0.0,
+            shift: Vec2::ZERO,
             hud_zoom: 1.0,
             bumping: false,
             tutorial: funkin_core::content::song_path(&chart.song) == "tutorial",
@@ -1572,6 +1577,9 @@ impl Scene {
         Some(match name {
             "defaultCamZoom" => self.default_zoom as f64,
             "camGame.zoom" | "FlxG.camera.zoom" => self.zoom as f64,
+            "camGame.angle" | "FlxG.camera.angle" => self.turn as f64,
+            "camGame.x" | "FlxG.camera.x" => self.shift.x as f64,
+            "camGame.y" | "FlxG.camera.y" => self.shift.y as f64,
             "camHUD.zoom" => self.hud_zoom as f64,
             "cameraSpeed" => self.camera_speed as f64,
             "camFollow.x" => self.target.x as f64,
@@ -1619,6 +1627,9 @@ impl Scene {
         match name {
             "defaultCamZoom" => self.default_zoom = value,
             "camGame.zoom" | "FlxG.camera.zoom" => self.zoom = value,
+            "camGame.angle" | "FlxG.camera.angle" => self.turn = value,
+            "camGame.x" | "FlxG.camera.x" => self.shift.x = value,
+            "camGame.y" | "FlxG.camera.y" => self.shift.y = value,
             "camHUD.zoom" => self.hud_zoom = value,
             "cameraSpeed" => self.camera_speed = value,
             // the camera held where a script puts it (as the Camera Follow Pos event does), until let go
@@ -2722,7 +2733,7 @@ impl Scene {
     pub fn draw(&self, extra: &dyn Fn(usize, Vec2)) {
         let (strength, left) = self.shake[0];
         let shake = if left > 0.0 && !self.dead { vec2(rand::gen_range(-1.0, 1.0), rand::gen_range(-1.0, 1.0)) * strength * SCREEN / self.zoom } else { Vec2::ZERO };
-        set_camera(&Camera2D { target: self.camera + shake, zoom: vec2(2.0 / SCREEN.x, 2.0 / SCREEN.y) * self.zoom, ..Default::default() });
+        set_camera(&Camera2D { target: self.camera + shake, zoom: vec2(2.0 / SCREEN.x, 2.0 / SCREEN.y) * self.zoom, turn: self.turn, shift: self.shift, ..Default::default() });
         if self.dead {
             if let Some((toss, at, since)) = &self.toss {
                 if let Some(frame) = toss.animation("knife toss", &[]).get((since * 24.0) as usize) {
