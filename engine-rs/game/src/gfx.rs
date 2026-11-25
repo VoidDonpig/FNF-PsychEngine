@@ -418,6 +418,93 @@ fn pixel(at: Corner) -> @location(0) vec4<f32> {
     return mix(seen, mixed, at.recolored) * at.color;
 }";
 
+/// The rain of weekend 1, the Haxe engine's RainShader: what was drawn is seen through four layers of falling drops, each
+/// bending the picture behind it a little and adding a pale blue.
+const RAIN_SHADER: &str = "
+struct Rain {
+    // the part of the world the camera shows: left, top, right, bottom
+    bounds: vec4<f32>,
+    time: f32,
+    scale: f32,
+    intensity: f32,
+    unused: f32,
+}
+
+@group(0) @binding(0) var picture: texture_2d<f32>;
+@group(0) @binding(1) var stretch: sampler;
+@group(0) @binding(2) var<uniform> rain: Rain;
+
+struct Across {
+    @builtin(position) position: vec4<f32>,
+    // (0, 0) the top left of the window, (1, 1) its bottom right
+    @location(0) screen: vec2<f32>,
+}
+
+@vertex
+fn whole(@builtin(vertex_index) index: u32) -> Across {
+    // one triangle over the whole window
+    let at = vec2<f32>(f32((index << 1u) & 2u), f32(index & 2u));
+    return Across(vec4<f32>(at.x * 2.0 - 1.0, 1.0 - at.y * 2.0, 0.0, 1.0), at);
+}
+
+fn rand(a: vec2<f32>) -> f32 {
+    let wrapped = a - 1000.0 * floor(a / 1000.0);
+    return fract(sin(dot(wrapped, vec2<f32>(12.9898, 78.233))) * 43758.5453);
+}
+
+// how far a point is from the nearest drop of a layer (below 0: inside one)
+fn rain_dist(point: vec2<f32>, scale: f32, intensity: f32) -> f32 {
+    var p = point * 0.1;
+    // sheared, scrolled, stretched downwards
+    p.x += p.y * 0.1;
+    p.y -= rain.time * 500.0 / scale;
+    p.y *= 0.03;
+    let ix = floor(p.x);
+    p.y += (ix - 2.0 * floor(ix / 2.0)) * 0.5 + (rand(vec2<f32>(ix)) - 0.5) * 0.3;
+    let iy = floor(p.y);
+    let index = vec2<f32>(ix, iy);
+    p -= index;
+    p.x += (rand(index.yx) * 2.0 - 1.0) * 0.35;
+    let a = abs(p - 0.5);
+    let res = max(a.x * 0.8, a.y * 0.5) - 0.1;
+    // the harder it rains, the fewer cells stay empty
+    let empty = rand(index) < mix(1.0, 0.1, intensity);
+    return select(res, 1.0, empty);
+}
+
+@fragment
+fn pixel(at: Across) -> @location(0) vec4<f32> {
+    let size = rain.bounds.zw - rain.bounds.xy;
+    var wpos = at.screen * size + rain.bounds.xy;
+    var add = vec3<f32>(0.0);
+    var rain_sum = 0.0;
+    var scales = array<f32, 4>(1.0, 1.8, 2.6, 4.8);
+    for (var i = 0; i < 4; i++) {
+        let scale = scales[i];
+        let r = rain_dist(wpos * scale / rain.scale + 500.0 * f32(i), scale, rain.intensity);
+        if r < 0.0 {
+            let v = (1.0 - exp(r * 5.0)) / scale * 2.0;
+            wpos.x += v * 10.0 * rain.scale;
+            wpos.y -= v * 2.0 * rain.scale;
+            add += vec3<f32>(0.1, 0.15, 0.2) * v;
+            rain_sum += (1.0 - rain_sum) * 0.75;
+        }
+    }
+    var color = textureSampleLevel(picture, stretch, (wpos - rain.bounds.xy) / size, 0.0).rgb;
+    color += add;
+    color = mix(color, vec3<f32>(0.4, 0.5, 0.8), 0.1 * rain_sum);
+    return vec4<f32>(color, 1.0);
+}";
+
+/// What draws the frame so far through the rain: made when it first rains.
+struct RainPass {
+    pipeline: wgpu::RenderPipeline,
+    layout: wgpu::BindGroupLayout,
+    uniforms: wgpu::Buffer,
+    /// The picture the frame is drawn to first, as large as the window, and how the rain reads it.
+    stage: Option<(wgpu::TextureView, wgpu::BindGroup, (u32, u32))>,
+}
+
 /// Where a picture of size `whole` drawn at (x, y) lands: its four corners clockwise from the top left, and the part of the
 /// picture (0 to 1) that goes to each.
 fn placed(whole: Vec2, x: f32, y: f32, params: &DrawTextureParams) -> ([Vec2; 4], [Vec2; 4]) {
@@ -484,6 +571,9 @@ struct Context {
     /// The frame so far.
     vertices: Vec<Vertex>,
     calls: Vec<Call>,
+    /// Rain asked for this frame: the calls so far are seen through it (how many, and the shader's numbers).
+    effect: Option<(usize, [f32; 8])>,
+    rain: Option<RainPass>,
     buffer: Option<(wgpu::Buffer, u64)>,
     background: Color,
     camera: Mat4,
@@ -674,7 +764,7 @@ pub fn open(conf: Conf) -> Result<(String, Option<String>), String> {
     let now = Instant::now();
     let mut context = Context {
         event_loop: Some(event_loop), app, window, instance, surface: Some(surface), device, queue, config, format, pipeline, adding, layout, samplers, pictures: 0, white: None, letters: None,
-        vertices: Vec::new(), calls: Vec::new(), buffer: None, background: BLACK, camera: Mat4::IDENTITY, models: Vec::new(), recolor: None, fade: 1.0, blocks: 0.0, add: false,
+        vertices: Vec::new(), calls: Vec::new(), effect: None, rain: None, buffer: None, background: BLACK, camera: Mat4::IDENTITY, models: Vec::new(), recolor: None, fade: 1.0, blocks: 0.0, add: false,
         down: HashSet::new(), pressed: HashSet::new(), released: HashSet::new(), last_pressed: None, typed: VecDeque::new(), alt_enter: false, focused: true, mouse: Mouse::default(),
         started: now, frame_began: now, frame_time: 1.0 / 60.0, shown: now, display_lag: 0.0, due: now, open: true,
     };
@@ -738,7 +828,8 @@ impl Context {
     fn quad(&mut self, picture: &Texture2D, corners: [Vec2; 4], uvs: [Vec2; 4], color: Color) {
         let filter = picture.0.filter.get();
         let id = (picture.0.id, filter, self.add);
-        if self.calls.last().is_none_or(|call| call.picture != id) {
+        // (what is drawn after the rain was asked for is not part of what it rains on)
+        if self.calls.last().is_none_or(|call| call.picture != id) || self.effect.is_some_and(|(calls, _)| calls == self.calls.len()) {
             self.calls.push(Call { group: picture.0.groups[filter as usize].clone(), picture: id, end: self.vertices.len() as u32 });
         }
         let place = self.camera * self.models.last().copied().unwrap_or(Mat4::IDENTITY);
@@ -778,6 +869,10 @@ impl Context {
 
     /// Sends the frame so far to the graphics card, to be drawn into `target`.
     fn render(&mut self, target: &wgpu::TextureView) {
+        let rained = self.effect.filter(|(calls, _)| *calls > 0 && *calls <= self.calls.len());
+        if rained.is_some() {
+            self.ready_rain();
+        }
         let bytes: &[u8] = bytemuck::cast_slice(&self.vertices);
         if self.buffer.as_ref().is_none_or(|(_, room)| *room < bytes.len() as u64) {
             let room = (bytes.len() as u64).next_power_of_two().max(1 << 16);
@@ -787,13 +882,13 @@ impl Context {
         let Some((buffer, _)) = &self.buffer else { return };
         self.queue.write_buffer(buffer, 0, bytes);
         let mut encoder = self.device.create_command_encoder(&Default::default());
-        {
-            let background = wgpu::Color { r: self.background.r as f64, g: self.background.g as f64, b: self.background.b as f64, a: 1.0 };
-            let onto = wgpu::RenderPassColorAttachment { view: target, depth_slice: None, resolve_target: None, ops: wgpu::Operations { load: wgpu::LoadOp::Clear(background), store: wgpu::StoreOp::Store } };
-            let mut pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor { color_attachments: &[Some(onto)], ..Default::default() });
+        let background = wgpu::Color { r: self.background.r as f64, g: self.background.g as f64, b: self.background.b as f64, a: 1.0 };
+        let onto = |view| wgpu::RenderPassColorAttachment { view, depth_slice: None, resolve_target: None, ops: wgpu::Operations { load: wgpu::LoadOp::Clear(background), store: wgpu::StoreOp::Store } };
+        // draws calls from vertex `from` on, and says where they end
+        let draw = |pass: &mut wgpu::RenderPass, calls: &[Call], mut from: u32| {
             pass.set_vertex_buffer(0, buffer.slice(..));
-            let (mut from, mut adding) = (0, None);
-            for call in &self.calls {
+            let mut adding = None;
+            for call in calls {
                 if adding != Some(call.picture.2) {
                     adding = Some(call.picture.2);
                     pass.set_pipeline(if call.picture.2 { &self.adding } else { &self.pipeline });
@@ -802,8 +897,93 @@ impl Context {
                 pass.draw(from..call.end, 0..1);
                 from = call.end;
             }
+            from
+        };
+        let rain = self.rain.as_ref().and_then(|rain| Some((rain, rain.stage.as_ref()?)));
+        match (rained, rain) {
+            // what the rain falls on goes to a picture first; the window gets that picture seen through the rain, then the rest
+            (Some((mark, numbers)), Some((rain, (stage, group, _)))) => {
+                self.queue.write_buffer(&rain.uniforms, 0, bytemuck::cast_slice(&numbers));
+                let from = {
+                    let mut pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor { color_attachments: &[Some(onto(stage))], ..Default::default() });
+                    draw(&mut pass, &self.calls[..mark], 0)
+                };
+                let mut pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor { color_attachments: &[Some(onto(target))], ..Default::default() });
+                pass.set_pipeline(&rain.pipeline);
+                pass.set_bind_group(0, group, &[]);
+                pass.draw(0..3, 0..1);
+                draw(&mut pass, &self.calls[mark..], from);
+            }
+            _ => {
+                let mut pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor { color_attachments: &[Some(onto(target))], ..Default::default() });
+                draw(&mut pass, &self.calls, 0);
+            }
         }
         self.queue.submit([encoder.finish()]);
+    }
+
+    /// Makes what the rain is drawn with, and the picture it rains on (again when the window's size changed).
+    fn ready_rain(&mut self) {
+        let size = (self.config.width.max(1), self.config.height.max(1));
+        if self.rain.is_none() {
+            let shader = self.device.create_shader_module(wgpu::ShaderModuleDescriptor { label: None, source: wgpu::ShaderSource::Wgsl(RAIN_SHADER.into()) });
+            let layout = self.device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
+                label: None,
+                entries: &[
+                    wgpu::BindGroupLayoutEntry {
+                        binding: 0,
+                        visibility: wgpu::ShaderStages::FRAGMENT,
+                        ty: wgpu::BindingType::Texture { sample_type: wgpu::TextureSampleType::Float { filterable: true }, view_dimension: wgpu::TextureViewDimension::D2, multisampled: false },
+                        count: None,
+                    },
+                    wgpu::BindGroupLayoutEntry { binding: 1, visibility: wgpu::ShaderStages::FRAGMENT, ty: wgpu::BindingType::Sampler(wgpu::SamplerBindingType::Filtering), count: None },
+                    wgpu::BindGroupLayoutEntry { binding: 2, visibility: wgpu::ShaderStages::FRAGMENT, ty: wgpu::BindingType::Buffer { ty: wgpu::BufferBindingType::Uniform, has_dynamic_offset: false, min_binding_size: None }, count: None },
+                ],
+            });
+            let pipeline_layout = self.device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor { label: None, bind_group_layouts: &[Some(&layout)], ..Default::default() });
+            let pipeline = self.device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
+                label: None,
+                layout: Some(&pipeline_layout),
+                vertex: wgpu::VertexState { module: &shader, entry_point: Some("whole"), compilation_options: Default::default(), buffers: &[] },
+                primitive: wgpu::PrimitiveState::default(),
+                depth_stencil: None,
+                multisample: wgpu::MultisampleState::default(),
+                fragment: Some(wgpu::FragmentState {
+                    module: &shader,
+                    entry_point: Some("pixel"),
+                    compilation_options: Default::default(),
+                    targets: &[Some(wgpu::ColorTargetState { format: self.format, blend: None, write_mask: wgpu::ColorWrites::ALL })],
+                }),
+                multiview_mask: None,
+                cache: None,
+            });
+            let uniforms = self.device.create_buffer(&wgpu::BufferDescriptor { label: None, size: 32, usage: wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST, mapped_at_creation: false });
+            self.rain = Some(RainPass { pipeline, layout, uniforms, stage: None });
+        }
+        let Some(rain) = &mut self.rain else { return };
+        if rain.stage.as_ref().is_none_or(|(_, _, made)| *made != size) {
+            let texture = self.device.create_texture(&wgpu::TextureDescriptor {
+                label: None,
+                size: wgpu::Extent3d { width: size.0, height: size.1, depth_or_array_layers: 1 },
+                mip_level_count: 1,
+                sample_count: 1,
+                dimension: wgpu::TextureDimension::D2,
+                format: self.format,
+                usage: wgpu::TextureUsages::RENDER_ATTACHMENT | wgpu::TextureUsages::TEXTURE_BINDING,
+                view_formats: &[],
+            });
+            let view = texture.create_view(&Default::default());
+            let group = self.device.create_bind_group(&wgpu::BindGroupDescriptor {
+                label: None,
+                layout: &rain.layout,
+                entries: &[
+                    wgpu::BindGroupEntry { binding: 0, resource: wgpu::BindingResource::TextureView(&view) },
+                    wgpu::BindGroupEntry { binding: 1, resource: wgpu::BindingResource::Sampler(&self.samplers[0]) },
+                    wgpu::BindGroupEntry { binding: 2, resource: rain.uniforms.as_entire_binding() },
+                ],
+            });
+            rain.stage = Some((view, group, size));
+        }
     }
 
     /// The frame so far as a picture in main memory.
@@ -965,6 +1145,7 @@ pub fn next_frame(fps: f64) -> bool {
         }
         context.vertices.clear();
         context.calls.clear();
+        context.effect = None;
         context.models.clear();
         (context.recolor, context.blocks, context.add, context.last_pressed, context.fade) = (None, 0.0, false, None, 1.0);
 
@@ -994,8 +1175,16 @@ pub fn clear_background(color: Color) {
     with(|context| {
         context.vertices.clear();
         context.calls.clear();
+        context.effect = None;
         context.background = color;
     });
+}
+
+/// Everything drawn this frame so far is seen through the rain of weekend 1: `bounds` is the part of the world the
+/// camera shows (left, top, right, bottom), `time` the seconds it has rained, `scale` the size of the drops, `intensity`
+/// how hard it rains (0 to 1). What is drawn afterwards lies over it, dry.
+pub fn rain(bounds: [f32; 4], time: f32, scale: f32, intensity: f32) {
+    with(|context| context.effect = Some((context.calls.len(), [bounds[0], bounds[1], bounds[2], bounds[3], time, scale, intensity, 0.0])));
 }
 
 pub fn set_camera(camera: &Camera2D) {

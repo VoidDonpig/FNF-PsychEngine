@@ -360,20 +360,10 @@ fn rain_of(song: &str) -> Option<(f32, f32)> {
     }
 }
 
-/// The rain's streaks for a strength (0 to 1), `time` seconds in, on a screen of `screen`: corner, length, opacity of each.
-/// Each streak has its own place, speed and depth from its number; the nearer, the longer, faster and fainter.
-fn rain_streaks(strength: f32, time: f32, screen: Vec2) -> Vec<(Vec2, f32, f32)> {
-    // a scrambled number in 0..1 for a streak and a purpose
-    let hash = |index: u32, salt: u32| ((index.wrapping_mul(2654435761) ^ salt.wrapping_mul(40503)).wrapping_mul(2246822519) >> 8) as f32 / (1u32 << 24) as f32;
-    (0..(strength.clamp(0.0, 1.0) * 750.0) as u32).map(|index| {
-        let depth = 1.0 + 3.8 * hash(index, 1);
-        let (length, speed) = (40.0 * depth, 900.0 * depth);
-        let fall = screen.y + length;
-        let y = (hash(index, 2) * fall + time * speed).rem_euclid(fall) - length;
-        // slanted a tenth to the right as it falls
-        let x = (hash(index, 3) * (screen.x + 100.0) + y * 0.1).rem_euclid(screen.x + 100.0) - 50.0;
-        (vec2(x, y), length, 0.35 / depth)
-    }).collect()
+/// How fast the rain of the fist fight falls a moment later: it slows to a crawl (the player's hits push it on again),
+/// as the Haxe engine's rainTimeScale.
+fn rain_pace(pace: f32, dt: f32) -> f32 {
+    0.02 + (pace.min(1.0) - 0.02) * (-dt * 3.0).exp()
 }
 
 /// A shell off Pico's gun: where it pops out, how long ago, and once it lies on the ground how it rolls (speed, slowing,
@@ -1190,6 +1180,9 @@ pub struct Scene {
     flicker: Option<f32>,
     /// The streets' rain: how hard at the song's start and end; and how far the song is (0 to 1), which the play screen keeps.
     rain: Option<(f32, f32)>,
+    /// For how long it has rained, as the rain is drawn, and how fast that goes on in the fist fight.
+    rain_time: f32,
+    rain_pace: f32,
     pub progress: f32,
     /// The fist fight of weekend 1, on its stage; and whether the opponent stands in front of the player in it.
     fight: Option<crate::fight::Fight>,
@@ -1349,6 +1342,8 @@ impl Scene {
                 _ => None,
             },
             progress: 0.0,
+            rain_time: 1.0,
+            rain_pace: 1.0,
             fight: (chart.stage == "phillyBlazin").then(Default::default),
             opponent_front: false,
             cast,
@@ -1789,6 +1784,10 @@ impl Scene {
     /// `Event::PieceHit`, as the Haxe engine sings it.)
     pub fn update(&mut self, dt: f32, position: f64, chart: &Chart, events: &[Event]) {
         self.position = position;
+        // in the fist fight the rain all but stands still, and every hit of the player's lets it fall on
+        self.rain_time += dt * if self.fight.is_some() { self.rain_pace } else { 1.0 };
+        let hits = events.iter().filter(|event| matches!(event, Event::Hit { .. } | Event::PieceHit { player: true, .. })).count();
+        self.rain_pace = rain_pace(self.rain_pace, dt) + 0.7 * hits as f32;
         self.trail_in -= dt;
         if let (Some(spirit), true) = (&self.opponent, self.stage == "schoolEvil" && !self.low && self.trail_in <= 0.0) {
             // four ghosts, each 0.4 s older than the last (the Haxe engine's trail: every 24th frame)
@@ -2788,15 +2787,6 @@ impl Scene {
         if age < length {
             cover(Color { a: color.a * (1.0 - age / length), ..color });
         }
-        // shortcut: the rain, a shader that bends the picture in the Haxe engine, is drawn as faint falling streaks; port the
-        // shader (drawing the stage to a picture first) if the difference shows.
-        if let Some((from, to)) = self.rain {
-            set_camera(&Camera2D { target: SCREEN / 2.0, zoom: vec2(2.0 / SCREEN.x, 2.0 / SCREEN.y), ..Default::default() });
-            for (at, length, alpha) in rain_streaks(from + (to - from) * self.progress.clamp(0.0, 1.0), self.position as f32 / 1000.0, SCREEN) {
-                draw_rectangle(at.x, at.y, 2.0, length, Color::new(0.75, 0.8, 0.95, alpha));
-            }
-            set_camera(&Camera2D { target: self.camera + shake, zoom: vec2(2.0 / SCREEN.x, 2.0 / SCREEN.y) * self.zoom, ..Default::default() });
-        }
         // lightning adds white light; the dark covers
         let light = |color: Color| {
             blend_add(true);
@@ -2824,6 +2814,12 @@ impl Scene {
                 light(Color::new(1.0, 1.0, 1.0, alpha));
             }
         }
+        // the rain of weekend 1: everything the game's camera shows is seen through it, as through the Haxe engine's
+        // shader (the drops are 3.6 times its own size: the screen's height over 200)
+        if let Some((from, to)) = self.rain {
+            let (middle, half) = (self.camera + shake, SCREEN / (2.0 * self.zoom));
+            rain([middle.x - half.x, middle.y - half.y, middle.x + half.x, middle.y + half.y], self.rain_time, SCREEN.y / 200.0, from + (to - from) * self.progress.clamp(0.0, 1.0));
+        }
     }
 }
 
@@ -2831,18 +2827,12 @@ impl Scene {
 mod tests {
     #[test]
     fn the_rain_falls_harder_as_the_song_goes_on() {
-        use super::{rain_of, rain_streaks, vec2};
+        use super::{rain_of, rain_pace};
         assert_eq!((rain_of("darnell"), rain_of("2hot"), rain_of("blazin")), (Some((0.0, 0.1)), Some((0.2, 0.4)), None));
-        let screen = vec2(1280.0, 720.0);
-        let (light, hard) = (rain_streaks(0.1, 3.0, screen), rain_streaks(0.4, 3.0, screen));
-        assert_eq!((rain_streaks(0.0, 3.0, screen).len(), light.len(), hard.len()), (0, 75, 300));
-        // every streak is on the screen or just off it, and falls as time goes
-        assert!(hard.iter().all(|(at, length, alpha)| (-50.0..1330.0).contains(&at.x) && (-*length..720.0).contains(&at.y) && *alpha > 0.0));
-        // the countdown is before the song's start: it rains then too
-        let early = rain_streaks(0.4, -2.0, screen);
-        assert!(early.iter().all(|(at, length, _)| (-50.0..1330.0).contains(&at.x) && (-*length..720.0).contains(&at.y)));
-        let later = rain_streaks(0.4, 3.01, screen);
-        assert!(hard.iter().zip(&later).filter(|(now, then)| then.0.y > now.0.y).count() > 250);
+        // in the fist fight it slows to a fiftieth within a few seconds, from however fast the hits made it
+        let after = |pace: f32, seconds: u32| (0..seconds * 60).fold(pace, |pace, _| rain_pace(pace, 1.0 / 60.0));
+        assert!((after(1.0, 3) - 0.02).abs() < 0.001 && (after(5.0, 3) - 0.02).abs() < 0.001);
+        assert!(after(1.0, 0) == 1.0 && after(1.7, 1) < 0.1);
     }
 
     #[test]

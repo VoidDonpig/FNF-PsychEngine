@@ -62,7 +62,9 @@ Done:
   and the passing train of week 3 (with the girlfriend's hair blowing), the car speeding past the limo,
   the tank rolling round the hill of week 7, and in Stress Pico on the speakers shooting by his own
   chart at the soldiers who run in. On the weekend 1 street the traffic light changes and cars drive
-  through both ways, stopping at red. Stage events: Kill Henchmen (the pole sweeping the limo's
+  through both ways, stopping at red. The rain of weekend 1 (the Haxe engine's shader: the stage is drawn to a
+  picture and seen through four layers of drops that bend it), heavier as a song goes on, and in the fist fight all but
+  standing still until a hit of the player's lets it fall on; the Shaders switch turns it off. Stage events: Kill Henchmen (the pole sweeping the limo's
   dancers off, the limo fetching new ones), the mall crowd cheering on Hey!, BG Freaks Expression, Trigger
   BG Ghouls, Philly Glow (lights out, the glow, sparks and everyone in one colour), Dadbattle Spotlight
   (the light on whoever sings, the smoke).
@@ -301,8 +303,6 @@ Done:
 
 Not there yet:
 
-- **Play screen**: the rain of weekend 1 (on the streets and in the fight; the Shaders switch turns it off with the title's
-  colour shift) is drawn as falling streaks, growing heavier through the song, not with the Haxe engine's shader.
 - **Menus**: the GPU Caching switch (nothing to switch here); update check.
 - **Scripts**: the rest of Lua's functions (a note's other fields: animSuffix, its own picture on pixel stages; shaders, groups, and getProperty/setProperty
   beyond the camera, health, score, the characters' place and the scripts' sprites). HScript is Haxe code run against the Haxe
