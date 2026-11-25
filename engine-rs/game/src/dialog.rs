@@ -1,5 +1,6 @@
 //! A file chosen through the system's own dialog (the Haxe editor's FileDialogHandler), by the tools the system has:
-//! zenity, else kdialog, on Linux; osascript on macOS; PowerShell's OpenFileDialog and SaveFileDialog on Windows.
+//! zenity, else kdialog, on Linux; osascript on macOS; PowerShell's OpenFileDialog, SaveFileDialog and
+//! FolderBrowserDialog on Windows.
 //! The tool runs beside the game, which keeps drawing: the editor asks `Pending::answer` each frame. What is asked
 //! (the title, the folder, the file's name) is handed to the tool as arguments of its own or in its environment, never
 //! written into a script, so a name with quotes or `$()` in it is only a name.
@@ -33,20 +34,26 @@ impl Pending {
 
 /// A file to open, of the `endings` given ("json"), from `folder`; None when there is no dialog here.
 pub fn open(title: &str, endings: &[&str], folder: &Path) -> Option<Pending> {
-    start(&Ask { title, folder, save: None, endings })
+    start(&Ask { title, folder, save: None, endings, directory: false })
+}
+
+/// A folder (to save files in), from `folder`; None when there is no dialog here.
+pub fn folder(title: &str, folder: &Path) -> Option<Pending> {
+    start(&Ask { title, folder, save: None, endings: &[], directory: true })
 }
 
 /// Where to save a file, `name` offered, in `folder`; None when there is no dialog here.
 pub fn save(title: &str, name: &str, folder: &Path) -> Option<Pending> {
-    start(&Ask { title, folder, save: Some(name), endings: &[] })
+    start(&Ask { title, folder, save: Some(name), endings: &[], directory: false })
 }
 
-/// What is asked: a file to open (`save` None) or where to save the one named.
+/// What is asked: a file to open (`save` None), where to save the one named, or a folder (`directory`).
 struct Ask<'a> {
     title: &'a str,
     folder: &'a Path,
     save: Option<&'a str>,
     endings: &'a [&'a str],
+    directory: bool,
 }
 
 /// A tool to run: its arguments and what it is given in its environment.
@@ -67,6 +74,10 @@ fn joined(option: &str, value: impl AsRef<std::ffi::OsStr>) -> OsString {
 #[cfg_attr(any(windows, target_os = "macos"), allow(dead_code))]
 fn zenity(ask: &Ask) -> Run {
     let mut args = vec![OsString::from("--file-selection"), joined("--title=", ask.title)];
+    if ask.directory {
+        args.extend([OsString::from("--directory"), joined("--filename=", ask.folder.join(""))]);
+        return Run { program: "zenity", args, env: Vec::new() };
+    }
     match ask.save {
         Some(name) => args.extend([OsString::from("--save"), joined("--filename=", ask.folder.join(name))]),
         None => {
@@ -85,6 +96,10 @@ fn zenity(ask: &Ask) -> Run {
 #[cfg_attr(any(windows, target_os = "macos"), allow(dead_code))]
 fn kdialog(ask: &Ask) -> Run {
     let mut args = vec![OsString::from("--title"), OsString::from(ask.title)];
+    if ask.directory {
+        args.extend([OsString::from("--getexistingdirectory"), ask.folder.as_os_str().to_owned()]);
+        return Run { program: "kdialog", args, env: Vec::new() };
+    }
     match ask.save {
         Some(name) => args.extend([OsString::from("--getsavefilename"), ask.folder.join(name).into_os_string()]),
         None => {
@@ -101,6 +116,7 @@ fn kdialog(ask: &Ask) -> Run {
 fn osascript(ask: &Ask) -> Run {
     // shortcut: the endings are not used to filter the files offered (choose file would need their type names)
     let choose = match ask.save {
+        None if ask.directory => "set chosen to choose folder with prompt (item 1 of argv) default location ((POSIX file (item 2 of argv)) as alias)",
         Some(_) => "set chosen to choose file name with prompt (item 1 of argv) default name (item 3 of argv) default location ((POSIX file (item 2 of argv)) as alias)",
         None => "set chosen to choose file with prompt (item 1 of argv) default location ((POSIX file (item 2 of argv)) as alias)",
     };
@@ -116,12 +132,17 @@ fn osascript(ask: &Ask) -> Run {
 #[cfg_attr(not(windows), allow(dead_code))]
 fn powershell(ask: &Ask) -> Run {
     let kind = if ask.save.is_some() { "SaveFileDialog" } else { "OpenFileDialog" };
-    let script = format!(
+    let script = if ask.directory {
+        // (the folder chosen is its SelectedPath)
+        "trap { exit 2 }; Add-Type -AssemblyName System.Windows.Forms; [Console]::OutputEncoding = [Text.Encoding]::UTF8; \
+         $d = New-Object System.Windows.Forms.FolderBrowserDialog; $d.Description = $env:FUNKIN_DIALOG_TITLE; $d.SelectedPath = $env:FUNKIN_DIALOG_FOLDER; \
+         if ($d.ShowDialog() -eq [System.Windows.Forms.DialogResult]::OK) { [Console]::Out.Write($d.SelectedPath) }".to_owned()
+    } else { format!(
         "trap {{ exit 2 }}; Add-Type -AssemblyName System.Windows.Forms; [Console]::OutputEncoding = [Text.Encoding]::UTF8; \
          $d = New-Object System.Windows.Forms.{kind}; $d.Title = $env:FUNKIN_DIALOG_TITLE; $d.InitialDirectory = $env:FUNKIN_DIALOG_FOLDER; \
          $d.FileName = $env:FUNKIN_DIALOG_NAME; $d.Filter = $env:FUNKIN_DIALOG_FILTER; \
          if ($d.ShowDialog() -eq [System.Windows.Forms.DialogResult]::OK) {{ [Console]::Out.Write($d.FileName) }}"
-    );
+    ) };
     let patterns: Vec<String> = ask.endings.iter().map(|ending| format!("*.{ending}")).collect();
     let mut filter = if patterns.is_empty() { String::new() } else { format!("{0}|{0}|", patterns.join(";")) };
     filter.push_str("All files (*.*)|*.*");
@@ -202,7 +223,7 @@ mod tests {
     const HOSTILE: &str = "a\" '$(touch x)`id`; rm -rf ~ & echo \"b.json";
 
     fn asks(folder: &Path) -> [Ask<'_>; 2] {
-        [Ask { title: HOSTILE, folder, save: Some(HOSTILE), endings: &[] }, Ask { title: HOSTILE, folder, save: None, endings: &["json"] }]
+        [Ask { title: HOSTILE, folder, save: Some(HOSTILE), endings: &[], directory: false }, Ask { title: HOSTILE, folder, save: None, endings: &["json"], directory: false }]
     }
 
     fn count(run: &Run, value: &str) -> usize {
@@ -247,6 +268,19 @@ mod tests {
         assert!(powershell(&save).env.contains(&("FUNKIN_DIALOG_NAME", OsString::from(HOSTILE))));
         assert!(powershell(&save).args.iter().any(|arg| arg.to_string_lossy().contains("SaveFileDialog")));
         assert!(powershell(&open).env.contains(&("FUNKIN_DIALOG_FILTER", OsString::from("*.json|*.json|All files (*.*)|*.*"))));
+    }
+
+    #[test]
+    fn folders_are_asked_for_with_the_same_care() {
+        let folder = Path::new("/songs/it's $(here)");
+        let ask = Ask { title: HOSTILE, folder, save: None, endings: &[], directory: true };
+        assert_eq!(zenity(&ask).args, [OsString::from("--file-selection"), joined("--title=", HOSTILE), OsString::from("--directory"), joined("--filename=", "/songs/it's $(here)/")]);
+        assert_eq!(kdialog(&ask).args, ["--title", HOSTILE, "--getexistingdirectory", "/songs/it's $(here)"].map(OsString::from));
+        let run = osascript(&ask);
+        assert!(count(&run, "choose folder") == 1 && count(&run, "touch") == 1 && count(&run, "here") == 1);
+        let run = powershell(&ask);
+        assert!(count(&run, "FolderBrowserDialog") == 1 && count(&run, "touch") == 0 && count(&run, "here") == 0);
+        assert!(run.env.contains(&("FUNKIN_DIALOG_FOLDER", folder.as_os_str().to_owned())));
     }
 
     #[cfg(unix)]

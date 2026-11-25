@@ -50,6 +50,7 @@ mod splash_editor;
 mod stage_editor;
 mod ui;
 mod video;
+mod vslice;
 mod week_editor;
 
 use std::collections::HashMap;

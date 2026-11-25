@@ -6,6 +6,7 @@
 //! tabs, and the File, Edit and View menus at the top left do what the keys and the tabs do (and a few things more).
 use crate::gfx::*;
 use crate::dialog::{self, Answer};
+use crate::vslice;
 use crate::{audio, ui::Ui, Skin, HEIGHT, NOTE_NAMES, WIDTH};
 use funkin_core::content::{Paths, SongEntry};
 use serde_json::{json, Value};
@@ -169,6 +170,8 @@ pub struct ChartEditor {
     untitled: bool,
     /// The system's file dialog that is up, and what it was asked for; the editor waits for it.
     dialog: Option<(Want, dialog::Pending)>,
+    /// What a V-Slice entry has made so far.
+    carry: Option<Carry>,
     /// With no dialog here: the file's name typed (beside the chart).
     typed: Option<(Want, String)>,
     /// A question about a file chosen (open it over changes not saved, the events found in it).
@@ -187,6 +190,15 @@ enum Want {
     OpenEvents,
     SaveAs,
     SaveEventsAs,
+    /// File > Save (V-Slice)...: the folder the V-Slice files go in.
+    SaveVSlice,
+    /// File > Psych to V-Slice...: the Psych chart, then the folder.
+    PsychChart,
+    PsychToVSlice,
+    /// File > V-Slice to Psych...: V-Slice's chart, its metadata, then the folder.
+    VSliceChart,
+    VSliceMetadata,
+    VSliceToPsych,
 }
 
 impl Want {
@@ -196,8 +208,40 @@ impl Want {
             Want::OpenEvents => "Open Events",
             Want::SaveAs => "Save Chart As",
             Want::SaveEventsAs => "Save Events As",
+            Want::SaveVSlice | Want::PsychToVSlice => "Save V-Slice Chart/Metadata JSONs",
+            Want::PsychChart => "Open a Psych Engine Chart JSON",
+            Want::VSliceChart => "Open a V-Slice Chart file",
+            Want::VSliceMetadata => "Open a V-Slice Metadata file",
+            Want::VSliceToPsych => "Save Converted Psych JSONs",
         }
     }
+
+    fn opens(self) -> bool {
+        matches!(self, Want::OpenChart | Want::OpenEvents | Want::PsychChart | Want::VSliceChart | Want::VSliceMetadata)
+    }
+
+    fn folder(self) -> bool {
+        matches!(self, Want::SaveVSlice | Want::PsychToVSlice | Want::VSliceToPsych)
+    }
+}
+
+/// What the V-Slice entries carry from one file chosen to the next.
+enum Carry {
+    /// V-Slice's chart and metadata made, and the song's name in file names.
+    VSlice(Value, Value, String),
+    /// V-Slice's chart read, its metadata asked for next.
+    VSliceChart(Value),
+    /// The Psych charts made from V-Slice's (each difficulty's) and the events.
+    Psych(Vec<(String, Value)>, Option<Value>),
+}
+
+/// Files to write one after the other, each over one there only once asked (the Haxe editor's overwriteCheck).
+struct Writes {
+    files: Vec<(PathBuf, String)>,
+    /// A file not written over goes on to the next (else it stops there).
+    go_on: bool,
+    folder: PathBuf,
+    saved: bool,
 }
 
 enum Prompt {
@@ -205,6 +249,11 @@ enum Prompt {
     OpenChart(PathBuf),
     /// The events of an events file: in place of the chart's or added to them.
     Events(Vec<Value>),
+    /// The V-Slice metadata asked before saving: the artist, the charter and (Psych to V-Slice, the Psych chart's
+    /// folder given) the difficulties; with the folder to save in, else it is asked after.
+    Metadata { chart: Value, metadata: Value, name: String, to: Option<PathBuf>, from: Option<PathBuf>, difficulties: String },
+    /// A file there already: write over it?
+    Overwrite(Writes),
 }
 
 /// The Haxe editor's themes (ChartingTheme): the background's colour, the grid's two, the other sections' grid's two.
@@ -309,7 +358,7 @@ impl ChartEditor {
             autosave_minutes: 2.0, backup_limit: 10, prefs: Value::Null, characters: crate::character_editor::character_names(&paths), stages: crate::stage_editor::stage_names(&paths),
             charts: funkin_core::content::songs(&funkin_core::content::weeks(base)).into_iter().filter(|song| song.source == entry.source).collect(),
             floating: None, lit: [0.0; 8], locked_events: false, labels: true, going: None,
-            untitled: !entry.chart.is_file(), dialog: None, typed: None, prompt: None, theme: Theme::Default, custom_colors: DEFAULT_COLORS, theming: false,
+            untitled: !entry.chart.is_file(), dialog: None, carry: None, typed: None, prompt: None, theme: Theme::Default, custom_colors: DEFAULT_COLORS, theming: false,
         };
         let prefs = funkin_core::files::read(&base.join(PREFS));
         editor.autosave_minutes = prefs["autosave"].as_f64().unwrap_or(2.0).clamp(0.0, 60.0);
@@ -606,7 +655,7 @@ impl ChartEditor {
     /// The File, Edit and View menus (the Haxe editor's upper box); what the editor wants next when an entry leaves it.
     fn menus(&mut self) -> Option<Go> {
         let names = |names: &[&str]| names.iter().map(|name| name.to_string()).collect::<Vec<_>>();
-        let file = names(&["New", "Open Chart...", "Open Autosave...", "Open Events...", "Save", "Save As...", "Save Events", "Save Events As...", "Reload Chart", "Playtest (Enter)", "Exit"]);
+        let file = names(&["New", "Open Chart...", "Open Autosave...", "Open Events...", "Save", "Save As...", "Save Events", "Save Events As...", "Save (V-Slice)...", "Psych to V-Slice...", "V-Slice to Psych...", "Reload Chart", "Playtest (Enter)", "Exit"]);
         let lock = if self.locked_events { "Unlock Events" } else { "Lock Events" };
         let edit = names(&["Undo", "Redo", "Select All", lock, "Autosave Settings...", "Clear All Notes", "Clear All Events"]);
         let labels = if self.labels { "Hide Note Labels" } else { "Show Note Labels" };
@@ -629,15 +678,18 @@ impl ChartEditor {
             (0, 6) if self.entry.chart.with_file_name("events.json").exists() && !self.ui.sure("save events", 0, true) => self.say("events.json is there already. Choose it again to write over it."),
             (0, 6) => self.save_events(),
             (0, 7) => self.ask(Want::SaveEventsAs),
-            (0, 8) if self.untitled => self.say("This chart has no file to reload yet."),
-            (0, 8) if !self.ui.sure("reload chart", 0, self.unsaved) => self.say(crate::ui::UNSAVED),
-            (0, 8) => {
+            (0, 8) => self.ask(Want::SaveVSlice),
+            (0, 9) => self.ask(Want::PsychChart),
+            (0, 10) => self.ask(Want::VSliceChart),
+            (0, 11) if self.untitled => self.say("This chart has no file to reload yet."),
+            (0, 11) if !self.ui.sure("reload chart", 0, self.unsaved) => self.say(crate::ui::UNSAVED),
+            (0, 11) => {
                 if self.open_chart(&self.entry.clone()) {
                     self.say("Chart reloaded successfully!");
                 }
             }
-            (0, 9) => return Some(self.play_test()),
-            (0, 10) => {
+            (0, 12) => return Some(self.play_test()),
+            (0, 13) => {
                 if let Go::Leave = self.leave() {
                     return Some(Go::Leave);
                 }
@@ -1078,6 +1130,11 @@ impl ChartEditor {
             Want::SaveAs if self.untitled => format!("{}.json", song_path(self.json["song"].as_str().unwrap_or("Test"))),
             Want::SaveAs | Want::OpenChart => self.entry.chart.file_name().map_or(String::new(), |name| name.to_string_lossy().into_owned()),
             Want::OpenEvents | Want::SaveEventsAs => "events.json".to_owned(),
+            Want::PsychChart => self.entry.chart.file_name().map_or(String::new(), |name| name.to_string_lossy().into_owned()),
+            Want::VSliceChart => format!("{}-chart.json", song_path(self.json["song"].as_str().unwrap_or("Test"))),
+            Want::VSliceMetadata => format!("{}-metadata.json", song_path(self.json["song"].as_str().unwrap_or("Test"))),
+            // (a folder: blank is the chart's own)
+            Want::SaveVSlice | Want::PsychToVSlice | Want::VSliceToPsych => String::new(),
         }
     }
 
@@ -1086,9 +1143,12 @@ impl ChartEditor {
         self.stop();
         self.close_boxes();
         let folder = self.entry.chart.parent().map(|folder| std::path::absolute(folder).unwrap_or_else(|_| folder.to_path_buf())).unwrap_or_default();
-        let pending = match want {
-            Want::OpenChart | Want::OpenEvents => dialog::open(want.title(), &["json"], &folder),
-            Want::SaveAs | Want::SaveEventsAs => dialog::save(want.title(), &self.offered_name(want), &folder),
+        let pending = if want.folder() {
+            dialog::folder(want.title(), &folder)
+        } else if want.opens() {
+            dialog::open(want.title(), &["json"], &folder)
+        } else {
+            dialog::save(want.title(), &self.offered_name(want), &folder)
         };
         match pending {
             Some(pending) => {
@@ -1142,7 +1202,128 @@ impl ChartEditor {
                 Ok(_) => self.say(format!("Events saved successfully to: {}", path.display())),
                 Err(error) => self.say(error),
             },
+            // the chart as it is, under every difficulty of the song, its metadata asked first
+            Want::SaveVSlice => {
+                let (chart, metadata) = vslice::export(&self.json, &self.difficulty_names(), self.pixel(self.json["stage"].as_str().unwrap_or("")));
+                let name = song_path(self.json["song"].as_str().unwrap_or("Test"));
+                self.prompt = Some(Prompt::Metadata { chart, metadata, name, to: Some(path), from: None, difficulties: String::new() });
+            }
+            Want::PsychChart => {
+                let Some(mut song) = read().filter(|song| song.get("song").is_some()) else {
+                    return self.say("Error: File loaded is not a Psych Engine 0.x.x/FNF 0.2.x.x chart.");
+                };
+                convert(&mut song);
+                // (as VSlice.hx: the difficulties start as V-Slice's three, to be changed in the box)
+                let names = ["easy", "normal", "hard"].map(str::to_owned);
+                let (chart, metadata) = vslice::export(&song, &names, self.pixel(song["stage"].as_str().unwrap_or("")));
+                let name = song_path(metadata["songName"].as_str().unwrap_or("Test"));
+                let from = path.parent().map(Path::to_path_buf);
+                self.prompt = Some(Prompt::Metadata { chart, metadata, name, to: None, from, difficulties: names.join(", ") });
+            }
+            Want::PsychToVSlice | Want::VSliceToPsych => match self.carry.take() {
+                Some(Carry::VSlice(chart, metadata, name)) => self.write_vslice(chart, metadata, &name, path),
+                Some(Carry::Psych(charts, events)) => {
+                    let mut files: Vec<(PathBuf, String)> = charts.iter().map(|(difficulty, song)| {
+                        let name = format!("{}{}.json", song_path(song["song"].as_str().unwrap_or("Test")), funkin_core::content::suffix(difficulty));
+                        (path.join(name), print(song, 0))
+                    }).collect();
+                    files.extend(events.map(|events| (path.join("events.json"), print(&events, 0))));
+                    self.write_next(Writes { files, go_on: true, folder: path, saved: false });
+                }
+                _ => {}
+            },
+            Want::VSliceChart => match read() {
+                Some(chart) if vslice::is_chart(&chart) => {
+                    self.carry = Some(Carry::VSliceChart(chart));
+                    self.ask(Want::VSliceMetadata);
+                }
+                _ => self.say("Error: File loaded is not a valid FNF V-Slice chart."),
+            },
+            Want::VSliceMetadata => match (read(), self.carry.take()) {
+                (Some(metadata), Some(Carry::VSliceChart(chart))) if vslice::is_metadata(&metadata) => {
+                    let psych = vslice::to_psych(&chart, &metadata);
+                    if psych.difficulties.is_empty() {
+                        return self.say("Error: No difficulties found.");
+                    }
+                    self.carry = Some(Carry::Psych(psych.difficulties, psych.events));
+                    self.ask(Want::VSliceToPsych);
+                }
+                _ => self.say("Error: File loaded is not a valid FNF V-Slice metadata."),
+            },
         }
+    }
+
+    /// The song's difficulties (as in file names), the folder's charts' (Difficulty.list), else V-Slice's three.
+    fn difficulty_names(&self) -> Vec<String> {
+        let mut names: Vec<String> = Vec::new();
+        for song in self.charts.iter().filter(|song| song.title == self.entry.title) {
+            let name = song_path(&song.difficulty);
+            if !names.contains(&name) {
+                names.push(name);
+            }
+        }
+        if names.is_empty() {
+            names = ["easy", "normal", "hard"].map(str::to_owned).to_vec();
+        }
+        names
+    }
+
+    /// Whether `stage` is a pixel one (V-Slice's "pixel" note style).
+    fn pixel(&self, stage: &str) -> bool {
+        let paths = Paths::new(&self.base, &self.entry.source, "");
+        paths.find(&format!("stages/{stage}.json")).is_some_and(|file| {
+            let stage = funkin_core::files::read(&file);
+            stage["stageUI"].as_str().is_some_and(|ui| ui == "pixel" || ui.ends_with("-pixel")) || stage["isPixelStage"].as_bool().unwrap_or(false)
+        })
+    }
+
+    /// V-Slice's chart and metadata into `folder`, as `<song>-chart.json` and `<song>-metadata.json`.
+    fn write_vslice(&mut self, chart: Value, metadata: Value, name: &str, folder: PathBuf) {
+        let files = vec![(folder.join(format!("{name}-chart.json")), print(&chart, 0)), (folder.join(format!("{name}-metadata.json")), print(&metadata, 0))];
+        self.write_next(Writes { files, go_on: false, folder, saved: false });
+    }
+
+    /// Writes the files in turn until one is there already (the box asks about it).
+    fn write_next(&mut self, mut writes: Writes) {
+        while let Some((path, _)) = writes.files.first() {
+            if path.exists() {
+                self.prompt = Some(Prompt::Overwrite(writes));
+                return;
+            }
+            let (path, text) = writes.files.remove(0);
+            if let Err(error) = funkin_core::files::replace(&path, &text) {
+                return self.say(error);
+            }
+            writes.saved = true;
+        }
+        if writes.saved {
+            self.say(format!("Files saved successfully to: {}!", writes.folder.display()));
+        }
+    }
+
+    /// Psych to V-Slice's Save: each difficulty's chart beside the one chosen (and the folder's events.json) put in,
+    /// then the folder to save in asked for.
+    fn gather_vslice(&mut self, mut chart: Value, metadata: Value, name: String, from: &Path) {
+        let names: Vec<String> = metadata["playData"]["difficulties"].as_array().into_iter().flatten().filter_map(|name| name.as_str().map(str::to_owned)).collect();
+        if names.is_empty() {
+            return self.say("Error: You need atleast one difficulty to export.");
+        }
+        let read = |path: PathBuf| std::fs::read_to_string(path).ok().and_then(|text| serde_json::from_str::<Value>(&text).ok())
+            .map(|mut json| { if json["song"].is_object() { json = json["song"].take() } convert(&mut json); json });
+        for difficulty in &names {
+            let Some(song) = read(from.join(format!("{name}{}.json", funkin_core::content::suffix(difficulty)))) else { continue };
+            let (each, _) = vslice::export(&song, std::slice::from_ref(difficulty), false);
+            chart["scrollSpeed"][difficulty] = each["scrollSpeed"][difficulty].clone();
+            chart["notes"][difficulty] = each["notes"][difficulty].clone();
+        }
+        if let Some(events) = read(from.join("events.json")) {
+            let (each, _) = vslice::export(&events, &[], false);
+            let all = chart["events"].as_array_mut().expect("export makes an array");
+            all.extend(each["events"].as_array().into_iter().flatten().cloned());
+            all.sort_by(|a, b| a["t"].as_f64().unwrap_or(0.0).total_cmp(&b["t"].as_f64().unwrap_or(0.0)));
+        }
+        self.carry = Some(Carry::VSlice(chart, metadata, name));
+        self.ask(Want::PsychToVSlice);
     }
 
     /// A chart file in this editor: as the folder's chart it is, else with this song's music.
@@ -1160,13 +1341,15 @@ impl ChartEditor {
         let Some((want, mut name)) = self.typed.take() else { return };
         let (x, y) = (40.0, 64.0);
         self.ui.area(Rect::new(x, y, 330.0, 80.0));
-        self.ui.label(x + 10.0, y + 4.0, &format!("{} (a file beside the chart):", want.title()));
+        let kind = if want.folder() { "a folder in the chart's, blank for its own" } else { "a file beside the chart" };
+        self.ui.label(x + 10.0, y + 4.0, &format!("{} ({kind}):", want.title()));
         if let Some(typed) = self.ui.input("typed name", x + 10.0, y + 28.0, 310.0, &name) {
             name = typed;
         }
-        let verb = if matches!(want, Want::OpenChart | Want::OpenEvents) { "Open" } else { "Save" };
+        let verb = if want.opens() { "Open" } else if want.folder() { "Choose" } else { "Save" };
         if self.ui.button(x + 170.0, y + 54.0, 70.0, verb) {
-            match beside(&self.entry.chart, &name) {
+            let path = if want.folder() && name.trim().is_empty() { self.entry.chart.parent().map(Path::to_path_buf) } else { beside(&self.entry.chart, &name) };
+            match path {
                 Some(path) if verb == "Open" && !path.is_file() => {
                     self.say(format!("There is no {} beside the chart.", name.trim()));
                     self.typed = Some((want, name));
@@ -1213,6 +1396,59 @@ impl ChartEditor {
                     self.say("Events added successfully!");
                 } else if !self.ui.button(x + 220.0, y + 54.0, 100.0, "Cancel") {
                     self.prompt = Some(Prompt::Events(events));
+                }
+            }
+            Prompt::Metadata { chart, mut metadata, name, to, from, mut difficulties } => {
+                self.ui.area(Rect::new(x, y, 330.0, if from.is_some() { 140.0 } else { 100.0 }));
+                self.ui.label(x + 10.0, y + 4.0, "Metadata");
+                self.ui.label(x + 10.0, y + 22.0, "Artist/Composer:");
+                self.ui.label(x + 170.0, y + 22.0, "Charter:");
+                if let Some(typed) = self.ui.input("vslice artist", x + 10.0, y + 40.0, 150.0, metadata["artist"].as_str().unwrap_or("")) {
+                    metadata["artist"] = json!(typed);
+                }
+                if let Some(typed) = self.ui.input("vslice charter", x + 170.0, y + 40.0, 150.0, metadata["charter"].as_str().unwrap_or("")) {
+                    metadata["charter"] = json!(typed);
+                }
+                let below = if from.is_some() {
+                    self.ui.label(x + 10.0, y + 62.0, "Difficulties:");
+                    if let Some(typed) = self.ui.input("vslice difficulties", x + 10.0, y + 80.0, 310.0, &difficulties) {
+                        difficulties = typed.to_lowercase();
+                        let names: Vec<String> = difficulties.split(',').map(song_path).filter(|name| !name.is_empty()).collect();
+                        metadata["playData"]["difficulties"] = json!(names);
+                    }
+                    y + 114.0
+                } else {
+                    y + 74.0
+                };
+                if self.ui.button(x + 170.0, below, 70.0, "Save") {
+                    match (to, from) {
+                        (Some(folder), _) => self.write_vslice(chart, metadata, &name, folder),
+                        (None, Some(from)) => self.gather_vslice(chart, metadata, name, &from),
+                        (None, None) => {}
+                    }
+                } else if !self.ui.button(x + 250.0, below, 70.0, "Cancel") {
+                    self.prompt = Some(Prompt::Metadata { chart, metadata, name, to, from, difficulties });
+                }
+            }
+            Prompt::Overwrite(mut writes) => {
+                let name = writes.files[0].0.file_name().map_or(String::new(), |name| name.to_string_lossy().into_owned());
+                self.ui.label(x + 10.0, y + 4.0, &format!("Overwrite: \"{name}\"?"));
+                if self.ui.button(x + 150.0, y + 54.0, 90.0, "Overwrite") {
+                    let (path, text) = writes.files.remove(0);
+                    match funkin_core::files::replace(&path, &text) {
+                        Ok(_) => {
+                            writes.saved = true;
+                            self.write_next(writes);
+                        }
+                        Err(error) => self.say(error),
+                    }
+                } else if self.ui.button(x + 250.0, y + 54.0, 70.0, "Cancel") {
+                    if writes.go_on {
+                        writes.files.remove(0);
+                        self.write_next(writes);
+                    }
+                } else {
+                    self.prompt = Some(Prompt::Overwrite(writes));
                 }
             }
         }
