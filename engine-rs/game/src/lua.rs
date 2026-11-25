@@ -158,6 +158,11 @@ pub struct Shared {
     pub achieved: Vec<(String, Option<f64>, bool)>,
     /// What getPropertyFromClass reads that stays as it is through a song, by "Class.field" (the class without its package).
     pub class_props: HashMap<String, serde_json::Value>,
+    /// The mods' shaders read so far, by name (None: not found, or refused); whether the player has shaders on; and
+    /// those the three characters are drawn through (the opponent, the player, the girlfriend).
+    shaders: HashMap<String, Option<Shader>>,
+    pub shaders_on: bool,
+    pub character_shaders: [Option<Shader>; 3],
 }
 
 struct Script {
@@ -170,6 +175,11 @@ struct Script {
 pub struct Scripts {
     scripts: Vec<Script>,
     pub shared: Rc<RefCell<Shared>>,
+}
+
+/// Which of the three characters a name of the Haxe engine's means: 0 the opponent, 1 the player, 2 the girlfriend.
+fn character_slot(name: &str) -> Option<usize> {
+    ["dad", "boyfriend", "gf", "dadGroup", "boyfriendGroup", "gfGroup"].iter().position(|known| *known == name).map(|at| at % 3)
 }
 
 /// The scripts to run for a song, in the Haxe engine's order: those of the `scripts/` folders, the song's own
@@ -379,11 +389,13 @@ struct Sprite {
     playing: Option<(String, f64)>,
     /// Drawn adding its light (setBlendMode "add").
     add: bool,
+    /// The mod's shader it is drawn through (setSpriteShader).
+    shader: Option<Shader>,
 }
 
 impl Sprite {
     fn new(art: Option<Art>, x: f64, y: f64) -> Sprite {
-        Sprite { text: None, art, solid: None, x, y, scale: [1.0; 2], scroll: [1.0; 2], offset: [0.0; 2], alpha: 1.0, visible: true, angle: 0.0, flip_x: false, color: 0xFFFFFF, camera: Cam::Game, added: false, front: false, animations: HashMap::new(), playing: None, add: false }
+        Sprite { text: None, art, solid: None, x, y, scale: [1.0; 2], scroll: [1.0; 2], offset: [0.0; 2], alpha: 1.0, visible: true, angle: 0.0, flip_x: false, color: 0xFFFFFF, camera: Cam::Game, added: false, front: false, animations: HashMap::new(), playing: None, add: false, shader: None }
     }
 
     /// The frame shown now: of the animation playing, else the first of the sheet, else the whole picture.
@@ -508,6 +520,7 @@ impl Sprite {
             blend_add(false);
             return;
         }
+        shade(self.shader.as_ref());
         match (&self.solid, self.frame(), &self.art) {
             (Some((_, rgb)), _, _) => draw_rectangle(corner.x, corner.y, size.x, size.y, Color { a: self.alpha as f32, ..Color::from_hex(*rgb & 0xFFFFFF) }),
             (_, Some((frame, moved)), Some(art)) => {
@@ -519,6 +532,7 @@ impl Sprite {
             }
             _ => {}
         }
+        shade(None);
         pop_model_matrix();
         blend_add(false);
     }
@@ -643,6 +657,29 @@ impl Shared {
         }
         self.art.insert(key, art.clone());
         art
+    }
+
+    /// A shader of `shaders/` (`<name>.frag`), read once; one that is missing or cannot be read is said so, once.
+    fn shader(&mut self, name: &str) -> Option<Shader> {
+        if let Some(known) = self.shaders.get(name) {
+            return known.clone();
+        }
+        let file = self.paths.as_ref().and_then(|paths| paths.find(&format!("shaders/{name}.frag")));
+        let read = file.ok_or_else(|| "its .frag file was not found".to_owned()).and_then(|file| std::fs::read_to_string(file).map_err(|error| error.to_string())).and_then(|text| Shader::load(&text));
+        if let Err(error) = &read {
+            eprintln!("Lua: shader {name}: {error}");
+            self.printed.push((format!("Shader {name}: {error}"), crate::gfx::get_time()));
+        }
+        self.shaders.insert(name.to_owned(), read.as_ref().ok().cloned());
+        read.ok()
+    }
+
+    /// The shader something is drawn through: a script's sprite by its tag, or a character by the Haxe engine's name.
+    fn shader_of(&mut self, object: &str) -> Option<Shader> {
+        match character_slot(object) {
+            Some(slot) => self.character_shaders[slot].clone(),
+            None => self.sprite(object)?.shader.clone(),
+        }
     }
 
     /// A font of `fonts/`, loaded once: the song's mod's, the shared ones, or the game's own.
@@ -963,6 +1000,69 @@ impl Scripts {
             };
             shared.sprites.insert(to.min(count), (name, sprite));
             Ok(())
+        });
+        // mods' shaders (`shaders/<name>.frag`), on the scripts' sprites and the three characters
+        // shortcut: on the cameras (which the Haxe engine's scripts reach through HScript only), on the game's own
+        // pictures other than the characters, and vertex shaders (`.vert`) they are not taken
+        function!("initLuaShader", |_lua, shared, args: (String, Option<Value>)| {
+            let mut shared = shared.borrow_mut();
+            Ok(shared.shaders_on && shared.shader(&args.0).is_some())
+        });
+        function!("setSpriteShader", |_lua, shared, args: (String, String)| {
+            let mut shared = shared.borrow_mut();
+            if !shared.shaders_on {
+                return Ok(false);
+            }
+            let Some(shader) = shared.shader(&args.1) else {
+                shared.printed.push((format!("setSpriteShader: Shader {} is missing!", args.1), crate::gfx::get_time()));
+                return Ok(false);
+            };
+            match (character_slot(&args.0), shared.sprite(&args.0)) {
+                (Some(slot), _) => shared.character_shaders[slot] = Some(shader.fresh()),
+                (None, Some(sprite)) => sprite.shader = Some(shader.fresh()),
+                (None, None) => return Ok(false),
+            }
+            Ok(true)
+        });
+        function!("removeSpriteShader", |_lua, shared, args: String| {
+            let mut shared = shared.borrow_mut();
+            Ok(match (character_slot(&args), shared.sprite(&args)) {
+                (Some(slot), _) => shared.character_shaders[slot].take().is_some(),
+                (None, Some(sprite)) => sprite.shader.take().is_some(),
+                (None, None) => false,
+            })
+        });
+        // a uniform read: one number (or true/false), or all it holds
+        for (name, list, flag) in [("getShaderFloat", false, false), ("getShaderInt", false, false), ("getShaderBool", false, true), ("getShaderFloatArray", true, false), ("getShaderIntArray", true, false), ("getShaderBoolArray", true, true)] {
+            function!(name, |lua, shared, args: (String, String)| {
+                let Some(numbers) = shared.borrow_mut().shader_of(&args.0).and_then(|shader| shader.get(&args.1)) else { return Ok(Value::Nil) };
+                let value = |number: f64| if flag { serde_json::json!(number != 0.0) } else { serde_json::json!(number) };
+                from_json(lua, &if list { numbers.into_iter().map(value).collect() } else { numbers.first().map_or(serde_json::Value::Null, |number| value(*number)) })
+            });
+        }
+        // and set: a number, true or false, or a list of them
+        for name in ["setShaderFloat", "setShaderInt", "setShaderBool", "setShaderFloatArray", "setShaderIntArray", "setShaderBoolArray"] {
+            function!(name, |_lua, shared, args: (String, String, Value)| {
+                let number = |value: &Value| match value {
+                    Value::Boolean(flag) => Some(*flag as u8 as f64),
+                    Value::Integer(whole) => Some(*whole as f64),
+                    Value::Number(number) => Some(*number),
+                    _ => None,
+                };
+                let numbers: Vec<f64> = match &args.2 {
+                    Value::Table(list) => list.sequence_values::<Value>().flatten().filter_map(|value| number(&value)).collect(),
+                    value => number(value).into_iter().collect(),
+                };
+                Ok(shared.borrow_mut().shader_of(&args.0).is_some_and(|shader| shader.set(&args.1, &numbers)))
+            });
+        }
+        function!("setShaderSampler2D", |_lua, shared, args: (String, String, String)| {
+            let mut shared = shared.borrow_mut();
+            let Some(shader) = shared.shader_of(&args.0) else { return Ok(false) };
+            Ok(match shared.art(&args.2, false) {
+                Some(Art::Picture(picture)) => shader.set_picture(&args.1, &picture),
+                _ => false,
+            })
         });
         function!("getHealth", |lua, shared, _args: ()| from_json(lua, &shared.borrow().props.get("health").cloned().unwrap_or_default()));
         function!("getSongPosition", |lua, shared, _args: ()| from_json(lua, &shared.borrow().props.get("songPosition").cloned().unwrap_or_default()));

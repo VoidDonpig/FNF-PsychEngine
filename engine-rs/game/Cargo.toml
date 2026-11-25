@@ -16,7 +16,8 @@ lewton = { version = "0.10", optional = true }
 # (preserve_order: files the editors save keep their keys where they were)
 serde_json = { version = "1", features = ["preserve_order"] }
 # Drawing, on Vulkan, DirectX 12 or OpenGL (the "Graphics API" option); the window and keyboard; letters from font files; picture files.
-wgpu = "30"
+# (glsl, naga-ir: mods' shaders are GLSL, read and checked before the graphics card gets them)
+wgpu = { version = "30", features = ["glsl", "naga-ir"] }
 winit = "0.30"
 fontdue = "0.9"
 png = "0.17"

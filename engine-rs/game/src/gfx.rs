@@ -526,9 +526,77 @@ fn placed(whole: Vec2, x: f32, y: f32, params: &DrawTextureParams) -> ([Vec2; 4]
 /// Consecutive things drawn from one picture, up to vertex `end`.
 struct Call {
     group: wgpu::BindGroup,
-    /// The picture, how it is stretched, and whether it adds its light to what is under it.
-    picture: (u64, FilterMode, bool),
+    /// The picture, how it is stretched, whether it adds its light to what is under it, and the shader it is drawn
+    /// through (0: the game's own).
+    picture: (u64, FilterMode, bool, u64),
     end: u32,
+    shader: Option<Shader>,
+}
+
+/// How the corners of what is drawn are handed to the graphics card (`Vertex`).
+const ATTRIBUTES: [wgpu::VertexAttribute; 8] = wgpu::vertex_attr_array![0 => Float32x2, 1 => Float32x2, 2 => Float32x4, 3 => Float32x3, 4 => Float32x3, 5 => Float32x3, 6 => Float32, 7 => Float32];
+
+/// A mod's shader read and made ready: what draws through it, and where its uniforms lie.
+struct Program {
+    pipeline: wgpu::RenderPipeline,
+    layout: wgpu::BindGroupLayout,
+    slots: Vec<crate::shader::Slot>,
+    size: usize,
+    /// The pictures it asks for besides the sprite's own, by their uniforms' names.
+    pictures: Vec<String>,
+    defaults: Vec<(String, Vec<f64>)>,
+}
+
+/// A mod's shader as one sprite is drawn through it, with its own values for the uniforms. Copies are the same one;
+/// `fresh` makes another with the values the file gives.
+#[derive(Clone)]
+pub struct Shader(Rc<ShaderUse>);
+
+struct ShaderUse {
+    id: u64,
+    program: Rc<Program>,
+    buffer: wgpu::Buffer,
+    /// The uniforms' bytes, and whether the graphics card has yet to be given them.
+    bytes: RefCell<Vec<u8>>,
+    stale: Cell<bool>,
+    pictures: RefCell<Vec<Texture2D>>,
+    group: RefCell<Option<wgpu::BindGroup>>,
+}
+
+impl Shader {
+    /// Reads a fragment shader written for OpenFL (a mod's `shaders/<name>.frag`). The error says what is wrong with it.
+    pub fn load(source: &str) -> Result<Shader, String> {
+        with(|context| {
+            let program = context.program(source)?;
+            Ok(context.shader_use(program))
+        })
+    }
+
+    /// The same shader for another sprite, its uniforms as the file gives them.
+    pub fn fresh(&self) -> Shader {
+        with(|context| context.shader_use(self.0.program.clone()))
+    }
+
+    /// Sets a uniform by name (as many numbers as it holds); false when the shader has none of that name.
+    pub fn set(&self, name: &str, numbers: &[f64]) -> bool {
+        let Some(slot) = self.0.program.slots.iter().find(|slot| slot.name == name) else { return false };
+        crate::shader::write(&mut self.0.bytes.borrow_mut(), slot, numbers);
+        self.0.stale.set(true);
+        true
+    }
+
+    pub fn get(&self, name: &str) -> Option<Vec<f64>> {
+        let slot = self.0.program.slots.iter().find(|slot| slot.name == name)?;
+        Some(crate::shader::read(&self.0.bytes.borrow(), slot))
+    }
+
+    /// Gives one of the pictures the shader asks for (a `sampler2D` uniform); false when it has none of that name.
+    pub fn set_picture(&self, name: &str, picture: &Texture2D) -> bool {
+        let Some(at) = self.0.program.pictures.iter().position(|known| known == name) else { return false };
+        self.0.pictures.borrow_mut()[at] = picture.clone();
+        *self.0.group.borrow_mut() = None;
+        true
+    }
 }
 
 /// The window and what winit said about it since last asked.
@@ -571,6 +639,11 @@ struct Context {
     /// The frame so far.
     vertices: Vec<Vertex>,
     calls: Vec<Call>,
+    /// The game's own shader (mods' fragment shaders are drawn with its corners), the mod's shader drawn through now, and
+    /// how many of those were made.
+    module: wgpu::ShaderModule,
+    shader: Option<Shader>,
+    shaders: u64,
     /// Rain asked for this frame: the calls so far are seen through it (how many, and the shader's numbers).
     effect: Option<(usize, [f32; 8])>,
     rain: Option<RainPass>,
@@ -731,7 +804,6 @@ pub fn open(conf: Conf) -> Result<(String, Option<String>), String> {
         ],
     });
     let pipeline_layout = device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor { label: None, bind_group_layouts: &[Some(&layout)], ..Default::default() });
-    let attributes = wgpu::vertex_attr_array![0 => Float32x2, 1 => Float32x2, 2 => Float32x4, 3 => Float32x3, 4 => Float32x3, 5 => Float32x3, 6 => Float32, 7 => Float32];
     let pipeline_with = |blend: wgpu::BlendState| device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
         label: None,
         layout: Some(&pipeline_layout),
@@ -739,7 +811,7 @@ pub fn open(conf: Conf) -> Result<(String, Option<String>), String> {
             module: &shader,
             entry_point: Some("corner"),
             compilation_options: Default::default(),
-            buffers: &[Some(wgpu::VertexBufferLayout { array_stride: std::mem::size_of::<Vertex>() as u64, step_mode: wgpu::VertexStepMode::Vertex, attributes: &attributes })],
+            buffers: &[Some(wgpu::VertexBufferLayout { array_stride: std::mem::size_of::<Vertex>() as u64, step_mode: wgpu::VertexStepMode::Vertex, attributes: &ATTRIBUTES })],
         },
         primitive: wgpu::PrimitiveState::default(),
         depth_stencil: None,
@@ -764,7 +836,7 @@ pub fn open(conf: Conf) -> Result<(String, Option<String>), String> {
     let now = Instant::now();
     let mut context = Context {
         event_loop: Some(event_loop), app, window, instance, surface: Some(surface), device, queue, config, format, pipeline, adding, layout, samplers, pictures: 0, white: None, letters: None,
-        vertices: Vec::new(), calls: Vec::new(), effect: None, rain: None, buffer: None, background: BLACK, camera: Mat4::IDENTITY, models: Vec::new(), recolor: None, fade: 1.0, blocks: 0.0, add: false,
+        vertices: Vec::new(), calls: Vec::new(), module: shader, shader: None, shaders: 0, effect: None, rain: None, buffer: None, background: BLACK, camera: Mat4::IDENTITY, models: Vec::new(), recolor: None, fade: 1.0, blocks: 0.0, add: false,
         down: HashSet::new(), pressed: HashSet::new(), released: HashSet::new(), last_pressed: None, typed: VecDeque::new(), alt_enter: false, focused: true, mouse: Mouse::default(),
         started: now, frame_began: now, frame_time: 1.0 / 60.0, shown: now, display_lag: 0.0, due: now, open: true,
     };
@@ -827,10 +899,17 @@ impl Context {
     /// A four-cornered piece of a picture: corners clockwise from the top left, with the part of the picture (0 to 1) at each.
     fn quad(&mut self, picture: &Texture2D, corners: [Vec2; 4], uvs: [Vec2; 4], color: Color) {
         let filter = picture.0.filter.get();
-        let id = (picture.0.id, filter, self.add);
+        let id = (picture.0.id, filter, self.add, self.shader.as_ref().map_or(0, |shader| shader.0.id));
         // (what is drawn after the rain was asked for is not part of what it rains on)
         if self.calls.last().is_none_or(|call| call.picture != id) || self.effect.is_some_and(|(calls, _)| calls == self.calls.len()) {
-            self.calls.push(Call { group: picture.0.groups[filter as usize].clone(), picture: id, end: self.vertices.len() as u32 });
+            self.calls.push(Call { group: picture.0.groups[filter as usize].clone(), picture: id, end: self.vertices.len() as u32, shader: self.shader.clone() });
+        }
+        // a mod's shader is told how large the picture is (openfl_TextureSize, the first of its uniforms)
+        if let Some(shader) = &self.shader {
+            let size = [picture.0.width as f64, picture.0.height as f64];
+            if shader.get("openfl_TextureSize").as_deref() != Some(&size) {
+                shader.set("openfl_TextureSize", &size);
+            }
         }
         let place = self.camera * self.models.last().copied().unwrap_or(Mat4::IDENTITY);
         let [red, green, blue] = self.recolor.unwrap_or_default().map(|part| part.to_array());
@@ -873,6 +952,22 @@ impl Context {
         if rained.is_some() {
             self.ready_rain();
         }
+        // the mods' shaders used this frame are given their uniforms and pictures
+        for shader in self.calls.iter().filter_map(|call| call.shader.as_ref()) {
+            if shader.0.stale.replace(false) {
+                self.queue.write_buffer(&shader.0.buffer, 0, &shader.0.bytes.borrow());
+            }
+            if shader.0.group.borrow().is_none() {
+                let pictures = shader.0.pictures.borrow();
+                let views: Vec<wgpu::TextureView> = pictures.iter().map(|picture| picture.0.texture.create_view(&Default::default())).collect();
+                let mut entries = vec![wgpu::BindGroupEntry { binding: 0, resource: shader.0.buffer.as_entire_binding() }];
+                for (at, view) in views.iter().enumerate() {
+                    entries.push(wgpu::BindGroupEntry { binding: 1 + 2 * at as u32, resource: wgpu::BindingResource::TextureView(view) });
+                    entries.push(wgpu::BindGroupEntry { binding: 2 + 2 * at as u32, resource: wgpu::BindingResource::Sampler(&self.samplers[0]) });
+                }
+                *shader.0.group.borrow_mut() = Some(self.device.create_bind_group(&wgpu::BindGroupDescriptor { label: None, layout: &shader.0.program.layout, entries: &entries }));
+            }
+        }
         let bytes: &[u8] = bytemuck::cast_slice(&self.vertices);
         if self.buffer.as_ref().is_none_or(|(_, room)| *room < bytes.len() as u64) {
             let room = (bytes.len() as u64).next_power_of_two().max(1 << 16);
@@ -889,7 +984,11 @@ impl Context {
             pass.set_vertex_buffer(0, buffer.slice(..));
             let mut adding = None;
             for call in calls {
-                if adding != Some(call.picture.2) {
+                if let Some(shader) = &call.shader {
+                    pass.set_pipeline(&shader.0.program.pipeline);
+                    pass.set_bind_group(1, shader.0.group.borrow().as_ref(), &[]);
+                    adding = None;
+                } else if adding != Some(call.picture.2) {
                     adding = Some(call.picture.2);
                     pass.set_pipeline(if call.picture.2 { &self.adding } else { &self.pipeline });
                 }
@@ -920,6 +1019,60 @@ impl Context {
             }
         }
         self.queue.submit([encoder.finish()]);
+    }
+
+    /// Reads a mod's fragment shader and makes what draws through it. Whatever the graphics card's side finds wrong with
+    /// it is the error (the game goes on without the shader).
+    fn program(&mut self, source: &str) -> Result<Rc<Program>, String> {
+        let crate::shader::Translated { module, slots, size, pictures, defaults } = crate::shader::translate(source)?;
+        let scope = self.device.push_error_scope(wgpu::ErrorFilter::Validation);
+        let fragment = self.device.create_shader_module(wgpu::ShaderModuleDescriptor { label: None, source: wgpu::ShaderSource::Naga(std::borrow::Cow::Owned(module)) });
+        let mut entries = vec![wgpu::BindGroupLayoutEntry { binding: 0, visibility: wgpu::ShaderStages::FRAGMENT, ty: wgpu::BindingType::Buffer { ty: wgpu::BufferBindingType::Uniform, has_dynamic_offset: false, min_binding_size: None }, count: None }];
+        for at in 0..pictures.len() as u32 {
+            let picture = wgpu::BindingType::Texture { sample_type: wgpu::TextureSampleType::Float { filterable: true }, view_dimension: wgpu::TextureViewDimension::D2, multisampled: false };
+            entries.push(wgpu::BindGroupLayoutEntry { binding: 1 + 2 * at, visibility: wgpu::ShaderStages::FRAGMENT, ty: picture, count: None });
+            entries.push(wgpu::BindGroupLayoutEntry { binding: 2 + 2 * at, visibility: wgpu::ShaderStages::FRAGMENT, ty: wgpu::BindingType::Sampler(wgpu::SamplerBindingType::Filtering), count: None });
+        }
+        let layout = self.device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor { label: None, entries: &entries });
+        let pipeline_layout = self.device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor { label: None, bind_group_layouts: &[Some(&self.layout), Some(&layout)], ..Default::default() });
+        let pipeline = self.device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
+            label: None,
+            layout: Some(&pipeline_layout),
+            vertex: wgpu::VertexState {
+                module: &self.module,
+                entry_point: Some("corner"),
+                compilation_options: Default::default(),
+                buffers: &[Some(wgpu::VertexBufferLayout { array_stride: std::mem::size_of::<Vertex>() as u64, step_mode: wgpu::VertexStepMode::Vertex, attributes: &ATTRIBUTES })],
+            },
+            primitive: wgpu::PrimitiveState::default(),
+            depth_stencil: None,
+            multisample: wgpu::MultisampleState::default(),
+            fragment: Some(wgpu::FragmentState {
+                module: &fragment,
+                entry_point: Some("main"),
+                compilation_options: Default::default(),
+                // (what OpenFL's shaders answer has its colours multiplied by its opacity already)
+                targets: &[Some(wgpu::ColorTargetState { format: self.format, blend: Some(wgpu::BlendState::PREMULTIPLIED_ALPHA_BLENDING), write_mask: wgpu::ColorWrites::ALL })],
+            }),
+            multiview_mask: None,
+            cache: None,
+        });
+        if let Some(error) = pollster::block_on(scope.pop()) {
+            return Err(error.to_string());
+        }
+        Ok(Rc::new(Program { pipeline, layout, slots, size, pictures, defaults }))
+    }
+
+    /// A shader for one sprite: its uniforms as the file gives them, a white dot for each picture it asks for.
+    fn shader_use(&mut self, program: Rc<Program>) -> Shader {
+        self.shaders += 1;
+        let buffer = self.device.create_buffer(&wgpu::BufferDescriptor { label: None, size: program.size.max(16) as u64, usage: wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST, mapped_at_creation: false });
+        let pictures = self.white.iter().cycle().take(program.pictures.len()).cloned().collect();
+        let shader = Shader(Rc::new(ShaderUse { id: self.shaders, bytes: RefCell::new(vec![0; program.size.max(16)]), buffer, stale: Cell::new(true), pictures: RefCell::new(pictures), group: RefCell::new(None), program }));
+        for (name, numbers) in &shader.0.program.defaults {
+            shader.set(name, numbers);
+        }
+        shader
     }
 
     /// Makes what the rain is drawn with, and the picture it rains on (again when the window's size changed).
@@ -1147,7 +1300,7 @@ pub fn next_frame(fps: f64) -> bool {
         context.calls.clear();
         context.effect = None;
         context.models.clear();
-        (context.recolor, context.blocks, context.add, context.last_pressed, context.fade) = (None, 0.0, false, None, 1.0);
+        (context.recolor, context.blocks, context.add, context.last_pressed, context.fade, context.shader) = (None, 0.0, false, None, 1.0, None);
 
         // sleeping is coarse: it stops a little short, and the rest is waited out awake
         if let Some(left) = context.due.checked_duration_since(Instant::now()).and_then(|left| left.checked_sub(Duration::from_millis(1))) {
@@ -1178,6 +1331,11 @@ pub fn clear_background(color: Color) {
         context.effect = None;
         context.background = color;
     });
+}
+
+/// What is drawn from now on is drawn through a mod's shader (None: the game's own way again).
+pub fn shade(shader: Option<&Shader>) {
+    with(|context| context.shader = shader.cloned());
 }
 
 /// Everything drawn this frame so far is seen through the rain of weekend 1: `bounds` is the part of the world the

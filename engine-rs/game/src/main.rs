@@ -42,6 +42,7 @@ mod priority;
 mod portrait_editor;
 mod props;
 mod scene;
+mod shader;
 mod settings;
 mod speech;
 mod splash_editor;
@@ -1257,6 +1258,9 @@ impl Playing {
             }
         }
         let mut shared = self.lua.shared.borrow_mut();
+        if let Some(scene) = &mut self.scene {
+            scene.shaders = shared.character_shaders.clone();
+        }
         // what is true or false is told so (to Lua, the number 0 is true)
         let values = props.into_iter().map(|(name, value)| (name, if is_flag(name) { serde_json::json!(value != 0.0) } else { serde_json::json!(value) }));
         for (name, value) in values.chain(texts.into_iter().map(|(name, text)| (name, serde_json::json!(text)))) {
@@ -1857,6 +1861,7 @@ fn start_scripts(base: &Path, paths: &Paths, entry: &SongEntry, chart: &Chart, s
         ("Conductor.bpm", json!(bpm)), ("Conductor.crochet", json!(crochet)), ("Conductor.stepCrochet", json!(crochet / 4.0)),
         ("FlxG.width", json!(WIDTH)), ("FlxG.height", json!(HEIGHT)),
     ].into_iter().map(|(name, value)| (name.to_owned(), value)).collect();
+    shared.shaders_on = settings.shaders;
     (shared.note_keys, shared.save_dir, shared.song, shared.language) = (settings.keys, base.join("funkin-rs-lua-saves"), song, settings.language.clone());
     lua::Scripts::start(&files, &globals, shared)
 }

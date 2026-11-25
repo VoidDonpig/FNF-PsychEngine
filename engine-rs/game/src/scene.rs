@@ -1227,6 +1227,8 @@ pub struct Scene {
     pub hush: bool,
     /// How many times the henchmen were swept off the limo since the play screen last asked.
     pub kills: u32,
+    /// The mods' shaders the opponent, the player and the girlfriend are drawn through, as scripts set them.
+    pub shaders: [Option<Shader>; 3],
     /// The ghosts the spirit of week 6 leaves behind: what it was doing and where, every 0.4 s, newest first.
     trail: Vec<(String, f32, Vec2)>,
     trail_in: f32,
@@ -1371,6 +1373,7 @@ impl Scene {
             tune_out: (0.0, 0.0),
             hush: false,
             kills: 0,
+            shaders: Default::default(),
             trail: Vec::new(),
             trail_in: 0.0,
         };
@@ -2743,6 +2746,8 @@ impl Scene {
         for (index, slot) in fighters.into_iter().enumerate() {
             // what a stage file puts between two characters
             self.backdrop.iter().filter(|layer| !layer.def.front && index > 0 && layer.def.after == index).for_each(|layer| layer.draw(scroll));
+            let who = [&self.opponent, &self.player, &self.gf].iter().position(|one| std::ptr::eq(slot, *one));
+            shade(who.and_then(|who| self.shaders[who].as_ref()));
             match (&self.actor, &self.rescue, slot) {
                 // Tankman talks in the opponent's place
                 (Some((talk, part, since)), _, Some(tankman)) if std::ptr::eq(slot, &self.opponent) => {
@@ -2765,6 +2770,7 @@ impl Scene {
                 (_, _, Some(character)) => character.draw(),
                 _ => {}
             }
+            shade(None);
         }
         if let Some(sheet) = &self.casing_sheet {
             for casing in &self.casings {
