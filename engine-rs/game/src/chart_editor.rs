@@ -3,9 +3,7 @@
 //! put down and taken off with the mouse at the chosen beat snap, held longer or shorter with Q and E; undo and redo;
 //! play-testing the chart as it is (Enter) and saving it over its file, the old one kept beside it as `.bak`. Events
 //! are put down in their column; the box at the right has the Haxe editor's Charting, Events, Note, Section and Song
-//! tabs.
-// shortcut: the Haxe editor's File/Edit/View menus are not here: what they hold is on keys and on the tabs. Add the
-// menus when asked.
+//! tabs, and the File, Edit and View menus at the top left do what the keys and the tabs do (and a few things more).
 use crate::gfx::*;
 use crate::{audio, ui::Ui, Skin, HEIGHT, NOTE_NAMES, WIDTH};
 use funkin_core::content::{Paths, SongEntry};
@@ -155,6 +153,34 @@ pub struct ChartEditor {
     prefs: Value,
     /// The waveform drawn on the grid: of which track (0 none, 1 the instrumental, 2 and 3 the voices), its peaks.
     waveform: (usize, Peaks),
+    /// Pasted notes and events following the mouse until a click puts them down.
+    floating: Option<Floating>,
+    /// The Vortex Editor's strums: how long each column's stays lit (seconds) after a note passed it.
+    lit: [f64; 8],
+    /// The Edit menu's Lock Events: the events' column cannot be clicked on.
+    locked_events: bool,
+    /// The View menu's Note Labels: notes of a type show its number in the list.
+    labels: bool,
+    /// The View menu's Go to...: the time (ms) and section to go to, while its box is open.
+    going: Option<(f64, usize)>,
+}
+
+/// Pasted notes and events (the Haxe editor's moving notes).
+struct Floating {
+    /// What was copied: times from the first one's, columns from the leftmost note's.
+    things: Vec<(bool, Value)>,
+    /// Where they are: the first one's time, the leftmost note's column (0 to 7).
+    at: f64,
+    column: usize,
+    /// The column the mouse was last over: the notes move by as many columns as it does.
+    mouse: usize,
+}
+
+impl Floating {
+    /// How many columns the notes reach past the leftmost one.
+    fn width(&self) -> usize {
+        self.things.iter().filter(|(event, _)| !event).filter_map(|(_, note)| note[1].as_f64()).fold(0.0, f64::max) as usize
+    }
 }
 
 impl ChartEditor {
@@ -214,6 +240,7 @@ impl ChartEditor {
             base: base.to_path_buf(), autosaved: (std::time::Instant::now(), String::new()), waveform: (0, Peaks::default()),
             autosave_minutes: 2.0, backup_limit: 10, prefs: Value::Null, characters: crate::character_editor::character_names(&paths), stages: crate::stage_editor::stage_names(&paths),
             charts: funkin_core::content::songs(&funkin_core::content::weeks(base)).into_iter().filter(|song| song.source == entry.source).collect(),
+            floating: None, lit: [0.0; 8], locked_events: false, labels: true, going: None,
         };
         let prefs = funkin_core::files::read(&base.join(PREFS));
         editor.autosave_minutes = prefs["autosave"].as_f64().unwrap_or(2.0).clamp(0.0, 60.0);
@@ -308,6 +335,11 @@ impl ChartEditor {
         // (keys typed into a box are not the editor's: what was asked before this frame's controls)
         let typing = self.ui.typing();
         self.ui.begin();
+        // (the menus first: open, they drop down over the boxes under them)
+        if let Some(go) = self.menus() {
+            return go;
+        }
+        self.go_to_box();
         self.panel();
         let prefs = self.prefs_json();
         if prefs != self.prefs {
@@ -342,8 +374,13 @@ impl ChartEditor {
             self.selected.clear();
         }
         if typing {
+        } else if self.floating.is_some() && (is_key_pressed(KeyCode::Escape) || is_key_pressed(KeyCode::Delete) || is_key_pressed(KeyCode::Backspace) || is_mouse_right_down()) {
+            // pasted ones not put down yet are dropped
+            self.floating = None;
         } else if ctrl {
-            if is_key_pressed(KeyCode::S) {
+            if self.floating.is_some() {
+                // (not while pasted ones follow the mouse)
+            } else if is_key_pressed(KeyCode::S) {
                 self.save();
             } else if is_key_pressed(KeyCode::C) || is_key_pressed(KeyCode::X) {
                 self.copy();
@@ -360,16 +397,11 @@ impl ChartEditor {
                 self.step_history(false);
             }
         } else if is_key_pressed(KeyCode::Enter) {
-            self.stop();
-            return Go::Play(self.text());
+            return self.play_test();
         } else if is_key_pressed(KeyCode::Escape) {
-            // changes not saved: a second Escape is needed
-            if !self.unsaved || self.leaving {
-                self.stop();
+            if let Go::Leave = self.leave() {
                 return Go::Leave;
             }
-            self.leaving = true;
-            self.say("Unsaved changes: Escape again to leave, Ctrl+S to save");
         } else if is_key_pressed(KeyCode::A) != is_key_pressed(KeyCode::D) {
             let by = if shift { 4 } else { 1 };
             let to = if is_key_pressed(KeyCode::A) { current.saturating_sub(by) } else { (current + by).min(self.spans.len().saturating_sub(1)) };
@@ -425,9 +457,30 @@ impl ChartEditor {
             }
             self.tick_sounds();
         }
+        for lit in &mut self.lit {
+            *lit = (*lit - dt).max(0.0);
+        }
+        if self.playing {
+            self.light_strums();
+        }
         self.heard = self.position;
+        // pasted ones follow the mouse over the grid (their first one on its row, on the beat snap unless Shift is held;
+        // their columns as many on as the mouse moved), and the click let go of puts them down
+        if let (Some((column, at, _)), true) = (self.under_mouse(!shift), self.floating.is_some()) {
+            let floating = self.floating.as_mut().expect("checked");
+            let to = column.saturating_sub(1);
+            if to != floating.mouse {
+                floating.column = follow(floating.column, floating.width(), floating.mouse, to);
+                floating.mouse = to;
+            }
+            floating.at = at;
+        }
+        if self.floating.is_some() {
+            if is_mouse_released() {
+                self.put_down();
+            }
         // Ctrl+drag boxes notes and events in; a click elsewhere puts down, takes off or picks
-        if is_mouse_pressed() && !self.ui.took_click() {
+        } else if is_mouse_pressed() && !self.ui.took_click() {
             match self.under_mouse(false) {
                 Some((_, at, _)) if ctrl => self.boxing = Some((mouse_position(vec2(WIDTH, HEIGHT)).x, at)),
                 _ => self.click(shift),
@@ -440,11 +493,150 @@ impl ChartEditor {
         Go::Stay
     }
 
+    /// Play-tests the chart as it is (Enter, File > Playtest).
+    fn play_test(&mut self) -> Go {
+        self.stop();
+        Go::Play(self.text())
+    }
+
+    /// Leaves the editor (Escape, File > Exit); with changes not saved, only when asked twice.
+    fn leave(&mut self) -> Go {
+        if !self.unsaved || self.leaving {
+            self.stop();
+            return Go::Leave;
+        }
+        self.leaving = true;
+        self.say("Unsaved changes: Escape (or Exit) again to leave, Ctrl+S to save");
+        Go::Stay
+    }
+
+    /// The File, Edit and View menus (the Haxe editor's upper box); what the editor wants next when an entry leaves it.
+    fn menus(&mut self) -> Option<Go> {
+        let names = |names: &[&str]| names.iter().map(|name| name.to_string()).collect::<Vec<_>>();
+        let file = names(&["Open Chart...", "Open Autosave...", "Save", "Save Events", "Reload Chart", "Playtest (Enter)", "Exit"]);
+        let lock = if self.locked_events { "Unlock Events" } else { "Lock Events" };
+        let edit = names(&["Undo", "Redo", "Select All", lock, "Autosave Settings...", "Clear All Notes", "Clear All Events"]);
+        let labels = if self.labels { "Hide Note Labels" } else { "Show Note Labels" };
+        let view = names(&[labels, if self.vortex { "Vortex Editor ON" } else { "Vortex Editor OFF" }, "Waveform...", "Go to..."]);
+        match self.ui.menus("menus", 40.0, 40.0, 330.0, &[("File", file), ("Edit", edit), ("View", view)])? {
+            // the Song tab's lists, opened
+            (0, 0) => {
+                self.tab = 5;
+                let open = self.charts.iter().position(|song| song.chart == self.entry.chart).unwrap_or(0);
+                self.ui.open_list("open chart", open);
+            }
+            (0, 1) if self.autosaves().is_empty() => self.say("No autosave files found."),
+            (0, 1) => {
+                self.tab = 5;
+                self.ui.open_list("autosaves", 0);
+            }
+            (0, 2) => self.save(),
+            // (a chart whose events are all in the song's events.json has none of its own: nothing is written over that file)
+            (0, 3) if self.json["events"].as_array().is_none_or(|events| events.is_empty()) => self.say("This chart has no events of its own to save."),
+            (0, 3) if self.entry.chart.with_file_name("events.json").exists() && !self.ui.sure("save events", 0, true) => self.say("events.json is there already. Choose it again to write over it."),
+            (0, 3) => self.save_events(),
+            (0, 4) if !self.ui.sure("reload chart", 0, self.unsaved) => self.say(crate::ui::UNSAVED),
+            (0, 4) => {
+                if self.open_chart(&self.entry.clone()) {
+                    self.say("Chart reloaded successfully!");
+                }
+            }
+            (0, 5) => return Some(self.play_test()),
+            (0, 6) => {
+                if let Go::Leave = self.leave() {
+                    return Some(Go::Leave);
+                }
+            }
+            (1, 0) => self.step_history(true),
+            (1, 1) => self.step_history(false),
+            (1, 2) => self.pick_all(),
+            (1, 3) => {
+                self.locked_events = !self.locked_events;
+                if self.locked_events {
+                    self.selected.retain(|picked| matches!(picked, Picked::Note(..)));
+                }
+            }
+            // (on the Charting tab)
+            (1, 4) => self.tab = 0,
+            (1, entry @ (5 | 6)) if !self.ui.sure("clear all", entry, true) => self.say("Delete them all? Choose it again to do so."),
+            (1, 5) => {
+                self.remember();
+                for section in self.json["notes"].as_array_mut().into_iter().flatten() {
+                    section["sectionNotes"] = json!([]);
+                }
+                self.selected.clear();
+            }
+            (1, 6) => {
+                self.remember();
+                self.json["events"] = json!([]);
+                self.selected.clear();
+            }
+            (2, 0) => self.labels = !self.labels,
+            (2, 1) => self.set_vortex(!self.vortex),
+            (2, 2) => {
+                self.tab = 0;
+                self.ui.open_list("waveform", self.waveform.0);
+            }
+            (2, 3) => self.going = Some((self.position, self.section_at(self.position))),
+            _ => {}
+        }
+        None
+    }
+
+    /// The View menu's Go to... box: a time (in seconds) or a section, and Go To.
+    fn go_to_box(&mut self) {
+        let Some((mut time, mut section)) = self.going else { return };
+        let (x, y) = (40.0, 64.0);
+        self.ui.area(Rect::new(x, y, 330.0, 120.0));
+        self.ui.label(x + 10.0, y + 4.0, "Go to Time/Section:");
+        self.ui.label(x + 10.0, y + 30.0, "Time (in seconds):");
+        if let Some(seconds) = self.ui.stepper("go to time", x + 10.0, y + 50.0, 80.0, time.floor() / 1000.0, 1.0, 0.0, (self.length / 1000.0 - 0.01).max(0.0)) {
+            time = seconds * 1000.0;
+            section = self.section_at(time);
+        }
+        self.ui.label(x + 170.0, y + 30.0, "Section:");
+        if let Some(index) = self.ui.stepper("go to section", x + 170.0, y + 50.0, 50.0, section as f64, 1.0, 0.0, self.spans.len().saturating_sub(1) as f64) {
+            section = index.round() as usize;
+            time = self.spans.get(section).map_or(0.0, |span| span.start) + 0.000001;
+        }
+        self.ui.label(x + 10.0, y + 74.0, &format!("{} / {}", clock(time), clock(self.length)));
+        self.going = Some((time, section));
+        if self.ui.button(x + 170.0, y + 92.0, 70.0, "Go To") {
+            self.going = None;
+            self.wind(time);
+        } else if self.ui.button(x + 250.0, y + 92.0, 70.0, "Cancel") {
+            self.going = None;
+        }
+    }
+
+    /// The Vortex Editor on or off, its strums unlit.
+    fn set_vortex(&mut self, on: bool) {
+        self.vortex = on;
+        self.lit = [0.0; 8];
+    }
+
+    /// In the Vortex Editor, the strums of the notes passed since the last frame light up, for as long as the note
+    /// is held and no less than a step and a quarter (the Haxe editor's confirm; it is not lit by notes put down).
+    fn light_strums(&mut self) {
+        if !self.vortex {
+            return;
+        }
+        let step = self.spans.get(self.section_at(self.position)).map_or(150.0, Span::step_ms);
+        let passed: Vec<(usize, f64)> = self.sections().iter().flat_map(|section| section["sectionNotes"].as_array().into_iter().flatten())
+            .filter_map(|note| Some((note[0].as_f64()?, note[1].as_f64()?, note[2].as_f64().unwrap_or(0.0))))
+            .filter(|(time, data, _)| self.heard < *time && *time <= self.position && (0.0..8.0).contains(data))
+            .map(|(_, data, length)| (data as usize, (step * 1.25).max(length) / 1000.0 / self.rate)).collect();
+        for (column, seconds) in passed {
+            self.lit[column] = seconds;
+        }
+    }
+
     /// The column and moment under the mouse, when it is over the grid: snapped to the beat snap unless Shift is held.
+    /// (The events' column is not, while they are locked.)
     fn under_mouse(&self, snapped: bool) -> Option<(usize, f64, f64)> {
         let at = mouse_position(vec2(WIDTH, HEIGHT));
         let column = ((at.x - LEFT) / GRID).floor();
-        if !(0.0..COLUMNS as f32).contains(&column) {
+        if !(0.0..COLUMNS as f32).contains(&column) || (self.locked_events && column == 0.0) {
             return None;
         }
         let row = self.row_of(self.position) + ((at.y - HEIGHT / 2.0) / (GRID * ZOOMS[self.zoom])) as f64;
@@ -617,18 +809,33 @@ impl ChartEditor {
         self.clipboard = copied;
     }
 
-    /// What was copied, put down from the line across the middle (on the beat snap), and picked.
-    // shortcut: pasted at the line, the columns as copied; the Haxe editor lets them follow the mouse until a click.
+    /// What was copied, to follow the mouse until a click puts it down (as the Haxe editor, from the start of the
+    /// section playing and the leftmost column until the mouse is over the grid).
     fn paste(&mut self) {
         if self.clipboard.is_empty() {
             return;
         }
-        self.remember();
-        let snap = 16.0 / QUANTS[self.quant] as f64;
-        let start = self.ms_of((self.row_of(self.position) / snap).round() * snap);
+        let leftmost = self.clipboard.iter().filter(|(event, _)| !event).filter_map(|(_, note)| note[1].as_f64()).fold(f64::INFINITY, f64::min);
+        let leftmost = if leftmost.is_finite() { leftmost.max(0.0) as usize } else { 0 };
+        let things = self.clipboard.iter().cloned().map(|(event, mut thing)| {
+            if !event {
+                thing[1] = json!((thing[1].as_f64().unwrap_or(0.0) as usize).saturating_sub(leftmost));
+            }
+            (event, thing)
+        }).collect();
+        let at = self.spans.get(self.section_at(self.position)).map_or(0.0, |span| span.start);
         self.selected.clear();
-        for (event, mut thing) in self.clipboard.clone() {
-            let time = round(thing[0].as_f64().unwrap_or(0.0) + start);
+        // (the mouse is taken to be over the column they were copied from: the Haxe editor's)
+        self.floating = Some(Floating { things, at, column: 0, mouse: leftmost });
+    }
+
+    /// The pasted notes and events put down where they are, and picked.
+    fn put_down(&mut self) {
+        let Some(floating) = self.floating.take() else { return };
+        self.remember();
+        self.selected.clear();
+        for (event, mut thing) in floating.things {
+            let time = round(thing[0].as_f64().unwrap_or(0.0) + floating.at);
             thing[0] = json!(time);
             if event {
                 if !self.json["events"].is_array() {
@@ -645,6 +852,7 @@ impl ChartEditor {
                 events.insert(place, thing);
                 self.selected.push(Picked::Event(place, 0));
             } else {
+                thing[1] = json!(thing[1].as_u64().unwrap_or(0) as usize + floating.column);
                 let section = self.section_at(time);
                 let notes = &mut self.json["notes"][section]["sectionNotes"];
                 if !notes.is_array() {
@@ -690,6 +898,10 @@ impl ChartEditor {
     }
 
     fn step_history(&mut self, back: bool) {
+        // (not while pasted ones follow the mouse)
+        if self.floating.is_some() {
+            return;
+        }
         let (from, to) = if back { (&mut self.undo, &mut self.redo) } else { (&mut self.redo, &mut self.undo) };
         let Some(chart) = from.pop() else { return };
         to.push(std::mem::replace(&mut self.json, chart));
@@ -704,6 +916,29 @@ impl ChartEditor {
         let done = funkin_core::files::replace(&self.entry.chart, &self.text());
         self.unsaved &= done.is_err();
         self.say(done.unwrap_or_else(|error| error));
+    }
+
+    /// The chart's events into the song's events.json, beside the chart (the game adds them to every difficulty's), the
+    /// one before kept as `.bak`.
+    fn save_events(&mut self) {
+        let done = funkin_core::files::replace(&self.entry.chart.with_file_name("events.json"), &events_text(&self.json));
+        self.say(done.unwrap_or_else(|error| error));
+    }
+
+    /// Another chart in this editor (or this one again, as its file holds it); whether it could be read.
+    fn open_chart(&mut self, entry: &SongEntry) -> bool {
+        let base = self.base.clone();
+        match ChartEditor::open(&base, entry, None) {
+            Ok(editor) => {
+                self.stop();
+                *self = editor;
+                true
+            }
+            Err(error) => {
+                self.say(error);
+                false
+            }
+        }
     }
 
     /// The chosen track's loudness down the grid, a line of each screen row: out from the middle stripe by how far
@@ -829,6 +1064,19 @@ impl ChartEditor {
             }
         }
         self.draw_waveform(row_height);
+        // the Vortex Editor's strums in the row under the line, faded, lit as notes pass them
+        if self.vortex {
+            for (column, lit) in self.lit.iter().enumerate() {
+                let (lane, at) = (column % 4, vec2(LEFT + (column as f32 + 1.0) * GRID + GRID / 2.0, HEIGHT / 2.0 + GRID / 2.0));
+                if *lit > 0.0 {
+                    skin.fitted(&format!("{} confirm0003", crate::DIRECTIONS[lane]), lane, at, GRID, 0.4);
+                } else {
+                    let name = format!("arrow{}0000", crate::DIRECTIONS[lane].to_uppercase());
+                    let size = skin.frames.iter().find(|(known, _)| *known == name).map(|(_, frame)| vec2(frame.source.w, frame.source.h));
+                    skin.frame(&name, at.x, at.y, size.map(|size| size * GRID / size.x), None, 0.4);
+                }
+            }
+        }
         for (index, section) in self.sections().iter().enumerate() {
             for (place, note) in section["sectionNotes"].as_array().into_iter().flatten().enumerate() {
                 let (Some(time), Some(data)) = (note[0].as_f64(), note[1].as_f64()) else { continue };
@@ -849,6 +1097,14 @@ impl ChartEditor {
                     draw_rectangle(x - GRID / 2.0, y, GRID, GRID, Color { a: 0.5, ..Color::from_hex(0x00FFFF) });
                 }
                 skin.frame(&format!("{}0000", NOTE_NAMES[lane]), x, y + GRID / 2.0, Some(vec2(GRID, GRID)), Some(lane), alpha);
+                // the note type's number in the list (? for one not in it)
+                if let Some(kind) = note[3].as_str().filter(|kind| self.labels && !kind.is_empty()) {
+                    let label = self.note_types.iter().position(|known| known == kind).map_or("?".to_owned(), |index| index.to_string());
+                    let width = measure_text(&label, skin.font.as_ref(), 16, 1.0).width;
+                    for (shift, color) in [(2.0, BLACK), (0.0, WHITE)] {
+                        draw_text_ex(&label, x - width / 2.0 + shift, y + GRID / 2.0 + 6.0 + shift, TextParams { font: skin.font.as_ref(), font_size: 16, color, ..Default::default() });
+                    }
+                }
             }
         }
         // the events: an icon each moment that has some, with how many, and what they are written beside the grid
@@ -874,6 +1130,23 @@ impl ChartEditor {
             let count = event[1].as_array().map_or(0, Vec::len);
             if count > 1 {
                 draw_text(&count.to_string(), LEFT + 26.0, y + 36.0, 16.0, WHITE);
+            }
+        }
+        if self.locked_events {
+            draw_rectangle(LEFT, 0.0, GRID, HEIGHT, Color { a: 0.6, ..BLACK });
+        }
+        // pasted ones following the mouse
+        if let Some(floating) = &self.floating {
+            for (event, thing) in &floating.things {
+                let y = self.y_of(floating.at + thing[0].as_f64().unwrap_or(0.0));
+                let column = if *event { 0 } else { floating.column + thing[1].as_u64().unwrap_or(0) as usize + 1 };
+                draw_rectangle(LEFT + column as f32 * GRID, y, GRID, GRID, Color { a: 0.5, ..Color::from_hex(0x00FFFF) });
+                if !event {
+                    let lane = (column - 1) % 4;
+                    skin.frame(&format!("{}0000", NOTE_NAMES[lane]), LEFT + column as f32 * GRID + GRID / 2.0, y + GRID / 2.0, Some(vec2(GRID, GRID)), Some(lane), 1.0);
+                } else if let Some(icon) = &self.event_icon {
+                    draw_texture_ex(icon, LEFT + 5.0, y + 5.0, WHITE, DrawTextureParams { dest_size: Some(vec2(30.0, 30.0)), ..Default::default() });
+                }
             }
         }
         // where the mouse would put a note
@@ -952,7 +1225,7 @@ impl ChartEditor {
             self.waveform = (track, path.and_then(|path| audio::samples(&path)).map_or_else(Peaks::default, |(samples, rate)| Peaks::of(&samples, rate)));
         }
         if let Some(on) = self.ui.check(x + 258.0, y + 228.0, "Vortex", self.vortex) {
-            self.vortex = on;
+            self.set_vortex(on);
         }
         self.ui.label(x, y + 258.0, "Autosave (min):");
         if let Some(minutes) = self.ui.stepper("autosave minutes", x + 125.0, y + 256.0, 36.0, self.autosave_minutes, 1.0, 0.0, 60.0) {
@@ -1096,14 +1369,7 @@ impl ChartEditor {
             if !self.ui.sure("open chart", index, self.unsaved) {
                 self.say(crate::ui::UNSAVED);
             } else {
-                let base = self.base.clone();
-                match ChartEditor::open(&base, &self.charts[index], None) {
-                    Ok(editor) => {
-                        self.stop();
-                        *self = editor;
-                    }
-                    Err(error) => self.say(error),
-                }
+                self.open_chart(&self.charts[index].clone());
             }
         }
         if self.ui.button(x, y + 200.0, 120.0, "Save (Ctrl+S)") {
@@ -1269,9 +1535,8 @@ impl ChartEditor {
     fn draw_info(&self, skin: &Skin) {
         let span = self.spans.get(self.section_at(self.position)).copied();
         let step = span.map_or(0.0, |span| span.rows_before + (self.position - span.start) / span.step_ms()).floor();
-        let time = |ms: f64| format!("{}:{:05.2}", (ms / 60000.0).floor(), (ms / 1000.0) % 60.0);
         let lines = [
-            format!("{} / {}", time(self.position), time(self.length)), String::new(),
+            format!("{} / {}", clock(self.position), clock(self.length)), String::new(),
             format!("Section: {}", self.section_at(self.position)), format!("Beat: {}", (step / 4.0).floor()), format!("Step: {step}"), String::new(),
             format!("Beat Snap: {} / 16", QUANTS[self.quant]), format!("Selected: {}", self.selected.len()),
         ];
@@ -1336,6 +1601,22 @@ fn vortex(notes: &mut Vec<Value>, at: f64, column: usize, kind: Option<&str>) {
             None => json!([at, column, 0]),
         }),
     }
+}
+
+/// Where the leftmost of pasted notes `width` columns wide goes from `column` when the mouse moves from column `from`
+/// to `to`: as many columns on as the mouse moved, kept on the grid (the Haxe editor's moving notes).
+fn follow(column: usize, width: usize, from: usize, to: usize) -> usize {
+    (column as i64 + to as i64 - from as i64).clamp(0, 7 - width.min(7) as i64) as usize
+}
+
+/// The song's events.json holding a chart's events, as the Haxe editor's Save Events writes it.
+fn events_text(song: &Value) -> String {
+    print(&json!({"events": song["events"].as_array().cloned().unwrap_or_default(), "format": "psych_v1"}), 0)
+}
+
+/// A moment as the editor shows it (minutes:seconds).
+fn clock(ms: f64) -> String {
+    format!("{}:{:05.2}", (ms / 60000.0).floor(), (ms / 1000.0) % 60.0)
 }
 
 /// A character's health icon (its file's healthicon; the face when there is none).
@@ -1530,14 +1811,65 @@ mod tests {
         editor.pick_all();
         assert_eq!(editor.selected.len(), 3);
         editor.copy();
-        // pasted at the line (half a second in), times kept apart as they were
-        editor.position = 500.0;
+        // pasted, they follow the mouse and are not in the chart until put down
         editor.paste();
+        assert_eq!(editor.json, original);
+        let floating = editor.floating.as_mut().unwrap();
+        assert_eq!((floating.at, floating.column, floating.mouse, floating.width()), (0.0, 0, 1, 5));
+        // the mouse half a second in, one column right of where they were copied from: times kept apart as they were
+        floating.at = 500.0;
+        floating.column = follow(floating.column, floating.width(), floating.mouse, 2);
+        editor.put_down();
         assert_eq!(editor.json["notes"][0]["sectionNotes"], json!([[0, 1, 0], [125, 6, 0], [500.0, 1, 0], [625.0, 6, 0]]));
         assert_eq!(editor.json["events"][1], json!([750.0, [["Hey!", "BF", ""]]]));
         // the pasted ones are picked: taking them off leaves the chart as it was
         editor.delete_picked();
         assert_eq!(editor.json, original);
+    }
+
+    #[test]
+    fn pasted_notes_move_as_many_columns_as_the_mouse_and_stay_on_the_grid() {
+        // copied from the opponent's first two columns (4 and 5): they start leftmost, the mouse taken to be over 4
+        assert_eq!(follow(0, 1, 4, 6), 2);
+        assert_eq!(follow(0, 1, 4, 4), 0);
+        // past an edge they stop there, and move back from there with the mouse
+        assert_eq!(follow(2, 1, 6, 7), 3);
+        assert_eq!(follow(5, 1, 4, 7), 6);
+        assert_eq!(follow(6, 1, 7, 6), 5);
+        assert_eq!(follow(0, 3, 0, 0), 0);
+        assert_eq!(follow(1, 3, 3, 0), 0);
+    }
+
+    #[test]
+    fn vortex_strums_light_up_as_notes_pass_while_the_music_plays() {
+        let text = r#"{"bpm": 120, "format": "psych_v1", "notes": [{"sectionNotes": [[0, 1, 0], [125, 1, 0], [150, 6, 1000], [400, 2, 0]], "sectionBeats": 4}]}"#;
+        let missing = PathBuf::from("no such folder");
+        let entry = SongEntry {
+            title: "T".to_owned(), difficulty: "Hard".to_owned(), source: String::new(), week: 0, icon: String::new(), color: [0; 3],
+            chart: missing.join("t.json"), inst: missing.join("Inst.ogg"), voices_player: None, voices_opponent: None,
+        };
+        let mut editor = ChartEditor::open(&missing, &entry, Some(text.to_owned())).unwrap();
+        (editor.heard, editor.position) = (0.0, 200.0);
+        editor.light_strums();
+        assert_eq!(editor.lit, [0.0; 8], "not in the Vortex Editor");
+        editor.set_vortex(true);
+        editor.light_strums();
+        // a step and a quarter (125 ms a step), or as long as the note is held; at half speed, twice as long
+        assert_eq!(editor.lit, [0.0, 0.15625, 0.0, 0.0, 0.0, 0.0, 1.0, 0.0]);
+        editor.set_rate(0.5);
+        editor.light_strums();
+        assert_eq!(editor.lit[6], 2.0);
+        editor.set_vortex(false);
+        assert_eq!(editor.lit, [0.0; 8]);
+    }
+
+    #[test]
+    fn saved_events_are_read_back_as_the_songs_events() {
+        let song = json!({"bpm": 120, "events": [[250, [["Hey!", "BF", ""], ["Play Sound", "a", "1"]]]], "notes": []});
+        let text = events_text(&song);
+        let read = funkin_core::chart::parse(&text).unwrap();
+        assert_eq!(read.events.iter().map(|event| (event.time, event.name.as_str())).collect::<Vec<_>>(), vec![(250.0, "Hey!"), (250.0, "Play Sound")]);
+        assert_eq!(serde_json::from_str::<Value>(&text).unwrap(), json!({"events": [[250, [["Hey!", "BF", ""], ["Play Sound", "a", "1"]]]], "format": "psych_v1"}));
     }
 
     #[test]

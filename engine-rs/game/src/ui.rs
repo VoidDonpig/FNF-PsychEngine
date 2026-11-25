@@ -20,8 +20,10 @@ pub struct Ui {
     focus: Option<(&'static str, String)>,
     /// What was typed into a text left for another before it was given back.
     pending: Option<(&'static str, String)>,
-    /// The list that is open, and how far it is scrolled.
+    /// The list that is open, and how far it is scrolled (for a row of menus: which of them is open).
     open: Option<(&'static str, usize)>,
+    /// A list to open when the next frame begins (asked for by the editor, not by a click).
+    opening: Option<(&'static str, usize)>,
     /// The boxes drawn this frame: clicks on them are not the editor's.
     boxes: Vec<Rect>,
     /// A choice that would drop changes not saved, asked about once (which control, which choice).
@@ -49,6 +51,15 @@ impl Ui {
         self.mouse = mouse_position(vec2(crate::WIDTH, crate::HEIGHT));
         self.clicked = is_mouse_pressed();
         self.taken = false;
+        if let Some(opening) = self.opening.take() {
+            self.open = Some(opening);
+        }
+    }
+
+    /// Opens the list that drops down as `id`, scrolled to `chosen`, from the next frame on: as a click on it would
+    /// (a click this frame would close it again at once).
+    pub fn open_list(&mut self, id: &'static str, chosen: usize) {
+        self.opening = Some((id, chosen.saturating_sub(ROWS / 2)));
     }
 
     /// Whether a choice that would drop changes not saved goes ahead: at once with none, else only when made a second
@@ -215,6 +226,50 @@ impl Ui {
         self.shapes.push(Shape::Text(if shown.is_empty() { "(none)".to_owned() } else { shown }, vec2(x + 3.0, y + 14.0), BLACK));
         self.shapes.push(Shape::Text("v".to_owned(), vec2(x + width - 12.0, y + 14.0), BLACK));
         picked
+    }
+
+    /// A row of menus (the Haxe editor's File, Edit and View): a click on a name drops its entries down over what is
+    /// under them, a click on one of them chooses it (the menu and the entry). Like a list that drops down, it is asked
+    /// for before the controls under it, and any click closes it and goes no further.
+    pub fn menus(&mut self, id: &'static str, x: f32, y: f32, width: f32, menus: &[(&str, Vec<String>)]) -> Option<(usize, usize)> {
+        let wide = width / menus.len().max(1) as f32;
+        let open = self.open.filter(|(open, _)| *open == id).map(|(_, menu)| menu).filter(|menu| *menu < menus.len());
+        let mut picked = None;
+        if let Some(menu) = open {
+            // (as wide as the longest entry asks, the menu's name at least)
+            let list = menus[menu].1.iter().map(|words| words.len() as f32 * 9.5 + 24.0).fold(wide, f32::max);
+            for (row, words) in menus[menu].1.iter().enumerate() {
+                let line = Rect::new(x + wide * menu as f32, y + 20.0 * (row + 1) as f32, list, 20.0);
+                let lit = inside(line, self.mouse);
+                if self.click(line) {
+                    picked = Some((menu, row));
+                }
+                self.over.push(Shape::Rect(line, if lit { Color::from_hex(0x0066FF) } else { Color::from_hex(0xDDDDDD) }));
+                self.over.push(Shape::Text(format!("  {words}"), vec2(line.x + 3.0, line.y + 15.0), if lit { WHITE } else { BLACK }));
+            }
+        }
+        let mut switched = false;
+        for (index, (name, _)) in menus.iter().enumerate() {
+            let tab = Rect::new(x + wide * index as f32, y, wide, 20.0);
+            if self.click(tab) {
+                self.open = if open == Some(index) { None } else { Some((id, index)) };
+                switched = true;
+            }
+            let shade = if open == Some(index) { 0.8 } else if inside(tab, self.mouse) { 0.5 } else { 0.3 };
+            self.rect(tab, Color { a: shade, ..BLACK });
+            self.shapes.push(Shape::Text(name.to_string(), vec2(tab.x + 6.0, tab.y + 15.0), WHITE));
+        }
+        if open.is_some() && self.clicked && !switched {
+            self.taken = true;
+            self.open = None;
+        }
+        picked
+    }
+
+    /// A box (black, faded) the controls asked for next stand in: clicks inside it are the box's.
+    pub fn area(&mut self, area: Rect) {
+        self.rect(area, Color { a: 0.6, ..BLACK });
+        self.boxes.push(area);
     }
 
     /// Draws what the controls asked for this frame, the open list last.

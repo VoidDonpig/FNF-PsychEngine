@@ -229,6 +229,10 @@ Done:
   one moment: before, after, taken off, added). Undo covers all of it. Every two minutes (the Charting tab's Autosave; 0: never) a changed
   chart is autosaved to `backups/<chart>_<date>.bkp`, the ten newest kept (Backups; 0: all); the Song tab's Load Autosave
   brings one of this chart's back. The Charting tab's switches are kept in `funkin-rs-chart-editor.json`.
+  The File, Edit and View menus (open chart or autosave, save, save events into the song's `events.json`, reload,
+  play-test, exit; undo/redo, select all, lock events, clear all notes or events; note labels, Vortex Editor,
+  waveform, go to a time or section); in the Vortex Editor the strums light up as notes pass them while the music
+  plays; pasted notes follow the mouse until a click puts them down (right click or Escape drops them).
 - **Character editor**: 8 (Debug Key #2) during a song opens it on the song's opponent (Escape goes back to the song),
   and the editors' list has it too (on bf, in the mod folder chosen). As the Haxe editor: the character on week 1's
   stage beside the silhouettes of where the opponent and the player stand, the cross where the camera looks at it;
@@ -291,6 +295,6 @@ Not there yet:
 - **Scripts**: the rest of Lua's functions (a note's other fields: animSuffix, its own picture on pixel stages; shaders, groups, and getProperty/setProperty
   beyond the camera, health, score, the characters' place and the scripts' sprites). HScript is Haxe code run against the Haxe
   engine's own classes, so mods that use it cannot run here as they are. Custom shaders.
-- **Editors**: the chart editor's File/Edit/View menus, the vortex editor's strums lighting up, pasted notes following the mouse before they are put down;
-  the system clipboard off Windows (the game keeps its own there); the stage editor's image file picker.
+- **Editors**: the chart editor's menu entries that need a file dialog or another format (New, Open Events, Save As,
+  the V-Slice ones), its themes; the system clipboard off Windows (the game keeps its own there); the stage editor's image file picker.
 - **Other**: gamepads on Linux and macOS (gilrs needs libudev there).
