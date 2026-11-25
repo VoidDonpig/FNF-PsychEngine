@@ -308,7 +308,8 @@ Done:
   E/Q zoom, R back to the stage's zoom, F12 hides the boxes, F1 the help; saved over its file or under a new name (the
   one before kept as `.bak`). The game's own stages draw theirs in code, so only their characters show, as in the Haxe
   editor. An object's image can be typed or picked from a Browse list of the PNGs under the mod folder's and the
-  game's `images/` folders (subfolders included, shown as the name the file stores).
+  game's `images/` folders (subfolders included, shown as the name the file stores), or with File through the
+  system's file dialog (a PNG under one of those folders).
 - **Note splash editor**: from the editors' list: a splash skin's file (`images/noteSplashes/`) edited, its animations
   played over four strums where Psych's splashes go (Space, or a click on a strum): name, prefix, note data, indices,
   frame rate range (add/update, remove); scale, allow RGB, allow pixel; the arrow keys move an animation's offset
@@ -328,5 +329,4 @@ Not there yet:
   a camera takes its shader by setSpriteShader with its name (the Haxe engine's scripts use HScript's setFilters for
   that); `gl_FragCoord` counts from the top of the window. HScript is Haxe code run against the Haxe
   engine's own classes, so mods that use it cannot run here as they are.
-- **Editors**: the chart editor's V-Slice entries (save as, convert to and from), Update (Legacy) and Preview; the
-  system file dialog in the other editors (the stage editor lists the images instead).
+- **Editors**: the chart editor's V-Slice entries (save as, convert to and from), Update (Legacy) and Preview.

@@ -33,6 +33,17 @@ pub(crate) fn stage_names(paths: &Paths) -> Vec<String> {
 
 /// The images there are (`images/**/*.png` under each root, mod folder first), as the names a stage's JSON stores
 /// (relative to `images/`, no `.png`): each root's sorted, the ones already listed left out.
+/// The name a stage file stores for an image file chosen: its path under the `images/` folder of one of `roots`,
+/// without the `.png`; none for a file that is not there.
+fn image_name(roots: &[PathBuf], file: &Path) -> Option<String> {
+    // (the dialog answers with a whole path; the folders may be given from where the game runs)
+    let whole = |path: &Path| std::fs::canonicalize(path).unwrap_or_else(|_| path.to_path_buf());
+    let file = whole(file);
+    let inside = roots.iter().find_map(|root| file.strip_prefix(whole(&root.join("images"))).ok().map(Path::to_path_buf))?;
+    let is_png = inside.extension().is_some_and(|ending| ending.eq_ignore_ascii_case("png"));
+    is_png.then(|| inside.with_extension("").to_string_lossy().replace('\\', "/"))
+}
+
 fn image_names(roots: &[PathBuf]) -> Vec<String> {
     fn walk(dir: &Path, prefix: &str, found: &mut Vec<String>) {
         let mut entries: Vec<PathBuf> = std::fs::read_dir(dir).into_iter().flatten().flatten().map(|entry| entry.path()).collect();
@@ -97,6 +108,8 @@ pub struct StageEditor {
     form: (String, String, String, f64, bool),
     /// The images the Browse list offers, made when it is opened.
     images: Vec<String>,
+    /// The system's file dialog, up for an image of the object of that number.
+    dialog: Option<(usize, crate::dialog::Pending)>,
     unsaved: bool,
     leaving: bool,
     said: Option<(String, Instant)>,
@@ -114,7 +127,7 @@ impl StageEditor {
         let mut editor = StageEditor {
             base: base.to_path_buf(), folder: folder.to_owned(), names, name: String::new(), json: Value::Null, scene: None, picked: None,
             camera: Vec2::ZERO, zoom: 1.0, mouse: Vec2::ZERO, scroll: 0, boxes: true, help: false, ui: Ui::default(), tab: 1, shown: None, form: (String::new(), String::new(), String::new(), 24.0, false),
-            images: Vec::new(), unsaved: false, leaving: false, said: None,
+            images: Vec::new(), dialog: None, unsaved: false, leaving: false, said: None,
         };
         editor.load(&first);
         editor
@@ -230,6 +243,26 @@ impl StageEditor {
     }
 
     pub fn update(&mut self) -> Go {
+        // while the system's file dialog is up the editor only waits for it (still drawn as it was)
+        if let Some((index, answer)) = self.dialog.as_ref().map(|(index, pending)| (*index, pending.answer())) {
+            let Some(answer) = answer else {
+                self.ui.hold();
+                return Go::Stay;
+            };
+            self.dialog = None;
+            match answer {
+                crate::dialog::Answer::Chosen(file) => match image_name(self.paths().roots(), &file) {
+                    Some(image) => {
+                        self.json["objects"][index]["image"] = json!(image);
+                        self.changed();
+                        self.restage();
+                    }
+                    None => self.say("The image must be a PNG under an images/ folder of the game or of this mod."),
+                },
+                crate::dialog::Answer::Cancelled => {}
+                crate::dialog::Answer::Failed => self.say("No file dialog here: Browse lists the images."),
+            }
+        }
         let typing = self.ui.typing();
         self.ui.begin();
         self.panels();
@@ -597,6 +630,14 @@ impl StageEditor {
             if let Some(image) = picked.and_then(|index| self.images.get(index).cloned()) {
                 set(self, "image", json!(image));
             }
+            // or through the system's own dialog, as the Haxe editor asks (it starts in the first images/ folder there is)
+            if self.ui.button(x + 232.0, y + 40.0, 34.0, "File") {
+                let folder = self.paths().roots().iter().map(|root| root.join("images")).find(|folder| folder.is_dir()).unwrap_or_default();
+                match crate::dialog::open("Choose an image", &["png"], &folder) {
+                    Some(pending) => self.dialog = Some((index, pending)),
+                    None => self.say("No file dialog here: Browse lists the images."),
+                }
+            }
         }
         self.ui.label(x, y + 44.0, "Name:");
         if let Some(name) = self.ui.input("object name", x, y + 62.0, 110.0, object["name"].as_str().unwrap_or_default()) {
@@ -773,6 +814,19 @@ mod tests {
     }
 
     use super::*;
+
+    #[test]
+    fn an_image_file_chosen_is_named_as_the_stage_file_names_it() {
+        let base = std::env::temp_dir().join(format!("funkin-stage-image-{}", std::process::id()));
+        std::fs::create_dir_all(base.join("mods/Mine/images/stages/night")).unwrap();
+        std::fs::write(base.join("mods/Mine/images/stages/night/wall.png"), "").unwrap();
+        std::fs::write(base.join("elsewhere.png"), "").unwrap();
+        let roots = [base.join("mods/Mine"), base.join("assets/shared")];
+        assert_eq!(super::image_name(&roots, &base.join("mods/Mine/images/stages/night/wall.png")).as_deref(), Some("stages/night/wall"));
+        // not under an images/ folder the stage can use, or not a picture
+        assert_eq!((super::image_name(&roots, &base.join("elsewhere.png")), super::image_name(&roots, &base.join("mods/Mine/images/stages/night"))), (None, None));
+        let _ = std::fs::remove_dir_all(&base);
+    }
 
     #[test]
     fn images_are_listed_by_relative_name_the_mod_first_without_repeats() {
