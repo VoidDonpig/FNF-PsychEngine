@@ -571,8 +571,6 @@ impl Playing {
 
     /// Makes it the chart editor's preview from `at` (ms): the notes from there alone, one beat to come in, no stage,
     /// scripts, countdown, pause menu or game over, as the Haxe editor's EditorPlayState.
-    // shortcut: the health bar is still shown, the Haxe preview's section/beat/step line is not, and the background is
-    // plain black (the Haxe one is a darkened menu picture)
     fn preview_from(&mut self, at: f64) {
         (self.scene, self.lua, self.video, self.end_video, self.cutscene, self.speech) = (None, lua::Scripts::none(), None, None, None, None);
         self.play.skip_to(at);
@@ -1128,9 +1126,12 @@ impl Playing {
                     self.music_volume = volume;
                     self.song.set_volume(0, volume);
                 }
-                // shortcut: a stopped song's music is held where it is; Haxe's goes back to its start, not playing
+                // (FlxSound.stop: a stopped song's music goes back to its start, not playing; paused, it stays where it is)
                 Stop | Pause => {
                     self.song.pause();
+                    if op == Stop {
+                        self.song.seek(0.0);
+                    }
                     self.music_held = true;
                 }
                 Resume => {
@@ -1522,16 +1523,18 @@ impl Playing {
                         "lowPriority" => self.play.tweaks.entry(index).or_default().low_priority = flag,
                         // a note's own picture: a sheet like the usual notes', or on pixel stages a grid of small
                         // pictures and its hold pieces' (images/pixelUI/<name>.png and <name>ENDS.png)
-                        // shortcut: the note skin chosen in the options is not added to the name, as the Haxe engine's
-                        // skinPostfix does
+                        // (the note skin chosen in the options is added to the name when that picture exists, as Note.hx's skinPostfix does)
                         "texture" => {
                             let name = value.as_str().unwrap_or("").to_owned();
                             if !name.is_empty() && !self.note_art.contains_key(&name) {
+                                let postfix = settings::note_skins().get(self.settings.note_skin).filter(|_| self.settings.note_skin > 0).map(|skin| format!("-{}", skin.trim().to_lowercase().replace(' ', "_"))).unwrap_or_default();
+                                let folder = if self.pixel() { "images/pixelUI/" } else { "images/" };
+                                let file = if !postfix.is_empty() && self.paths.find(&format!("{folder}{name}{postfix}.png")).is_some() { format!("{name}{postfix}") } else { name.clone() };
                                 let image = |relative: String| Image::from_file_with_format(&std::fs::read(self.paths.find(&relative)?).ok()?, None).ok();
                                 let found = if self.pixel() {
-                                    image(format!("images/pixelUI/{name}.png")).zip(image(format!("images/pixelUI/{name}ENDS.png"))).map(|(notes, ends)| Skin::pixel_frames(&notes, &ends))
+                                    image(format!("images/pixelUI/{file}.png")).zip(image(format!("images/pixelUI/{file}ENDS.png"))).map(|(notes, ends)| Skin::pixel_frames(&notes, &ends))
                                 } else {
-                                    self.paths.find(&format!("images/{name}.png")).and_then(|file| Some((atlas::picture(&file)?, atlas::parse(&std::fs::read_to_string(file.with_extension("xml")).ok()?))))
+                                    self.paths.find(&format!("images/{file}.png")).and_then(|file| Some((atlas::picture(&file)?, atlas::parse(&std::fs::read_to_string(file.with_extension("xml")).ok()?))))
                                 };
                                 match found {
                                     Some(art) => drop(self.note_art.insert(name, art)),
@@ -1695,6 +1698,13 @@ impl Playing {
             }
         };
         flash(lua::Cam::Game);
+        // the editor preview's background: the menu picture darkened (EditorPlayState.hx: color 0xFF101010, alpha 0.9)
+        if self.preview.is_some() {
+            set_camera(&Camera2D { target: vec2(WIDTH / 2.0, HEIGHT / 2.0), zoom: vec2(2.0 / WIDTH, 2.0 / HEIGHT), ..Default::default() });
+            if let Some(picture) = self.paths.find("images/menuDesat.png").and_then(|path| atlas::picture(&path)) {
+                draw_texture_ex(&picture, 0.0, 0.0, Color::new(16.0 / 255.0, 16.0 / 255.0, 16.0 / 255.0, 0.9), DrawTextureParams { dest_size: Some(vec2(WIDTH, HEIGHT)), ..Default::default() });
+            }
+        }
         set_camera(&Camera2D { target: vec2(WIDTH / 2.0, HEIGHT / 2.0) + hud_shake, zoom: vec2(2.0 / WIDTH, 2.0 / HEIGHT) * hud_zoom, ..Default::default() });
         // the game over scene is the fallen player alone, as in the Haxe engine
         if self.dead.is_some() {
@@ -1844,7 +1854,7 @@ impl Playing {
         // time left, over a bar that fills as the song goes
         let (length, time_y) = (self.length(), if settings.downscroll { HEIGHT - 44.0 } else { 19.0 });
         let hud = !settings.hide_hud;
-        if hud && settings.time_bar < 3 && piece("timeBar") {
+        if hud && settings.time_bar < 3 && self.preview.is_none() && piece("timeBar") {
             let played = self.position.clamp(0.0, length);
             let clock = |ms: f64| format!("{}:{:02}", ms as u32 / 60000, ms as u32 / 1000 % 60);
             let words = [clock(length - played), clock(played), self.entry.title.clone()];
@@ -1875,7 +1885,8 @@ impl Playing {
         let faded = |color: Color| Color { a: if hud { settings.health_bar_alpha as f32 } else { 0.0 }, ..color };
         let singers = self.scene.as_ref().map(|scene| [scene.opponent.as_ref(), scene.player.as_ref()]).unwrap_or([None, None]);
         let middle = bar_x + bar_w * (1.0 - player_share);
-        if piece("healthBar") {
+        // (the Haxe preview has no health bar and no icons)
+        if self.preview.is_none() && piece("healthBar") {
             draw_rectangle(bar_x - 4.0, bar_y - 4.0, bar_w + 8.0, 26.0, faded(BLACK));
             let [left, right] = self.bar_colors[0];
             draw_rectangle(bar_x, bar_y, middle - bar_x, 18.0, faded(left.or(singers[0].map(|c| c.color)).unwrap_or(Color::from_hex(0xFF0000))));
@@ -1887,7 +1898,7 @@ impl Playing {
         for (side, singer) in singers.iter().enumerate() {
             let Some(icon) = singer.and_then(|c| c.icon.as_ref()) else { continue };
             // iconP1 is the player's, iconP2 the opponent's
-            if !piece(if side == 1 { "iconP1" } else { "iconP2" }) {
+            if self.preview.is_some() || !piece(if side == 1 { "iconP1" } else { "iconP2" }) {
                 continue;
             }
             let pictures = (icon.width() / icon.height()).round().max(1.0);
@@ -1903,7 +1914,20 @@ impl Playing {
             (a, name, combo, true) => format!("{} ({}%) - {}", phrase(&format!("rating_{name}"), &name), (a * 10000.0).floor() / 100.0, phrase(&combo, &combo)),
             (_, name, ..) => phrase(&format!("rating_{name}"), &name).to_string(),
         };
-        if hud && piece("scoreTxt") {
+        if self.preview.is_some() && hud {
+            // "Hits | Misses" and the time, section, beat and step lines of EditorPlayState.hx
+            let (chart, at) = (&self.play.chart, self.position);
+            let section = chart.sections.iter().rposition(|section| section.start <= at).unwrap_or(0);
+            let seconds = |ms: f64| (ms / 100.0).floor() / 10.0;
+            let hits: u32 = self.play.ratings.iter().sum();
+            skin.centered(&format!("Hits: {hits} | Misses: {}", self.play.misses), HEIGHT - 50.0, 20, WHITE);
+            let lines = [format!("Time: {} / {}", seconds(at - settings.offset_ms), seconds(self.length())), String::new(), format!("Section: {section}"), format!("Beat: {}", chart.beat_at(at).floor()), format!("Step: {}", (chart.beat_at(at) * 4.0).floor())];
+            for (row, line) in lines.iter().enumerate() {
+                skin.centered(line, 580.0 + row as f32 * 24.0, 20, WHITE);
+            }
+            skin.text("Press ESC to Go Back to Chart Editor", 10.0, HEIGHT - 24.0, 16, WHITE);
+        }
+        if hud && self.preview.is_none() && piece("scoreTxt") {
             // the score swells a little on every hit and settles within a fifth of a second
             let swell = if settings.score_zoom { 1.0 + 0.075 * (1.0 - (position - self.last_hit) / 200.0).clamp(0.0, 1.0) } else { 1.0 };
             // the same letters drawn larger, not letters of another size: those would have to be made mid-song, which garbles the text for a frame
