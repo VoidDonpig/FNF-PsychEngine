@@ -88,19 +88,34 @@ pub fn parse_json(json: &str) -> Vec<(String, Frame)> {
 /// The Anti-Aliasing option: when off, pictures are loaded to keep their hard edges however they are stretched.
 pub static SMOOTH: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(true);
 
+/// The GPU Caching option (ClientPrefs.cacheOnGPU, default on here: see settings.rs): when off, each picture's pixels are also kept in main memory, next to its texture.
+pub static CACHE_ON_GPU: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(true);
+
+/// The picture a file holds, put on the card; with the option off, its pixels are returned to be kept.
+/// A picture too wide or tall for `Image` (or large, with the option on) goes to the card in bands and keeps nothing.
+fn load(bytes: &[u8], keep: bool) -> (Texture2D, Option<Image>) {
+    if keep {
+        if let Ok(image) = Image::from_file_with_format(bytes, None) {
+            return (Texture2D::from_image(&image), Some(image));
+        }
+    }
+    (Texture2D::from_file_with_format(bytes, None), None)
+}
+
 thread_local! {
     /// The pictures read so far, by file: a song played again, or tried again, does not read its pictures again.
-    static PICTURES: std::cell::RefCell<std::collections::HashMap<std::path::PathBuf, Texture2D>> = Default::default();
+    /// With GPU Caching off each also holds its pixels in main memory; both go together when `forget_unused` lets the picture go.
+    static PICTURES: std::cell::RefCell<std::collections::HashMap<std::path::PathBuf, (Texture2D, Option<Image>)>> = Default::default();
 }
 
 /// The picture in a file. None when there is no such file.
 pub fn picture(path: &Path) -> Option<Texture2D> {
-    let kept = PICTURES.with(|pictures| pictures.borrow().get(path).cloned());
+    let kept = PICTURES.with(|pictures| pictures.borrow().get(path).map(|(texture, _)| texture.clone()));
     let texture = match kept {
         Some(texture) => texture,
         None => {
-            let texture = Texture2D::from_file_with_format(&std::fs::read(path).ok()?, None);
-            PICTURES.with(|pictures| pictures.borrow_mut().insert(path.to_owned(), texture.clone()));
+            let (texture, pixels) = load(&std::fs::read(path).ok()?, !CACHE_ON_GPU.load(std::sync::atomic::Ordering::Relaxed));
+            PICTURES.with(|pictures| pictures.borrow_mut().insert(path.to_owned(), (texture.clone(), pixels)));
             texture
         }
     };
@@ -114,6 +129,7 @@ pub fn preload(files: &[PathBuf]) {
     let mut wanted: Vec<&PathBuf> = files.iter().filter(|file| !PICTURES.with(|pictures| pictures.borrow().contains_key(*file))).collect();
     wanted.sort();
     wanted.dedup();
+    let keep = !CACHE_ON_GPU.load(std::sync::atomic::Ordering::Relaxed);
     std::thread::scope(|scope| {
         let (send, read) = std::sync::mpsc::channel();
         for file in &wanted {
@@ -121,7 +137,7 @@ pub fn preload(files: &[PathBuf]) {
             scope.spawn(move || {
                 // a large picture is only read here: it goes to the card a band at a time, never whole in memory
                 let large = |bytes: &[u8]| bytes.get(16..24).is_some_and(|size| u32::from_be_bytes(size[..4].try_into().unwrap()) as u64 * u32::from_be_bytes(size[4..].try_into().unwrap()) as u64 > 4 << 20);
-                let image = std::fs::read(file).ok().and_then(|bytes| if large(&bytes) { Some(Err(bytes)) } else { Image::from_file_with_format(&bytes, None).ok().map(Ok) });
+                let image = std::fs::read(file).ok().and_then(|bytes| if large(&bytes) && !keep { Some(Err(bytes)) } else { Image::from_file_with_format(&bytes, None).ok().map(Ok) });
                 let _ = send.send((*file, image));
             });
         }
@@ -129,8 +145,8 @@ pub fn preload(files: &[PathBuf]) {
         // (each is let go of as soon as the card has it: not all of them are held at once)
         for (file, image) in read {
             let texture = match image {
-                Some(Ok(image)) => Texture2D::from_image(&image),
-                Some(Err(bytes)) => Texture2D::from_file_with_format(&bytes, None),
+                Some(Ok(image)) => (Texture2D::from_image(&image), keep.then_some(image)),
+                Some(Err(bytes)) => (Texture2D::from_file_with_format(&bytes, None), None),
                 None => continue,
             };
             PICTURES.with(|pictures| pictures.borrow_mut().insert(file.clone(), texture));
@@ -140,7 +156,7 @@ pub fn preload(files: &[PathBuf]) {
 
 /// Lets go of the pictures nothing shows any more. Called when a song has been loaded: what only the song before used goes.
 pub fn forget_unused() {
-    PICTURES.with(|pictures| pictures.borrow_mut().retain(|_, texture| !texture.alone()));
+    PICTURES.with(|pictures| pictures.borrow_mut().retain(|_, (texture, _)| !texture.alone()));
 }
 
 pub struct Sheet {

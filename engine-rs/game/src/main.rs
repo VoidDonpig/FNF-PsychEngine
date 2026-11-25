@@ -2295,6 +2295,7 @@ fn main() {
     let mut volume_shown = f64::MIN;
     let mut muted = false;
     atlas::SMOOTH.store(settings.antialiasing, std::sync::atomic::Ordering::Relaxed);
+    atlas::CACHE_ON_GPU.store(settings.cache_on_gpu, std::sync::atomic::Ordering::Relaxed);
     // `--opengl`: the way out when the chosen graphics API shows nothing and the options cannot be reached
     let api = if flag("--opengl") { "OpenGL" } else { settings::GRAPHICS_APIS[settings.graphics_api] };
     match open(Conf { title: TITLE, width: WIDTH, height: HEIGHT, fullscreen: settings.fullscreen, api }) {
@@ -2922,6 +2923,7 @@ fn main() {
                 draw_rectangle(WIDTH / 2.0 - 59.0 + bar as f32 * 12.0, 26.0 - height, 8.0, height, if bar < lit { WHITE } else { Color::new(1.0, 1.0, 1.0, 0.3) });
             }
         }
+        atlas::CACHE_ON_GPU.store(settings.cache_on_gpu, std::sync::atomic::Ordering::Relaxed);
         let smoothing = atlas::SMOOTH.swap(settings.antialiasing, std::sync::atomic::Ordering::Relaxed) != settings.antialiasing;
         if smoothing {
             // the Anti-Aliasing option changed: what is already loaded is loaded again, to look as chosen

@@ -131,6 +131,7 @@ pub const OPTIONS: &[Opt] = &[
     Opt { page: 4, key: "low_quality", name: "Low Quality", about: "If checked, disables some background details, decreases loading times and improves performance.", kind: Kind::Flag(|s| &mut s.low_quality) },
     Opt { page: 4, key: "antialiasing", name: "Anti-Aliasing", about: "If unchecked, disables anti-aliasing, increases performance at the cost of sharper visuals.", kind: Kind::Flag(|s| &mut s.antialiasing) },
     Opt { page: 4, key: "shaders", name: "Shaders", about: "If unchecked, disables shaders.\nIt's used for some visual effects, and also CPU intensive for weaker PCs.", kind: Kind::Flag(|s| &mut s.shaders) },
+    Opt { page: 4, key: "cache_on_gpu", name: "GPU Caching", about: "If checked, allows the GPU to be used for caching textures, decreasing RAM usage.\nDon't turn this on if you have a shitty Graphics Card.", kind: Kind::Flag(|s| &mut s.cache_on_gpu) },
     Opt { page: 4, key: "framerate", name: "Framerate", about: "Pretty self explanatory, isn't it? Enter sets it to what the display shows.", kind: Kind::Number(|s| &mut s.framerate, 60.0, UNLIMITED_FPS, 1.0, "FPS") },
     Opt { page: 4, key: "graphics_api", name: "Graphics API", about: "What the game is drawn with: DirectX (12, Windows only), Vulkan or OpenGL. One this machine does not have is replaced by one it has. Restart the game to apply.", kind: Kind::Choice(|s| &mut s.graphics_api, || &GRAPHICS_APIS) },
     Opt { page: 4, key: "fullscreen", name: "Fullscreen", about: "The game takes the whole screen. F11 switches it at any time.", kind: Kind::Flag(|s| &mut s.fullscreen) },
@@ -228,6 +229,9 @@ pub struct Settings {
     pub antialiasing: bool,
     /// What the Haxe engine draws with shaders: the rain of weekend 1, the title screen's colour shift.
     pub shaders: bool,
+    /// Pictures live on the graphics card only (ClientPrefs.cacheOnGPU); off keeps a copy of each in main memory too. The Toaster Gamer achievement needs it off.
+    // shortcut: Haxe defaults this to off; here it is on, which keeps memory low (the Rust game does not need the RAM copy).
+    pub cache_on_gpu: bool,
     /// Frames a second at most.
     pub framerate: f64,
     /// Index into `GRAPHICS_APIS`. Read when the game starts. Until chosen: DirectX on Windows, Vulkan elsewhere.
@@ -258,7 +262,7 @@ impl Default for Settings {
             note_skin: 0, splash_skin: 0, splash_alpha: 0.6, hide_hud: false, time_bar: 0, flashing: true, cam_zooms: true, score_zoom: true, health_bar_alpha: 1.0, show_fps: true, check_for_updates: true, discord_rpc: true,
             pause_music: 1, combo_stacking: true, show_ms: false,
             scroll_type: 0, scroll_speed: 1.0, playback_rate: 1.0, health_gain: 1.0, health_loss: 1.0, instakill: false, practice: false,
-            combo_offset: [0.0; 4], low_quality: false, antialiasing: true, shaders: true, framerate: refresh_rate().clamp(60.0, 1000.0), graphics_api: if cfg!(windows) { 1 } else { 2 }, fullscreen: false, exclusive_fullscreen: false, note_colors: LANE_COLORS, pixel_note_colors: PIXEL_LANE_COLORS,
+            combo_offset: [0.0; 4], low_quality: false, antialiasing: true, shaders: true, cache_on_gpu: true, framerate: refresh_rate().clamp(60.0, 1000.0), graphics_api: if cfg!(windows) { 1 } else { 2 }, fullscreen: false, exclusive_fullscreen: false, note_colors: LANE_COLORS, pixel_note_colors: PIXEL_LANE_COLORS,
             keys: [[Some(A), Some(Left)], [Some(S), Some(Down)], [Some(W), Some(Up)], [Some(D), Some(Right)]],
             ui_keys: crate::controls::defaults(), pad: crate::pad::defaults(), language: funkin_core::lang::ENGLISH.0.to_owned(), mod_settings: serde_json::Map::new(),
         }
@@ -414,6 +418,9 @@ mod tests {
         assert_eq!(Settings { safe_frames: 6.0, ..Default::default() }.timing().safe, 100.0);
         let fast = Settings { scroll_speed: 4.0, ..Default::default() };
         assert_eq!((fast.note_speed(2.0), Settings { scroll_type: 1, ..fast.clone() }.note_speed(2.0)), (6.0, 4.0), "multiplied up to 3X, or the same for every song");
+        let cached = Settings::default();
+        assert!(cached.cache_on_gpu && cached.check_for_updates, "both default on");
+        assert!(!Settings::from_json(r#"{"cache_on_gpu":false}"#).cache_on_gpu);
         assert!(!Settings { practice: true, ..Default::default() }.keeps_scores() && Settings::default().keeps_scores());
     }
 
