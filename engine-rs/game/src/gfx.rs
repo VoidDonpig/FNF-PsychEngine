@@ -1052,6 +1052,8 @@ impl Context {
                 entry_point: Some("main"),
                 compilation_options: Default::default(),
                 // (what OpenFL's shaders answer has its colours multiplied by its opacity already)
+                // shortcut: one way of laying it over what is there; a sprite that adds its light (setBlendMode) does not
+                // while it is drawn through a mod's shader
                 targets: &[Some(wgpu::ColorTargetState { format: self.format, blend: Some(wgpu::BlendState::PREMULTIPLIED_ALPHA_BLENDING), write_mask: wgpu::ColorWrites::ALL })],
             }),
             multiview_mask: None,
