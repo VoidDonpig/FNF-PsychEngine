@@ -1685,7 +1685,7 @@ impl Playing {
             if game_shown {
                 on_camera[0].iter().for_each(|_| layer_begin());
                 fade(look("camGame.alpha"));
-                scene.draw(&|front, scroll| self.lua.draw(lua::Cam::Game, front, scroll));
+                scene.draw(&|layer, scroll| self.lua.draw(lua::Cam::Game, layer, scroll));
                 fade(1.0);
                 on_camera[0].iter().for_each(layer_end);
             }
@@ -1978,13 +1978,13 @@ impl Playing {
         }
         skin.text(&format!("{} [{}]", self.entry.title, difficulty_name(&self.entry.difficulty)), 12.0, if settings.downscroll { 24.0 } else { HEIGHT - 12.0 }, 16, WHITE);
         // the scripts' sprites on the HUD's camera, then on the one over everything
-        self.lua.draw(lua::Cam::Hud, false, Vec2::ZERO);
+        self.lua.draw(lua::Cam::Hud, 0, Vec2::ZERO);
         flash(lua::Cam::Hud);
         on_camera[1].iter().for_each(layer_end);
         set_camera(&Camera2D { target: vec2(WIDTH / 2.0, HEIGHT / 2.0), zoom: vec2(2.0 / WIDTH, 2.0 / HEIGHT), ..Default::default() });
         fade(1.0);
         on_camera[2].iter().for_each(|_| layer_begin());
-        self.lua.draw(lua::Cam::Other, false, Vec2::ZERO);
+        self.lua.draw(lua::Cam::Other, 0, Vec2::ZERO);
         self.lua.draw_substate();
         flash(lua::Cam::Other);
         on_camera[2].iter().for_each(layer_end);

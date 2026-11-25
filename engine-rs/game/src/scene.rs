@@ -2675,9 +2675,9 @@ impl Scene {
         false
     }
 
-    /// `extra` draws what scripts add to the stage: with `false` behind the characters, with `true` in front of everything
-    /// (each time with where the camera's corner is).
-    pub fn draw(&self, extra: &dyn Fn(bool, Vec2)) {
+    /// `extra` draws what scripts add to the stage: with 0 behind the characters, with 1 and 2 just before the opponent and the
+    /// player, with 3 in front of everything (each time with where the camera's corner is).
+    pub fn draw(&self, extra: &dyn Fn(usize, Vec2)) {
         let (strength, left) = self.shake[0];
         let shake = if left > 0.0 && !self.dead { vec2(rand::gen_range(-1.0, 1.0), rand::gen_range(-1.0, 1.0)) * strength * SCREEN / self.zoom } else { Vec2::ZERO };
         set_camera(&Camera2D { target: self.camera + shake, zoom: vec2(2.0 / SCREEN.x, 2.0 / SCREEN.y) * self.zoom, ..Default::default() });
@@ -2764,7 +2764,7 @@ impl Scene {
             pico.draw_as("cock", 0.0, at, Color { a: 0.3 * (1.0 - part), ..pico.tint });
             pop_model_matrix();
         }
-        extra(false, scroll);
+        extra(0, scroll);
         let fighters: Vec<&Option<Character>> = if self.opponent_front { vec![&self.gf, &self.player, &self.opponent] } else { self.cast.iter().map(|who| everyone[*who]).collect() };
         if let Some(spirit) = &self.opponent {
             // fainter the older they are
@@ -2777,6 +2777,10 @@ impl Scene {
             // what a stage file puts between two characters
             self.backdrop.iter().filter(|layer| !layer.def.front && index > 0 && layer.def.after == index).for_each(|layer| layer.draw(scroll));
             let who = [&self.opponent, &self.player, &self.gf].iter().position(|one| std::ptr::eq(slot, *one));
+            // what a script put between gf and dad, or dad and boyfriend (gf's own place, 0, is drawn with those behind)
+            if let Some(who @ 0..=1) = who {
+                extra(who + 1, scroll);
+            }
             shade(who.and_then(|who| self.shaders[who].as_ref()));
             match (&self.actor, &self.rescue, slot) {
                 // Tankman talks in the opponent's place
@@ -2826,7 +2830,7 @@ impl Scene {
         }
         self.can.iter().for_each(|can| can.draw());
         self.backdrop.iter().filter(|layer| layer.def.front).for_each(|layer| layer.draw(scroll));
-        extra(true, scroll);
+        extra(3, scroll);
         let (color, age, length) = self.flash;
         if age < length {
             cover(Color { a: color.a * (1.0 - age / length), ..color });

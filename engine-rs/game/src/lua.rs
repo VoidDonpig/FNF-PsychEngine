@@ -505,6 +505,8 @@ struct Sprite {
     /// Added (addLuaSprite), and in front of the characters or behind them.
     added: bool,
     front: bool,
+    /// Not in front: how many of the characters (gf, dad, boyfriend) it lies after, so 0 is behind them all.
+    between: u8,
     animations: HashMap<String, Animation>,
     /// The animation playing and how long it has played.
     playing: Option<(String, f64)>,
@@ -542,7 +544,7 @@ fn symbol_frame(numbers: &[usize], length: usize, fps: f64, looped: bool, time: 
 
 impl Sprite {
     fn new(art: Option<Art>, x: f64, y: f64) -> Sprite {
-        Sprite { text: None, art, solid: None, x, y, scale: [1.0; 2], scroll: [1.0; 2], offset: [0.0; 2], alpha: 1.0, visible: true, angle: 0.0, flip_x: false, color: 0xFFFFFF, camera: Cam::Game, added: false, front: false, animations: HashMap::new(), playing: None, add: false, shader: None, file: None, more: Vec::new(), atlas: None, symbols: HashMap::new() }
+        Sprite { text: None, art, solid: None, x, y, scale: [1.0; 2], scroll: [1.0; 2], offset: [0.0; 2], alpha: 1.0, visible: true, angle: 0.0, flip_x: false, color: 0xFFFFFF, camera: Cam::Game, added: false, front: false, between: 0, animations: HashMap::new(), playing: None, add: false, shader: None, file: None, more: Vec::new(), atlas: None, symbols: HashMap::new() }
     }
 
     /// The frame shown now: of the animation playing, else the first of the sheet, else the whole picture.
@@ -814,7 +816,28 @@ fn indices(value: &Value) -> Vec<u32> {
     }
 }
 
+/// One place in the row of the stage's sprites and characters (see `stage_row`).
+#[derive(Clone, Copy, Debug, PartialEq)]
+enum StageItem {
+    /// The sprite at this place of `sprites`.
+    Sprite(usize),
+    /// 0 gf, 1 dad, 2 boyfriend.
+    Character(usize),
+}
+
 impl Shared {
+    /// The game's camera's members in the order Haxe's state lists them: what lies behind gf, gf, what lies after her, dad, ..., boyfriend, what is in front.
+    fn stage_row(&self) -> Vec<StageItem> {
+        let mut row = Vec::new();
+        for layer in 0..4u8 {
+            row.extend(self.sprites.iter().enumerate().filter(|(_, (_, sprite))| sprite.added && sprite.camera == Cam::Game && if sprite.front { layer == 3 } else { layer == sprite.between.min(2) }).map(|(at, _)| StageItem::Sprite(at)));
+            if layer < 3 {
+                row.push(StageItem::Character(layer as usize));
+            }
+        }
+        row
+    }
+
     /// What the scripts of a mod's song start with: the mods' own settings, and which mod the song is of.
     pub fn new(mod_settings: serde_json::Map<String, serde_json::Value>, mod_folder: &str, paths: funkin_core::content::Paths) -> Shared {
         Shared { mod_settings, mod_folder: mod_folder.to_owned(), paths: Some(paths), ..Default::default() }
@@ -1206,16 +1229,16 @@ impl Scripts {
             Ok(funkin_core::lang::phrase_with(&args.0, args.1.as_deref().unwrap_or(&args.0), &values.iter().map(String::as_str).collect::<Vec<_>>()))
         })?)?;
         g.set("getFileTranslation", lua.create_function(|_, args: String| Ok(funkin_core::lang::phrase(&args, &args)))?)?;
-        // where a script's sprite lies among the others: those behind the characters count from 0, then the three
-        // characters (gfGroup, dadGroup, boyfriendGroup), then those in front
-        // shortcut: a sprite cannot lie between two characters; one put there goes behind all three
+        // where a script's sprite lies among the others: the stage's sprites and the three characters (gfGroup, dadGroup,
+        // boyfriendGroup) in one row, a sprite behind all of them or between two characters or in front of them all
         function!("getObjectOrder", |_lua, shared, args: (String, Option<String>)| {
             let shared = shared.borrow();
-            let stage = |sprite: &Sprite| sprite.added && sprite.camera == Cam::Game;
-            let behind = shared.sprites.iter().filter(|(_, sprite)| stage(sprite) && !sprite.front).count();
-            let character = ["gfGroup", "dadGroup", "boyfriendGroup", "gf", "dad", "boyfriend"].iter().position(|name| *name == args.0).map(|at| behind + at % 3);
-            let place = |front: bool, tag: &str| shared.sprites.iter().filter(|(_, sprite)| stage(sprite) && sprite.front == front).position(|(name, _)| name == tag);
-            Ok(character.or_else(|| place(false, &args.0)).or_else(|| place(true, &args.0).map(|at| behind + 3 + at)).map_or(-1, |at| at as i64))
+            let wanted = ["gfGroup", "dadGroup", "boyfriendGroup", "gf", "dad", "boyfriend"].iter().position(|name| *name == args.0).map(|at| StageItem::Character(at % 3));
+            Ok(shared.stage_row().iter().position(|item| match (item, &wanted) {
+                (_, Some(wanted)) => item == wanted,
+                (StageItem::Sprite(at), None) => shared.sprites[*at].0 == args.0,
+                _ => false,
+            }).map_or(-1, |at| at as i64))
         });
         function!("setObjectOrder", |_lua, shared, args: (String, i64, Option<String>)| {
             let mut shared = shared.borrow_mut();
@@ -1223,21 +1246,18 @@ impl Scripts {
                 eprintln!("Lua: setObjectOrder: Object {} doesn't exist!", args.0);
                 return Ok(());
             };
+            // out of the row first, as Haxe's remove, then put in at that place
             let (name, mut sprite) = shared.sprites.remove(from);
-            let stage = |sprite: &Sprite| sprite.added && sprite.camera == Cam::Game;
-            let behind: Vec<usize> = shared.sprites.iter().enumerate().filter(|(_, (_, other))| stage(other) && !other.front).map(|(at, _)| at).collect();
-            let front: Vec<usize> = shared.sprites.iter().enumerate().filter(|(_, (_, other))| stage(other) && other.front).map(|(at, _)| at).collect();
-            let place = args.1.max(0) as usize;
-            // its place in the list of all sprites: before the one that has that place now, or after the last of its side
-            let count = shared.sprites.len();
-            let to = if place < behind.len() + 3 {
-                sprite.front = false;
-                behind.get(place).copied().unwrap_or(behind.last().map_or(0, |last| last + 1))
-            } else {
-                sprite.front = true;
-                front.get(place - behind.len() - 3).copied().unwrap_or(count)
+            let row = shared.stage_row();
+            let place = (args.1.max(0) as usize).min(row.len());
+            let characters_before = row[..place].iter().filter(|item| matches!(item, StageItem::Character(_))).count() as u8;
+            (sprite.front, sprite.between) = (characters_before == 3, if characters_before == 3 { 0 } else { characters_before });
+            // in the list: after the sprite just before it on the same side of the characters, else before the first of that side
+            let to = match row[..place].last() {
+                Some(StageItem::Sprite(at)) => at + 1,
+                _ => shared.sprites.iter().position(|(_, other)| other.front == sprite.front && (other.front || other.between == sprite.between)).unwrap_or(shared.sprites.len()),
             };
-            shared.sprites.insert(to.min(count), (name, sprite));
+            shared.sprites.insert(to, (name, sprite));
             Ok(())
         });
         // mods' shaders (`shaders/<name>.frag`), on the scripts' sprites and the three characters
@@ -1759,7 +1779,7 @@ impl Scripts {
         });
         function!("addLuaSprite", |_lua, shared, args: (String, Option<bool>)| {
             if let Some(sprite) = shared.borrow_mut().sprite(&args.0) {
-                (sprite.added, sprite.front) = (true, args.1.unwrap_or(false));
+                (sprite.added, sprite.front, sprite.between) = (true, args.1.unwrap_or(false), 0);
             }
             Ok(())
         });
@@ -2384,17 +2404,17 @@ impl Scripts {
         }
     }
 
-    /// Draws the scripts' sprites seen through `camera`; for the game's, those `front` of the characters or behind them.
+    /// Draws the scripts' sprites seen through `camera`; for the game's, those in `layer`: 0 behind all the characters, 1 and 2 after the first and the second one, 3 in front of them.
     /// `scroll`: where that camera looks from (its corner), zero for the HUD's.
     /// Those of a group the scripts added are drawn as the group was added; those in the custom substate, by `draw_substate`.
-    pub fn draw(&self, camera: Cam, front: bool, scroll: Vec2) {
+    pub fn draw(&self, camera: Cam, layer: usize, scroll: Vec2) {
         let shared = self.shared.borrow();
         let within = |tag: &String| shared.substate.as_ref().is_some_and(|substate| substate.members.contains(tag));
         let shown = |tag: &String, sprite: &Sprite| match shared.groups.values().find(|group| group.added && group.members.contains(tag)) {
-            Some(group) => Some(group.front),
-            None => sprite.added.then_some(sprite.front),
+            Some(group) => Some(if group.front { 3 } else { 0 }),
+            None => sprite.added.then_some(if sprite.front { 3 } else { sprite.between.min(2) as usize }),
         };
-        for (_, sprite) in shared.sprites.iter().filter(|(tag, sprite)| !within(tag) && sprite.camera == camera && shown(tag, sprite).is_some_and(|in_front| camera != Cam::Game || in_front == front)) {
+        for (_, sprite) in shared.sprites.iter().filter(|(tag, sprite)| !within(tag) && sprite.camera == camera && shown(tag, sprite).is_some_and(|its| camera != Cam::Game || its == layer)) {
             sprite.draw(scroll);
         }
     }
@@ -2579,10 +2599,10 @@ mod tests {
             before = {getObjectOrder('a'), getObjectOrder('b'), getObjectOrder('gfGroup'), getObjectOrder('boyfriend'), getObjectOrder('c'), getObjectOrder('none')}
             setObjectOrder('a', getObjectOrder('boyfriendGroup') + 1); setObjectOrder('c', 0); setObjectOrder('b', getObjectOrder('dadGroup'))
             setVar('orders', {before, {getObjectOrder('c'), getObjectOrder('b'), getObjectOrder('a')}})");
-        // (b, asked between two characters, stays behind them all: the last of those behind)
-        assert_eq!(scripts.shared.borrow().vars["orders"], serde_json::json!([[0, 1, 2, 4, 5, -1], [0, 1, 5]]));
+        // (b, asked between dad and boyfriend, lies there)
+        assert_eq!(scripts.shared.borrow().vars["orders"], serde_json::json!([[0, 1, 2, 4, 5, -1], [0, 3, 5]]));
         let shared = scripts.shared.borrow();
-        assert_eq!(shared.sprites.iter().map(|(name, sprite)| (name.as_str(), sprite.front)).collect::<Vec<_>>(), [("c", false), ("b", false), ("a", true)]);
+        assert_eq!(shared.sprites.iter().map(|(name, sprite)| (name.as_str(), sprite.front, sprite.between)).collect::<Vec<_>>(), [("c", false, 0), ("a", true, 0), ("b", false, 2)]);
     }
 
     #[test]
