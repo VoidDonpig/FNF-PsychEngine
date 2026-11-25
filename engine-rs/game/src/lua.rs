@@ -2138,10 +2138,33 @@ impl Scripts {
             let member = shared.groups.get(&args.0).and_then(|group| group.members.get(usize::try_from(args.1).ok()?).cloned());
             match (member, args.0.as_str()) {
                 (Some(tag), _) => shared.sprite(&tag).iter_mut().for_each(|sprite| sprite.update_hitbox()),
-                // shortcut: the notes and the strums keep their hitboxes; unspawnNotes (an array, not a group) says the
-                // function is deprecated, as only the Haxe engine's array branch does
-                (None, "unspawnNotes") => trace(lua, &mut shared, "updateHitboxFromGroup is deprecated! Use updateHitbox instead.".to_owned(), true),
-                (None, group) if GAME_GROUPS.contains(&group) || shared.groups.contains_key(group) => {}
+                // the notes and the strums (and the array the notes spawn from, which the Haxe engine also updates before saying
+                // the function is deprecated): width and height from the frame (152 by 152, the arrow sheets') and the scale (0.7
+                // unless a script set scale.x/scale.y), the offset keeping the corner in place
+                (None, group) if GAME_GROUPS.contains(&group) => {
+                    let index = usize::try_from(args.1).unwrap_or(usize::MAX);
+                    let target = note(&shared, group, index).map(|at| (Some(at), None)).or_else(|| strum(group, index).map(|at| (None, Some(at))));
+                    if let Some((note_at, strum_at)) = target {
+                        const FRAME: f64 = 152.0;
+                        let read = |shared: &Shared, field: &str| match (note_at, strum_at) {
+                            (Some(at), _) => shared.notes[at].fields.get(field).cloned(),
+                            (_, Some(at)) => shared.props.get(&format!("strum{at}.{field}")).cloned(),
+                            _ => None,
+                        }.and_then(|value| value.as_f64()).unwrap_or(0.7);
+                        let (width, height) = (FRAME * read(&shared, "scale.x").abs(), FRAME * read(&shared, "scale.y").abs());
+                        for (field, value) in [("width", width), ("height", height), ("offset.x", -0.5 * (width - FRAME)), ("offset.y", -0.5 * (height - FRAME))] {
+                            match (note_at, strum_at) {
+                                (Some(at), _) => drop(shared.notes[at].fields.insert(field.to_owned(), serde_json::json!(value))),
+                                (_, Some(at)) => drop(shared.props.insert(format!("strum{at}.{field}"), serde_json::json!(value))),
+                                _ => {}
+                            }
+                        }
+                    }
+                    if group == "unspawnNotes" {
+                        trace(lua, &mut shared, "updateHitboxFromGroup is deprecated! Use updateHitbox instead.".to_owned(), true);
+                    }
+                }
+                (None, group) if shared.groups.contains_key(group) => {}
                 (None, group) => trace(lua, &mut shared, format!("updateHitboxFromGroup: Group/Array {group} is not valid!"), false),
             }
             Ok(())
@@ -2623,6 +2646,20 @@ mod tests {
         // only a strum out of the strums' group, or one destroyed, is hidden
         let names: Vec<String> = scripts.requests().into_iter().filter_map(|request| match request { Request::SetProperty { name, .. } => Some(name), _ => None }).collect();
         assert_eq!(names, ["strum3.removed", "strum6.removed"]);
+    }
+
+    #[test]
+    fn hitboxes_of_notes_and_strums_follow_their_scale() {
+        let file = std::env::temp_dir().join(format!("funkin-lua-test-hitbox-{}.lua", std::process::id()));
+        std::fs::write(&file, "setPropertyFromGroup('notes', 0, 'scale.x', 1.0); updateHitboxFromGroup('notes', 0); updateHitboxFromGroup('playerStrums', 1)
+            setVar('box', {getPropertyFromGroup('notes', 0, 'width'), getPropertyFromGroup('notes', 0, 'offset.x'), getPropertyFromGroup('notes', 0, 'height')})").unwrap();
+        let shared = Shared { notes: vec![NoteView::default()], notes_window: (0, 1), ..Default::default() };
+        let scripts = Scripts::start(&[file.clone()], &[], shared);
+        let _ = std::fs::remove_file(file);
+        let close = |value: &serde_json::Value, wanted: f64| (value.as_f64().unwrap() - wanted).abs() < 1e-6;
+        let shared = scripts.shared.borrow();
+        assert!(close(&shared.vars["box"][0], 152.0) && close(&shared.vars["box"][1], 0.0) && close(&shared.vars["box"][2], 106.4));
+        assert!(close(&shared.props["strum5.width"], 106.4));
     }
 
     #[test]
