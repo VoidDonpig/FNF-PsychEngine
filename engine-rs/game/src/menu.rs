@@ -86,14 +86,6 @@ fn pressed(action: &Ui) -> bool {
     crate::controls::pressed(*action)
 }
 
-/// What red, green and blue each become when every colour is turned `hue` of the way round the colour wheel.
-// shortcut: a turn about grey, which keeps brightness where the Haxe engine's shader keeps the strongest channel; write that shader if the difference shows.
-fn turned(hue: f32) -> [Vec3; 3] {
-    let (sin, cos) = (hue * std::f32::consts::TAU).sin_cos();
-    let (same, back, on) = (cos + (1.0 - cos) / 3.0, (1.0 - cos) / 3.0 - sin / 3f32.sqrt(), (1.0 - cos) / 3.0 + sin / 3f32.sqrt());
-    [vec3(same, on, back), vec3(back, same, on), vec3(on, back, same)]
-}
-
 fn white(alpha: f32) -> Color {
     Color::new(1.0, 1.0, 1.0, alpha)
 }
@@ -894,7 +886,7 @@ impl Menus {
         if self.secret.is_none() {
             self.hue = if self.shaders { self.hue + get_frame_time() * 0.1 * (crate::controls::down(RIGHT) as i8 - crate::controls::down(LEFT) as i8) as f32 } else { 0.0 };
         }
-        recolor(Some(turned(self.hue)).filter(|_| self.hue != 0.0));
+        recolor_hue(Some(self.hue).filter(|hue| *hue != 0.0));
         if let Some(sheet) = self.art.own_sheet(look.image) {
             let frame = if look.idle {
                 // one bump over every two beats
@@ -912,7 +904,7 @@ impl Menus {
                 sheet.draw(frame, look.logo.0, look.logo.1, 1.0, false, WHITE);
             }
         }
-        recolor(None);
+        recolor_hue(None);
         if let Some(sheet) = self.art.own_sheet("titleEnter") {
             // waiting, the words breathe between two blues over two seconds
             let wave = (now % 2.0 - 1.0).abs() as f32;
@@ -2007,16 +1999,6 @@ mod tests {
         assert_eq!((newest_version(""), newest_version("\n1.0.5")), (None, None));
         assert!(is_outdated("1.0.5", "1.0.4") && is_outdated("0.9", "1.0.4"), "any difference counts, as in Haxe");
         assert!(!is_outdated("1.0.4", " 1.0.4 "));
-    }
-
-    #[test]
-    fn turning_colours_takes_red_to_green_and_back() {
-        let near = |a: Vec3, b: Vec3| (a - b).length() < 1e-5;
-        assert!(near(turned(0.0)[0], Vec3::X) && near(turned(1.0)[1], Vec3::Y));
-        // a third of the way round: red is green, green is blue, and grey stays grey
-        let third = turned(1.0 / 3.0);
-        assert!(near(third[0], Vec3::Y) && near(third[1], Vec3::Z));
-        assert!(near(third[0] + third[1] + third[2], Vec3::ONE));
     }
 
     #[test]

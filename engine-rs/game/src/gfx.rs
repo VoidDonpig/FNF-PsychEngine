@@ -486,7 +486,27 @@ fn pixel(at: Corner) -> @location(0) vec4<f32> {
     let seen = textureSample(picture, stretch, select(at.uv, floor(at.uv * squares) / squares, at.blocks > 0.0));
     // notes are stored as three masks, each of which takes one of the lane's colours
     let mixed = vec4<f32>(min(seen.r * at.red + seen.g * at.green + seen.b * at.blue, vec3<f32>(1.0)), seen.a);
+    // the colour swap shader's hue turn (ColorSwap.hx): the hue is in `red.x`, `recolored` is 2
+    if at.recolored > 1.5 {
+        return vec4<f32>(hsv_to_rgb(rgb_to_hsv(seen.rgb) + vec3<f32>(at.red.x, 0.0, 0.0)), seen.a) * at.color;
+    }
     return mix(seen, mixed, at.recolored) * at.color;
+}
+
+// these two are ColorSwap.hx's, line for line
+fn rgb_to_hsv(c: vec3<f32>) -> vec3<f32> {
+    let k = vec4<f32>(0.0, -1.0 / 3.0, 2.0 / 3.0, -1.0);
+    let p = mix(vec4<f32>(c.b, c.g, k.w, k.z), vec4<f32>(c.g, c.b, k.x, k.y), step(c.b, c.g));
+    let q = mix(vec4<f32>(p.x, p.y, p.w, c.r), vec4<f32>(c.r, p.y, p.z, p.x), step(p.x, c.r));
+    let d = q.x - min(q.w, q.y);
+    let e = 1.0e-10;
+    return vec3<f32>(abs(q.z + (q.w - q.y) / (6.0 * d + e)), d / (q.x + e), q.x);
+}
+
+fn hsv_to_rgb(c: vec3<f32>) -> vec3<f32> {
+    let k = vec4<f32>(1.0, 2.0 / 3.0, 1.0 / 3.0, 3.0);
+    let p = abs(fract(c.xxx + k.xyz) * 6.0 - k.www);
+    return c.z * mix(k.xxx, clamp(p - k.xxx, vec3<f32>(0.0), vec3<f32>(1.0)), c.y);
 }";
 
 /// The rain of weekend 1, the Haxe engine's RainShader: what was drawn is seen through four layers of falling drops, each
@@ -998,7 +1018,9 @@ impl Context {
         let [red, green, blue] = self.recolor.unwrap_or_default().map(|part| part.to_array());
         let corner = |index: usize| {
             let position = place.transform_point3(corners[index].extend(0.0));
-            Vertex { position: [position.x, position.y], uv: uvs[index].to_array(), color: [color.r, color.g, color.b, color.a * self.fade], red, green, blue, recolored: self.recolor.is_some() as u8 as f32, blocks: self.blocks }
+            // a hue turn is marked by NaN in `green` (see `recolor_hue`); `red.x` is the hue
+            let recolored = if self.recolor.is_some_and(|colors| colors[1].x.is_nan()) { 2.0 } else { self.recolor.is_some() as u8 as f32 };
+            Vertex { position: [position.x, position.y], uv: uvs[index].to_array(), color: [color.r, color.g, color.b, color.a * self.fade], red, green, blue, recolored, blocks: self.blocks }
         };
         self.vertices.extend([0, 1, 2, 0, 2, 3].map(corner));
         if let Some(call) = self.calls.last_mut() {
@@ -1517,6 +1539,27 @@ pub fn recolor(colors: Option<[Vec3; 3]>) {
     with(|context| context.recolor = colors);
 }
 
+/// What is drawn next has its hue turned by `hue` (of the colour wheel, 1 is all the way round), as the Haxe engine's ColorSwap shader does; None: as it is.
+pub fn recolor_hue(hue: Option<f32>) {
+    recolor(hue.map(|hue| [vec3(hue, 0.0, 0.0), Vec3::NAN, Vec3::ZERO]));
+}
+
+/// The same turn on the CPU, to test the shader's maths against.
+#[cfg(test)]
+fn hue_turned(rgb: Vec3, hue: f32) -> Vec3 {
+    let (r, g, b) = (rgb.x, rgb.y, rgb.z);
+    let step = |edge: f32, x: f32| if x < edge { 0.0 } else { 1.0 };
+    let k = glam::Vec4::new(0.0, -1.0 / 3.0, 2.0 / 3.0, -1.0);
+    let p = glam::Vec4::new(b, g, k.w, k.z).lerp(glam::Vec4::new(g, b, k.x, k.y), step(b, g));
+    let q = glam::Vec4::new(p.x, p.y, p.w, r).lerp(glam::Vec4::new(r, p.y, p.z, p.x), step(p.x, r));
+    let d = q.x - q.w.min(q.y);
+    let e = 1.0e-10;
+    let (h, s, v) = ((q.z + (q.w - q.y) / (6.0 * d + e)).abs() + hue, d / (q.x + e), q.x);
+    let turned = Vec3::splat(h) + vec3(1.0, 2.0 / 3.0, 1.0 / 3.0);
+    let p = ((turned - turned.floor()) * 6.0 - Vec3::splat(3.0)).abs();
+    v * Vec3::ONE.lerp((p - Vec3::ONE).clamp(Vec3::ZERO, Vec3::ONE), s)
+}
+
 pub fn draw_texture(picture: &Texture2D, x: f32, y: f32, color: Color) {
     with(|context| context.texture(picture, x, y, color, &DrawTextureParams::default()));
 }
@@ -1716,6 +1759,19 @@ mod tests {
         // a quarter turn clockwise about its middle (12, 21): the top left corner ends up at the top right
         let (corners, _) = placed(whole, 10.0, 20.0, &DrawTextureParams { rotation: std::f32::consts::FRAC_PI_2, ..part });
         assert!(corners[0].distance(vec2(13.0, 19.0)) < 1e-4 && corners[1].distance(vec2(13.0, 23.0)) < 1e-4, "{corners:?}");
+    }
+
+    #[test]
+    fn the_hue_turn_keeps_brightness_and_strength_as_the_colour_swap_shader_does() {
+        let near = |a: Vec3, b: Vec3| (a - b).length() < 1e-3;
+        assert!(near(hue_turned(Vec3::X, 1.0 / 3.0), Vec3::Y) && near(hue_turned(Vec3::Y, 1.0 / 3.0), Vec3::Z));
+        assert!(near(hue_turned(vec3(0.5, 0.5, 0.5), 0.27), vec3(0.5, 0.5, 0.5)), "grey has no hue");
+        // half way round, a muted red goes to its opposite: same strongest and weakest channel, the middle one moved
+        assert!(near(hue_turned(vec3(0.8, 0.2, 0.2), 0.5), vec3(0.2, 0.8, 0.8)));
+        assert!(near(hue_turned(vec3(0.8, 0.4, 0.2), 0.0), vec3(0.8, 0.4, 0.2)) && near(hue_turned(vec3(0.8, 0.4, 0.2), 1.0), vec3(0.8, 0.4, 0.2)));
+        // orange a sixth on: the weakest stays 0.2 and the strongest 0.8 (yellow-ish)
+        let moved = hue_turned(vec3(0.8, 0.4, 0.2), 1.0 / 12.0);
+        assert!((moved.max_element() - 0.8).abs() < 1e-3 && (moved.min_element() - 0.2).abs() < 1e-3);
     }
 
     #[test]
