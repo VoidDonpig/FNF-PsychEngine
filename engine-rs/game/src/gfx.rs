@@ -455,6 +455,10 @@ struct Vertex {
     recolored: f32,
     /// Above 0: the picture is shown in squares of this many of its pixels.
     blocks: f32,
+    /// What a mod's vertex shader is given (`openfl_Position`, and `openfl_Matrix`: x and y scale and shift): the corner as
+    /// the sprite put it (before the camera) and the camera's way to the screen.
+    world: [f32; 2],
+    view: [f32; 4],
 }
 
 const SHADER: &str = "
@@ -625,7 +629,7 @@ struct Call {
 }
 
 /// How the corners of what is drawn are handed to the graphics card (`Vertex`).
-const ATTRIBUTES: [wgpu::VertexAttribute; 8] = wgpu::vertex_attr_array![0 => Float32x2, 1 => Float32x2, 2 => Float32x4, 3 => Float32x3, 4 => Float32x3, 5 => Float32x3, 6 => Float32, 7 => Float32];
+const ATTRIBUTES: [wgpu::VertexAttribute; 10] = wgpu::vertex_attr_array![0 => Float32x2, 1 => Float32x2, 2 => Float32x4, 3 => Float32x3, 4 => Float32x3, 5 => Float32x3, 6 => Float32, 7 => Float32, 8 => Float32x2, 9 => Float32x4];
 
 /// A mod's shader read and made ready: what draws through it, and where its uniforms lie.
 struct Program {
@@ -1017,13 +1021,15 @@ impl Context {
                 shader.set("openfl_TextureSize", &size);
             }
         }
-        let place = self.camera * self.models.last().copied().unwrap_or(Mat4::IDENTITY);
+        let model = self.models.last().copied().unwrap_or(Mat4::IDENTITY);
+        let view = [self.camera.x_axis.x, self.camera.w_axis.x, self.camera.y_axis.y, self.camera.w_axis.y];
         let [red, green, blue] = self.recolor.unwrap_or_default().map(|part| part.to_array());
         let corner = |index: usize| {
-            let position = place.transform_point3(corners[index].extend(0.0));
+            let world = model.transform_point3(corners[index].extend(0.0));
+            let position = self.camera.transform_point3(world);
             // a hue turn is marked by NaN in `green` (see `recolor_hue`); `red.x` is the hue
             let recolored = if self.recolor.is_some_and(|colors| colors[1].x.is_nan()) { 2.0 } else { self.recolor.is_some() as u8 as f32 };
-            Vertex { position: [position.x, position.y], uv: uvs[index].to_array(), color: [color.r, color.g, color.b, color.a * self.fade], red, green, blue, recolored, blocks: self.blocks }
+            Vertex { position: [position.x, position.y], uv: uvs[index].to_array(), color: [color.r, color.g, color.b, color.a * self.fade], red, green, blue, recolored, blocks: self.blocks, world: [world.x, world.y], view }
         };
         self.vertices.extend([0, 1, 2, 0, 2, 3].map(corner));
         if let Some(call) = self.calls.last_mut() {
@@ -1236,6 +1242,8 @@ impl Context {
             // (what was drawn is moved to fill that picture)
             for vertex in drawn {
                 vertex.position = [(vertex.position[0] - left) / (right - left) * 2.0 - 1.0, (vertex.position[1] - bottom) / (top - bottom) * 2.0 - 1.0];
+                let (kx, ky) = (2.0 / (right - left), 2.0 / (top - bottom));
+                vertex.view = [vertex.view[0] * kx, (vertex.view[1] - left) * kx - 1.0, vertex.view[2] * ky, (vertex.view[3] - bottom) * ky - 1.0];
             }
         }
         if self.layer_stages.get(layer).is_none_or(|(_, _, made)| *made != size) {
@@ -1249,7 +1257,10 @@ impl Context {
         self.layers.push((first, self.calls.len()));
         // the picture over the whole window (or the piece's place); its colours are multiplied by its opacity already (told by `recolored`)
         shader.set("openfl_TextureSize", &if fit { [size.0 as f64, size.1 as f64] } else { [crate::WIDTH as f64, crate::HEIGHT as f64] });
-        let corner = |x: f32, y: f32| Vertex { position: [left + x * (right - left), top - y * (top - bottom)], uv: [x, y], color: [1.0; 4], red: [0.0; 3], green: [0.0; 3], blue: [0.0; 3], recolored: 1.0, blocks: 0.0 };
+        // (to a vertex shader the picture is `pixels` large, from its top left: the window's, or the piece's)
+        let pixels = if fit { [size.0 as f32, size.1 as f32] } else { [crate::WIDTH, crate::HEIGHT] };
+        let view = [(right - left) / pixels[0], left, -(top - bottom) / pixels[1], top];
+        let corner = |x: f32, y: f32| Vertex { position: [left + x * (right - left), top - y * (top - bottom)], uv: [x, y], color: [1.0; 4], red: [0.0; 3], green: [0.0; 3], blue: [0.0; 3], recolored: 1.0, blocks: 0.0, world: [x * pixels[0], y * pixels[1]], view };
         self.vertices.extend([(0.0, 0.0), (1.0, 0.0), (1.0, 1.0), (0.0, 0.0), (1.0, 1.0), (0.0, 1.0)].map(|(x, y)| corner(x, y)));
         self.calls.push(Call { group: self.layer_stages[layer].1.clone(), picture: (u64::MAX - layer as u64, FilterMode::Linear, false, shader.0.id), end: self.vertices.len() as u32, shader: Some(shader.clone()) });
         self.cut = true;

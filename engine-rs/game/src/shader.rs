@@ -206,13 +206,13 @@ struct Gathered {
 const VERTEX_START: &str = " funkin_color = funkin_vcolor; funkin_ready = funkin_vready;";
 const VERTEX_BODY: &str = "openfl_TextureCoordv = openfl_TextureCoord; gl_Position = vec4(funkin_position, 0.0, 1.0);";
 
-/// What stands where a vertex shader says `#pragma header`.
-// shortcut: a corner comes with its place on screen worked out already (camera zoom and sprite turn included), so
-// `openfl_Position` is that place in pixels of the target and not the sprite's own, and `openfl_Matrix` the projection
-// from pixels back to the screen's measure (-1 to 1); `openfl_Matrix * openfl_Position` is then where the corner is
-const VERTEX_HEADER: &str = "vec4 funkin_pixels() { return vec4((funkin_position.x + 1.0) * 0.5 * funkin_target.x, (1.0 - funkin_position.y) * 0.5 * funkin_target.y, 0.0, 1.0); }
-#define openfl_Position funkin_pixels()
-#define openfl_Matrix mat4(2.0 / funkin_target.x, 0.0, 0.0, 0.0, 0.0, -2.0 / funkin_target.y, 0.0, 0.0, 0.0, 0.0, 1.0, 0.0, -1.0, 1.0, 0.0, 1.0)
+/// What stands where a vertex shader says `#pragma header`: the corner where the sprite put it, in the world's pixels
+/// (before the camera), and the matrix of the camera's way to the screen, so `openfl_Matrix * openfl_Position` is where
+/// the corner is.
+// shortcut: `openfl_Position` is in the world's pixels, with the camera's scroll still in them (Flixel hands over places with
+// the scroll taken off); `openfl_Matrix` carries the scroll and zoom, so their product is the same
+const VERTEX_HEADER: &str = "#define openfl_Position vec4(funkin_world, 0.0, 1.0)
+#define openfl_Matrix mat4(funkin_view.x, 0.0, 0.0, 0.0, 0.0, funkin_view.z, 0.0, 0.0, 0.0, 0.0, 1.0, 0.0, funkin_view.y, funkin_view.w, 0.0, 1.0)
 #define openfl_Alpha funkin_vcolor.a
 #define openfl_ColorMultiplier funkin_vcolor
 #define openfl_ColorOffset vec4(0.0)
@@ -227,7 +227,7 @@ vec4 openfl_ColorOffsetv;
 fn text_of(vertex: bool, block: &[(String, String)], varyings: &[(String, String)], part: &Gathered) -> String {
     let mut text = String::from("#version 450\n");
     text.push_str(if vertex {
-        "layout(location = 0) in vec2 funkin_position;\nlayout(location = 1) in vec2 openfl_TextureCoord;\nlayout(location = 2) in vec4 funkin_vcolor;\nlayout(location = 6) in float funkin_vready;\nlayout(location = 0) out vec2 openfl_TextureCoordv;\nlayout(location = 1) out vec4 funkin_color;\nlayout(location = 5) out float funkin_ready;\n"
+        "layout(location = 0) in vec2 funkin_position;\nlayout(location = 1) in vec2 openfl_TextureCoord;\nlayout(location = 2) in vec4 funkin_vcolor;\nlayout(location = 6) in float funkin_vready;\nlayout(location = 8) in vec2 funkin_world;\nlayout(location = 9) in vec4 funkin_view;\nlayout(location = 0) out vec2 openfl_TextureCoordv;\nlayout(location = 1) out vec4 funkin_color;\nlayout(location = 5) out float funkin_ready;\n"
     } else {
         "layout(location = 0) in vec2 openfl_TextureCoordv;\nlayout(location = 1) in vec4 funkin_color;\nlayout(location = 5) in float funkin_ready;\nlayout(location = 0) out vec4 funkin_FragColor;\nlayout(set = 0, binding = 0) uniform texture2D funkin_bitmap_t;\nlayout(set = 0, binding = 1) uniform sampler funkin_bitmap_s;\n"
     });
