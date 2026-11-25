@@ -65,10 +65,73 @@ pub fn all(base: &std::path::Path) -> Vec<Listed> {
     list
 }
 
+/// Makes TJSON-style text strict JSON: drops `//` and `/* */` comments and commas before a closing bracket (never inside strings).
+fn loosen(text: &str) -> String {
+    let chars: Vec<char> = text.chars().collect();
+    let mut out = String::with_capacity(text.len());
+    let mut i = 0;
+    while i < chars.len() {
+        let c = chars[i];
+        if c == '"' {
+            out.push(c);
+            i += 1;
+            while i < chars.len() {
+                out.push(chars[i]);
+                if chars[i] == '\\' && i + 1 < chars.len() {
+                    i += 1;
+                    out.push(chars[i]);
+                } else if chars[i] == '"' {
+                    break;
+                }
+                i += 1;
+            }
+        } else if c == '/' && chars.get(i + 1) == Some(&'/') {
+            while i < chars.len() && chars[i] != '\n' {
+                i += 1;
+            }
+            continue;
+        } else if c == '/' && chars.get(i + 1) == Some(&'*') {
+            i += 2;
+            while i < chars.len() && !(chars[i] == '*' && chars.get(i + 1) == Some(&'/')) {
+                i += 1;
+            }
+            i += 2;
+            continue;
+        } else {
+            out.push(c);
+        }
+        i += 1;
+    }
+    // second pass: remove commas whose next non-space character closes an array or object
+    let b: Vec<char> = out.chars().collect();
+    let mut res = String::with_capacity(b.len());
+    let mut in_str = false;
+    let mut k = 0;
+    while k < b.len() {
+        let c = b[k];
+        if in_str {
+            res.push(c);
+            if c == '\\' && k + 1 < b.len() {
+                k += 1;
+                res.push(b[k]);
+            } else if c == '"' {
+                in_str = false;
+            }
+        } else if c == '"' {
+            in_str = true;
+            res.push(c);
+        } else if c == ',' && b[k + 1..].iter().find(|x| !x.is_whitespace()).is_some_and(|x| *x == ']' || *x == '}') {
+        } else {
+            res.push(c);
+        }
+        k += 1;
+    }
+    res
+}
+
 fn read_file(path: &std::path::Path, from: Option<&str>, list: &mut Vec<Listed>) {
     let Ok(text) = std::fs::read_to_string(path) else { return };
-    // shortcut: a strict JSON reader, where the Haxe engine's TJSON also takes comments and loose commas
-    let Ok(serde_json::Value::Array(entries)) = serde_json::from_str(text.trim()) else {
+    let Ok(serde_json::Value::Array(entries)) = serde_json::from_str(&loosen(text.trim())) else {
         eprintln!("Error loading achievements.json of {}", from.unwrap_or("mods"));
         return;
     };
@@ -197,6 +260,14 @@ pub fn earned(run: &Run) -> Vec<&'static str> {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn loose_json_is_made_strict() {
+        let text = "[ // first\n {\"save\": \"a//b,]\", /* x */ \"name\": \"n\",}, \n]";
+        let v: serde_json::Value = serde_json::from_str(&super::loosen(text)).unwrap();
+        assert_eq!(v[0]["save"], "a//b,]");
+        assert_eq!(v[0]["name"], "n");
+    }
+
     use super::*;
 
     #[test]
