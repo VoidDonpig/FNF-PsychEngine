@@ -206,10 +206,12 @@ const VERTEX_START: &str = " funkin_color = funkin_vcolor; funkin_ready = funkin
 const VERTEX_BODY: &str = "openfl_TextureCoordv = openfl_TextureCoord; gl_Position = vec4(funkin_position, 0.0, 1.0);";
 
 /// What stands where a vertex shader says `#pragma header`.
-// shortcut: a corner comes with its place on screen worked out already, so `openfl_Matrix` is the matrix that changes
-// nothing and `openfl_Position` is in the screen's own measure (-1 to 1), not in pixels
-const VERTEX_HEADER: &str = "#define openfl_Position vec4(funkin_position, 0.0, 1.0)
-#define openfl_Matrix mat4(1.0)
+// shortcut: a corner comes with its place on screen worked out already (camera zoom and sprite turn included), so
+// `openfl_Position` is that place in pixels of the target and not the sprite's own, and `openfl_Matrix` the projection
+// from pixels back to the screen's measure (-1 to 1); `openfl_Matrix * openfl_Position` is then where the corner is
+const VERTEX_HEADER: &str = "vec4 funkin_pixels() { return vec4((funkin_position.x + 1.0) * 0.5 * funkin_target.x, (1.0 - funkin_position.y) * 0.5 * funkin_target.y, 0.0, 1.0); }
+#define openfl_Position funkin_pixels()
+#define openfl_Matrix mat4(2.0 / funkin_target.x, 0.0, 0.0, 0.0, 0.0, -2.0 / funkin_target.y, 0.0, 0.0, 0.0, 0.0, 1.0, 0.0, -1.0, 1.0, 0.0, 1.0)
 #define openfl_Alpha funkin_vcolor.a
 #define openfl_ColorMultiplier funkin_vcolor
 #define openfl_ColorOffset vec4(0.0)
@@ -450,6 +452,9 @@ mod tests {
         let coord = translate("#pragma header\nvoid main() { gl_FragColor = vec4(gl_FragCoord.x / 100.0, gl_FragCoord.y / 100.0, 0.0, 1.0); }").unwrap_or_else(|error| panic!("{error}"));
         assert!(text_of(false, &[], &[], &gather("#pragma header\nvoid main() { gl_FragColor = vec4(gl_FragCoord.y); }", false).unwrap()).contains("funkin_target.y - c.y"));
         assert!(coord.slots.iter().any(|slot| slot.name == "funkin_target" && slot.offset == 8));
+        // a vertex shader that moves each corner by 100 pixels through openfl_Matrix and openfl_Position
+        let moved = translate_pair(None, Some("#pragma header\nvoid main() {\n#pragma body\ngl_Position = openfl_Matrix * (openfl_Position + vec4(100.0, 0.0, 0.0, 0.0));\n}")).unwrap_or_else(|error| panic!("{error}"));
+        assert!(moved.vertex.is_some());
         // lists and matrices: every element in its own place
         let lists = translate("#pragma header\n#define COUNT 3\nuniform float amounts[COUNT];\nuniform vec2 points[2];\nuniform mat2 turn;\nuniform mat3 warp;\nvoid main() { gl_FragColor = flixel_texture2D(bitmap, turn * openfl_TextureCoordv + points[1]) * amounts[2] * warp[2][2]; }").unwrap_or_else(|error| panic!("{error}"));
         let slot = |name: &str| lists.slots.iter().find(|slot| slot.name == name).cloned().unwrap();
