@@ -1517,6 +1517,7 @@ impl Scripts {
             Request::Presence(crate::discord::Presence { large_image: args.5, details: args.0.unwrap_or_else(|| "In the Menus".to_owned()), state: args.1.filter(|state| !state.is_empty()), small_image: args.2.filter(|key| !key.is_empty()), start: (start > 0.0).then_some((start / 1000.0) as u64), end })
         });
         // (none: the game's own application, as Discord.hx)
+        // shortcut: the application a script chose stays when the song is left (the Haxe engine puts its own back in places)
         request!("changeDiscordClientID", |args: Option<String>| Request::DiscordClient(args.unwrap_or_default()));
         request!("loadSong", |args: (Option<String>, Option<i64>)| Request::LoadSong { name: args.0.unwrap_or_default(), difficulty: args.1.unwrap_or(-1) });
         g.set("mouseReleased", lua.create_function(|_, _args: Option<String>| Ok(is_mouse_released()))?)?;

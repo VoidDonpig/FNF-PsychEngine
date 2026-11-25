@@ -200,6 +200,8 @@ fn answer_of(output: std::io::Result<Output>) -> Answer {
     }
     match output.status.code() {
         Some(0) if !bytes.is_empty() => Answer::Chosen(path_of(bytes)),
+        // shortcut: a tool that ends with 1 because it could not work (no display it can reach) reads as cancelled, not
+        // as failed, so the editor does not fall back to its own way then
         Some(0 | 1) => Answer::Cancelled,
         _ => Answer::Failed,
     }

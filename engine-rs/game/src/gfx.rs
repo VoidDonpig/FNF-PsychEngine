@@ -837,7 +837,9 @@ pub fn open(conf: Conf) -> Result<(String, Option<String>), String> {
     let pipeline = pipeline_with(wgpu::BlendState::ALPHA_BLENDING);
     // light: what is drawn is added to what is there (Flixel's ADD), as much as it is opaque
     let light = wgpu::BlendComponent { src_factor: wgpu::BlendFactor::SrcAlpha, dst_factor: wgpu::BlendFactor::One, operation: wgpu::BlendOperation::Add };
-    let adding = pipeline_with(wgpu::BlendState { color: light, alpha: wgpu::BlendState::ALPHA_BLENDING.alpha });
+    // (it leaves the opacity of what is there as it was: light added to a see-through layer stays light, not a cover)
+    let kept = wgpu::BlendComponent { src_factor: wgpu::BlendFactor::Zero, dst_factor: wgpu::BlendFactor::One, operation: wgpu::BlendOperation::Add };
+    let adding = pipeline_with(wgpu::BlendState { color: light, alpha: kept });
     let sampler = |filter: wgpu::FilterMode| device.create_sampler(&wgpu::SamplerDescriptor { mag_filter: filter, min_filter: filter, ..Default::default() });
     let samplers = [sampler(wgpu::FilterMode::Linear), sampler(wgpu::FilterMode::Nearest)];
 

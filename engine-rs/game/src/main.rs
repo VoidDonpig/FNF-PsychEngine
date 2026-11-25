@@ -564,7 +564,9 @@ impl Playing {
     }
 
     /// Makes it the chart editor's preview from `at` (ms): the notes from there alone, one beat to come in, no stage,
-    /// scripts or countdown, as the Haxe editor's EditorPlayState.
+    /// scripts, countdown, pause menu or game over, as the Haxe editor's EditorPlayState.
+    // shortcut: the health bar is still shown, the Haxe preview's section/beat/step line is not, and the background is
+    // plain black (the Haxe one is a darkened menu picture)
     fn preview_from(&mut self, at: f64) {
         (self.scene, self.lua, self.video, self.end_video, self.cutscene, self.speech) = (None, lua::Scripts::none(), None, None, None, None);
         self.play.skip_to(at);
@@ -858,7 +860,7 @@ impl Playing {
             self.song.stop_music();
             return Flow::Quit;
         }
-        if !self.bowing && (controls::pressed(Ui::Pause) || (self.settings.auto_pause && !is_focused())) && !lua::Scripts::stopped(&self.lua.call("onPause", ())) {
+        if !self.bowing && self.preview.is_none() && (controls::pressed(Ui::Pause) || (self.settings.auto_pause && !is_focused())) && !lua::Scripts::stopped(&self.lua.call("onPause", ())) {
             self.song.pause();
             // (the pause menu takes the place of a custom substate, as Flixel opens one substate at a time)
             self.lua.close_substate();
@@ -1062,7 +1064,8 @@ impl Playing {
         // a reset key that is also a note key only plays notes
         let reset = controls::keys(Ui::Reset).into_iter().flatten().any(|key| is_key_pressed(key) && self.settings.lane_of(key).is_none()) && !self.settings.no_reset && !self.play.botplay && self.started;
         // (once the song is over, as the stage plays its closing scene, there is nothing left to lose)
-        if (self.play.health <= 0.0 || reset) && !self.settings.practice && !self.bowing && !lua::Scripts::stopped(&self.lua.call("onGameOver", ())) {
+        // (a preview has no game over, as the Haxe editor's has none)
+        if (self.play.health <= 0.0 || reset) && self.preview.is_none() && !self.settings.practice && !self.bowing && !lua::Scripts::stopped(&self.lua.call("onGameOver", ())) {
             self.dead = Some((0.0, None));
             self.deaths += 1;
             self.song.pause();
@@ -1513,6 +1516,8 @@ impl Playing {
                         "lowPriority" => self.play.tweaks.entry(index).or_default().low_priority = flag,
                         // a note's own picture: a sheet like the usual notes', or on pixel stages a grid of small
                         // pictures and its hold pieces' (images/pixelUI/<name>.png and <name>ENDS.png)
+                        // shortcut: the note skin chosen in the options is not added to the name, as the Haxe engine's
+                        // skinPostfix does
                         "texture" => {
                             let name = value.as_str().unwrap_or("").to_owned();
                             if !name.is_empty() && !self.note_art.contains_key(&name) {
