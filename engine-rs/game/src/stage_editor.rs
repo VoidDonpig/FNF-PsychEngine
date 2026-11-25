@@ -2,7 +2,6 @@
 //! from its objects, with the three characters where it puts them; its objects listed, picked (in the list or with a click)
 //! and moved (arrow keys, right mouse button), their settings and the stage's in the Haxe editor's boxes; saved over its
 //! file, the one before kept as `.bak`.
-// shortcut: the image list has no filter; it is scrolled with the wheel.
 use crate::gfx::*;
 use crate::scene::Scene;
 use crate::ui::Ui;
@@ -68,6 +67,12 @@ fn image_names(roots: &[PathBuf]) -> Vec<String> {
     names
 }
 
+/// The images whose names hold `filter` (letters of any case); the rest of the Browse list is hidden while it is typed.
+fn filtered(images: &[String], filter: &str) -> Vec<String> {
+    let filter = filter.trim().to_lowercase();
+    images.iter().filter(|name| name.to_lowercase().contains(&filter)).cloned().collect()
+}
+
 /// The sprite list's rows shown at once.
 const ROWS: usize = 9;
 
@@ -108,6 +113,8 @@ pub struct StageEditor {
     form: (String, String, String, f64, bool),
     /// The images the Browse list offers, made when it is opened.
     images: Vec<String>,
+    /// What the Browse list is narrowed to (text its names hold).
+    filter: String,
     /// The system's file dialog, up for an image of the object of that number.
     dialog: Option<(usize, crate::dialog::Pending)>,
     unsaved: bool,
@@ -127,7 +134,7 @@ impl StageEditor {
         let mut editor = StageEditor {
             base: base.to_path_buf(), folder: folder.to_owned(), names, name: String::new(), json: Value::Null, scene: None, picked: None,
             camera: Vec2::ZERO, zoom: 1.0, mouse: Vec2::ZERO, scroll: 0, boxes: true, help: false, ui: Ui::default(), tab: 1, shown: None, form: (String::new(), String::new(), String::new(), 24.0, false),
-            images: Vec::new(), dialog: None, unsaved: false, leaving: false, said: None,
+            images: Vec::new(), filter: String::new(), dialog: None, unsaved: false, leaving: false, said: None,
         };
         editor.load(&first);
         editor
@@ -623,12 +630,18 @@ impl StageEditor {
         };
         // asked for before the controls its list drops over
         if object["type"] != "square" {
-            let (opened, picked) = self.ui.browse("object images", x + 178.0, y + 40.0, 52.0, (x, 230.0), "Browse", &self.images);
+            let shown = filtered(&self.images, &self.filter);
+            let (opened, picked) = self.ui.browse("object images", x + 178.0, y + 40.0, 52.0, (x, 230.0), "Browse", &shown);
             if opened {
                 self.images = image_names(self.paths().roots());
             }
-            if let Some(image) = picked.and_then(|index| self.images.get(index).cloned()) {
+            if let Some(image) = picked.and_then(|index| shown.get(index).cloned()) {
                 set(self, "image", json!(image));
+            }
+            // the list narrowed to the names holding this text (taken on Enter or a click elsewhere)
+            self.ui.label(x + 222.0, y, "Filter:");
+            if let Some(text) = self.ui.input("object image filter", x + 222.0, y + 18.0, 44.0, &self.filter) {
+                self.filter = text;
             }
             // or through the system's own dialog, as the Haxe editor asks (it starts in the first images/ folder there is)
             if self.ui.button(x + 232.0, y + 40.0, 34.0, "File") {
@@ -795,6 +808,12 @@ fn take_animation(object: &mut Value, name: &str) -> bool {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn image_list_filter_ignores_case_and_blanks() {
+        let images = ["stage/Back".to_owned(), "week1/lights".to_owned()];
+        assert_eq!(super::filtered(&images, " BACK "), ["stage/Back"]);
+        assert_eq!(super::filtered(&images, ""), images);
+    }
     #[test]
     fn animations_are_added_updated_and_taken_off() {
         let mut object = json!({"type": "animatedSprite", "firstAnimation": null});
