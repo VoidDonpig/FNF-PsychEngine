@@ -495,8 +495,8 @@ impl Playing {
         let mut play = Play::new(chart, settings.botplay);
         play.skip_to(start_at);
         song.seek(start_at - play.chart.offset);
-        // shortcut: in story mode the week goes on at the difficulty it began with; let the rest of the week change with it if that is missed
-        let difficulties = if story { Vec::new() } else { songs.iter().filter(|other| other.week == entry.week && other.title == entry.title).map(|other| other.difficulty.clone()).collect() };
+        // (in story mode too: the rest of the week follows the change, as storyDifficulty does in Haxe)
+        let difficulties: Vec<String> = songs.iter().filter(|other| other.week == entry.week && other.title == entry.title).map(|other| other.difficulty.clone()).collect();
         atlas::forget_unused();
         let mut scene = scene;
         let staged = story && start_at <= 0.0 && !seen && scene.as_mut().is_some_and(|scene| scene.open_with(&funkin_core::content::song_path(&entry.title), 60.0 / play.chart.bpm as f32));
@@ -2601,7 +2601,16 @@ fn main() {
                     // leaving a play-test (or changing its difficulty) goes back to the editor, the edits kept
                     Flow::Quit | Flow::Difficulty(_) if playing.charting.is_some() => editor(&playing),
                     Flow::Difficulty(name) => match songs.iter().find(|other| other.week == playing.entry.week && other.title == playing.entry.title && other.difficulty == name) {
-                        Some(entry) => Playing::open(&base, entry, &songs, &settings, 0.0, false, false, None).map_or_else(Screen::Failed, |p| Screen::Playing(Box::new(p))),
+                        Some(entry) => {
+                            // the rest of a story week goes on at the new difficulty (PauseSubState.hx sets storyDifficulty)
+                            if let Some((_, rest, _, _)) = story.as_mut() {
+                                for at in rest.iter_mut() {
+                                    let old = &songs[*at];
+                                    *at = songs.iter().position(|other| other.week == old.week && other.title == old.title && other.difficulty == name).unwrap_or(*at);
+                                }
+                            }
+                            Playing::open(&base, entry, &songs, &settings, 0.0, story.is_some(), false, None).map_or_else(Screen::Failed, |p| Screen::Playing(Box::new(p)))
+                        }
                         None => Screen::Playing(playing),
                     },
                     Flow::LoadSong(title, difficulty) => {
