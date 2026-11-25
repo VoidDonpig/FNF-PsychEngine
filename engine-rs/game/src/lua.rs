@@ -1735,9 +1735,8 @@ impl Scripts {
             // (an object of the stage's file, by its name there)
             let of_stage = shared.object_names.contains(&args.0);
             // a whole group by its name (no member number): Haxe's setSpriteShader takes the object as a FlxSprite, and a group is none
-            // (FlxTypedGroup has no `shader`: the cast fails and nothing is shaded; the message is hxcpp's cast error, as I know it)
+            // (FlxTypedGroup has no `shader`: the typed variable holds null, so nothing is shaded and false is answered, saying nothing)
             if shared.groups.contains_key(&args.0) || shared.game_object(&args.0).is_some_and(|key| matches!(key.as_str(), "strums" | "notes" | "splashes" | "popups")) {
-                shared.printed.push((format!("setSpriteShader: Invalid cast: flixel.group.FlxTypedGroup should be flixel.FlxSprite ({})", args.0), crate::gfx::get_time()));
                 return Ok(false);
             }
             // (the game's own: strums, notes, splashes, rating and combo pictures)
