@@ -321,6 +321,8 @@ impl Texture2D {
 /// Where a letter of one size sits in its font's sheet of letters, and how it is placed on the line.
 #[derive(Clone, Copy)]
 struct Glyph {
+    /// Which of the font's sheets it is on.
+    sheet: usize,
     source: Rect,
     left: f32,
     bottom: f32,
@@ -329,14 +331,28 @@ struct Glyph {
 
 struct Letters {
     font: fontdue::Font,
-    /// Letters drawn so far, by size, all on one sheet that fills up row after row.
+    /// Letters drawn so far, by size, on sheets that fill up row after row (a new sheet is begun when one is full).
     glyphs: RefCell<HashMap<(char, u16), Glyph>>,
-    sheet: Texture2D,
+    sheets: RefCell<Vec<Texture2D>>,
+    filter: Cell<FilterMode>,
     /// Where the next letter goes, and how tall the row it is in has become.
     next: Cell<(u32, u32, u32)>,
 }
 
 const SHEET: u32 = 1024;
+
+/// Where a letter of that size goes on a sheet whose next place is `next` (x, y, height of the row), and the next place after
+/// it; None when the sheet has no room left for it.
+fn place(next: (u32, u32, u32), width: u32, height: u32) -> Option<((u32, u32), (u32, u32, u32))> {
+    let (mut x, mut y, mut row) = next;
+    if x + width + 1 > SHEET {
+        (x, y, row) = (1, y + row + 1, 0);
+    }
+    if y + height + 1 > SHEET {
+        return None;
+    }
+    Some(((x, y), (x + width + 1, y, row.max(height))))
+}
 
 #[derive(Clone)]
 pub struct Font(Rc<Letters>);
@@ -344,33 +360,45 @@ pub struct Font(Rc<Letters>);
 pub fn load_ttf_font_from_bytes(bytes: &[u8]) -> Result<Font, String> {
     let font = fontdue::Font::from_bytes(bytes, fontdue::FontSettings::default())?;
     let sheet = with(|context| context.picture(SHEET, SHEET, &vec![0; (SHEET * SHEET * 4) as usize]));
-    Ok(Font(Rc::new(Letters { font, glyphs: RefCell::default(), sheet, next: Cell::new((1, 1, 0)) })))
+    Ok(Font(Rc::new(Letters { font, glyphs: RefCell::default(), sheets: RefCell::new(vec![sheet]), filter: Cell::new(FilterMode::Linear), next: Cell::new((1, 1, 0)) })))
 }
 
 impl Font {
     pub fn set_filter(&mut self, filter: FilterMode) {
-        self.0.sheet.set_filter(filter);
+        self.0.filter.set(filter);
+        for sheet in self.0.sheets.borrow().iter() {
+            sheet.set_filter(filter);
+        }
     }
 
     /// The letter at that size, drawn onto the sheet the first time it is asked for.
-    fn glyph(&self, letter: char, size: u16, context: &Context) -> Glyph {
+    fn glyph(&self, letter: char, size: u16, context: &mut Context) -> Glyph {
         if let Some(known) = self.0.glyphs.borrow().get(&(letter, size)) {
             return *known;
         }
         let (metrics, coverage) = self.0.font.rasterize(letter, size as f32);
         let (width, height) = (metrics.width as u32, metrics.height as u32);
-        let (mut x, mut y, mut row) = self.0.next.get();
-        if x + width + 1 > SHEET {
-            (x, y, row) = (1, y + row + 1, 0);
+        let mut glyph = Glyph { sheet: self.0.sheets.borrow().len() - 1, source: Rect::new(0.0, 0.0, width as f32, height as f32), left: metrics.xmin as f32, bottom: metrics.ymin as f32, advance: metrics.advance_width };
+        let mut spot = place(self.0.next.get(), width, height);
+        if spot.is_none() && width + 2 <= SHEET && height + 2 <= SHEET {
+            // the sheet is full: begin another (with the filter the others have)
+            let sheet = context.picture(SHEET, SHEET, &vec![0; (SHEET * SHEET * 4) as usize]);
+            sheet.set_filter(self.0.filter.get());
+            self.0.sheets.borrow_mut().push(sheet);
+            glyph.sheet += 1;
+            spot = place((1, 1, 0), width, height);
         }
-        let mut glyph = Glyph { source: Rect::new(x as f32, y as f32, width as f32, height as f32), left: metrics.xmin as f32, bottom: metrics.ymin as f32, advance: metrics.advance_width };
-        if y + height + 1 > SHEET {
-            // shortcut: a full sheet leaves further letters blank. Start a second sheet if a font ever needs this many sizes.
-            glyph.source = Rect::default();
-        } else if width > 0 && height > 0 {
-            let pixels: Vec<u8> = coverage.iter().flat_map(|&cover| [255, 255, 255, cover]).collect();
-            context.write(&self.0.sheet.0.texture, x, y, width, height, &pixels);
-            self.0.next.set((x + width + 1, y, row.max(height)));
+        match spot {
+            Some(((x, y), next)) => {
+                glyph.source = Rect::new(x as f32, y as f32, width as f32, height as f32);
+                if width > 0 && height > 0 {
+                    let pixels: Vec<u8> = coverage.iter().flat_map(|&cover| [255, 255, 255, cover]).collect();
+                    context.write(&self.0.sheets.borrow()[glyph.sheet].0.texture, x, y, width, height, &pixels);
+                    self.0.next.set(next);
+                }
+            }
+            // a letter bigger than a whole sheet stays blank
+            None => glyph.source = Rect::default(),
         }
         self.0.glyphs.borrow_mut().insert((letter, size), glyph);
         glyph
@@ -994,7 +1022,7 @@ impl Context {
             let top = y - height - glyph.bottom * scale;
             if draw && width > 0.0 {
                 let from = DrawTextureParams { dest_size: Some(vec2(width, height)), source: Some(glyph.source), ..Default::default() };
-                self.texture(&font.0.sheet, x + pen + glyph.left * scale, top, params.color, &from);
+                self.texture(&font.0.sheets.borrow()[glyph.sheet], x + pen + glyph.left * scale, top, params.color, &from);
             }
             pen += glyph.advance * scale;
         }
@@ -1637,6 +1665,17 @@ pub fn get_screen_data() -> Image {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn letter_sheet_rows_wrap_and_then_fill_up() {
+        use super::{place, SHEET};
+        assert_eq!(place((1, 1, 0), 10, 12), Some(((1, 1), (12, 1, 12))));
+        // no room left in the row: the next row starts below the tallest letter
+        assert_eq!(place((SHEET - 5, 1, 12), 10, 8), Some(((1, 14), (12, 14, 8))));
+        // no room left on the sheet
+        assert_eq!(place((SHEET - 5, SHEET - 20, 12), 10, 8), None);
+        assert_eq!(place((1, SHEET - 5, 0), 4, 8), None);
+    }
+
     use super::*;
 
     #[test]
