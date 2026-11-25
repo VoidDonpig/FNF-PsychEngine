@@ -2,8 +2,6 @@
 //! sound, as wide as the screen and in its middle, over black unless they play during the song. Pictures are decoded on
 //! a thread of their own a few frames ahead; the sound is decoded first, and the picture follows the time since it began.
 //! Holding Accept for a second skips one that may be skipped, while a ring fills at the bottom right.
-// shortcut: one picture every frame time of the file (constant frame rate, as the game's videos are); add the samples'
-// own times if a mod's video has a varying rate.
 use crate::audio::Song;
 use crate::gfx::*;
 use std::io::BufReader;
@@ -24,7 +22,9 @@ pub struct Video {
     sound: mpsc::Receiver<(Arc<Vec<i16>>, u32)>,
     /// The sound once it plays, to stop it with the video.
     playing: Option<u64>,
-    frame_seconds: f64,
+    /// When each picture is shown (seconds into the video, in the order shown), and how long the video is.
+    times: Vec<f64>,
+    length: f64,
     picture: Option<Texture2D>,
     shown: u64,
     /// When the sound began (and so the pictures); None while it is decoded. Since when it is stopped (the pause menu).
@@ -47,9 +47,17 @@ impl Video {
         let failed = |error: &dyn std::fmt::Display| format!("{}: {error}", path.display());
         let file = std::fs::File::open(path).map_err(|e| failed(&e))?;
         let size = file.metadata().map_err(|e| failed(&e))?.len();
-        let reader = mp4::Mp4Reader::read_header(BufReader::new(file), size).map_err(|e| failed(&e))?;
-        let (track, count, frame_seconds) = reader.tracks().iter().find(|(_, track)| track.media_type().ok() == Some(mp4::MediaType::H264))
-            .map(|(id, track)| (*id, track.sample_count(), track.duration().as_secs_f64() / track.sample_count().max(1) as f64)).ok_or_else(|| failed(&"no H.264 pictures"))?;
+        let mut reader = mp4::Mp4Reader::read_header(BufReader::new(file), size).map_err(|e| failed(&e))?;
+        let (track, count, timescale) = reader.tracks().iter().find(|(_, track)| track.media_type().ok() == Some(mp4::MediaType::H264))
+            .map(|(id, track)| (*id, track.sample_count(), track.timescale())).ok_or_else(|| failed(&"no H.264 pictures"))?;
+        // each sample's own time, so a video whose rate varies keeps its pace
+        let mut stamps = Vec::with_capacity(count as usize);
+        for index in 1..=count {
+            if let Some(sample) = reader.read_sample(track, index).map_err(|e| failed(&e))? {
+                stamps.push((sample.start_time, sample.duration, sample.rendering_offset));
+            }
+        }
+        let (times, length) = presentation(&stamps, timescale);
         let (send_frames, frames) = mpsc::sync_channel(2);
         let (spare, spares) = mpsc::channel();
         let (send_sound, sound) = mpsc::channel();
@@ -61,7 +69,7 @@ impl Video {
                 eprintln!("{}: {error}", path.display());
             }
         });
-        Ok(Video { frames, spare, sound, frame_seconds, playing: None, picture: None, shown: 0, started: None, stopped: None, held: 0.0, over: false, looped, skippable, cover, ending, waiting: false })
+        Ok(Video { frames, spare, sound, times, length, playing: None, picture: None, shown: 0, started: None, stopped: None, held: 0.0, over: false, looped, skippable, cover, ending, waiting: false })
     }
 
     /// Goes on; `accept` is whether Accept is down. True once it is over or skipped (its sound stopped).
@@ -106,7 +114,7 @@ impl Video {
                 return true;
             }
         }
-        let due = self.started.map_or(0, |started| (started.elapsed().as_secs_f64() / self.frame_seconds) as u64 + 1);
+        let due = self.started.map_or(0, |started| due(&self.times, self.length, started.elapsed().as_secs_f64(), self.looped));
         let mut newest = None;
         while self.shown < due {
             match self.frames.try_recv() {
@@ -183,6 +191,24 @@ fn decode_sound(path: &Path) -> Result<(Arc<Vec<i16>>, u32), String> {
     Ok((Arc::new(samples), rate))
 }
 
+/// When each picture is shown, and how long the video lasts, from its samples' (start, duration, offset of showing from decoding)
+/// in the track's time units: the pictures come out of the decoder in the order shown, so the times are sorted; the first is 0.
+fn presentation(samples: &[(u64, u32, i32)], timescale: u32) -> (Vec<f64>, f64) {
+    let unit = 1.0 / timescale.max(1) as f64;
+    let mut times: Vec<f64> = samples.iter().map(|&(start, _, offset)| (start as i64 + offset as i64) as f64 * unit).collect();
+    times.sort_by(f64::total_cmp);
+    let first = times.first().copied().unwrap_or(0.0);
+    times.iter_mut().for_each(|time| *time -= first);
+    let length = samples.iter().map(|&(start, duration, _)| (start + duration as u64) as f64 * unit).fold(0.0, f64::max);
+    (times, length)
+}
+
+/// How many pictures are to have been shown `elapsed` seconds in; a looped video starts its times again at its length.
+fn due(times: &[f64], length: f64, elapsed: f64, looped: bool) -> u64 {
+    let (turns, within) = if looped && length > 0.0 { ((elapsed / length) as u64, elapsed % length) } else { (0, elapsed) };
+    turns * times.len() as u64 + times.partition_point(|time| *time <= within) as u64
+}
+
 /// Decodes the pictures in the order they are shown, until the video is let go of (or, not looped, to its end).
 fn decode_pictures(mut reader: mp4::Mp4Reader<BufReader<std::fs::File>>, track: u32, count: u32, looped: bool, frames: &mpsc::SyncSender<Frame>, spares: &mpsc::Receiver<Vec<u8>>) -> Result<(), String> {
     use openh264::formats::YUVSource;
@@ -236,19 +262,35 @@ fn decode_pictures(mut reader: mp4::Mp4Reader<BufReader<std::fs::File>>, track: 
 #[cfg(test)]
 mod tests {
     #[test]
+    fn pictures_are_due_by_their_own_times() {
+        use super::{due, presentation};
+        // 10 units a second: pictures at 0, 0.1, then a slow one at 0.5 (a B-frame shown before the one decoded first after it)
+        let (times, length) = presentation(&[(0, 1, 1), (1, 4, 3), (5, 5, -3), (10, 1, 0)], 10);
+        assert_eq!(times.len(), 4);
+        assert!(times.windows(2).all(|pair| pair[0] <= pair[1]) && times[0] == 0.0);
+        assert!((length - 1.1).abs() < 1e-9);
+        let (times, length) = presentation(&[(0, 1, 0), (1, 1, 0), (2, 8, 0), (10, 2, 0)], 10);
+        assert_eq!((due(&times, length, 0.0, false), due(&times, length, 0.15, false), due(&times, length, 0.5, false), due(&times, length, 9.0, false)), (1, 2, 3, 4));
+        // looped: the second turn begins again at the length
+        assert_eq!(due(&times, length, 1.25, true), 4 + 1);
+        assert_eq!(due(&times, length, 1.35, true), 4 + 2);
+    }
+
+    #[test]
     fn every_picture_and_the_sound_come_out() {
         let path = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../../assets/base_game/videos/2hotCutscene.mp4");
         let video = super::Video::open(&path, true, true, false, false).unwrap();
         let (samples, rate) = video.sound.recv().unwrap();
         assert_eq!(rate, 48000);
         assert!(samples.len() / 2 > 48000 * 28, "28 seconds of stereo sound");
-        assert!((video.frame_seconds - 1.0 / 24.0).abs() < 1e-3);
+        assert!((video.times[1] - 1.0 / 24.0).abs() < 1e-3 && (video.length - 28.4166).abs() < 0.05);
         let mut count = 0;
         for (width, height, pixels) in video.frames.iter() {
             assert_eq!((width, height, pixels.len()), (1280, 720, 1280 * 720 * 4));
             count += 1;
         }
         // (B-frames: lost if the decoder were flushed after each one)
-        assert_eq!(count as f64, (28.4166 / video.frame_seconds).round());
+        assert_eq!(count as f64, (28.4166 * 24.0f64).round());
+        assert_eq!(count, video.times.len());
     }
 }
