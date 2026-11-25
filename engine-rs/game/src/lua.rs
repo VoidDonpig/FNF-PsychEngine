@@ -83,7 +83,8 @@ function instanceArg(name, class)
     return text
 end
 -- the few static methods of the Haxe engine's classes with an answer here, by class (its package left off) and name
--- shortcut: the others are not called; each class not known here says so once
+-- shortcut: only those listed here are called (FlxG's camera, random and sound.play, CoolUtil, FlxMath, Std, Math); openURL and
+-- browserLoad only say they cannot open a page; each other class not known here says so once
 do
     local told = {}
     local methods = {
@@ -94,6 +95,25 @@ do
         ['FlxG.random.float'] = function(a) return getRandomFloat(a[1], a[2]) end,
         ['FlxG.random.bool'] = function(a) return getRandomBool(a[1]) end,
         ['FlxG.resetState'] = function() restartSong() end,
+        ['FlxG.sound.play'] = function(a) playSound(a[1], a[2] or 1) end,
+        ['FlxG.openURL'] = function(a) debugPrint('openURL: ' .. tostring(a[1]) .. ' is not opened here') end,
+        ['CoolUtil.browserLoad'] = function(a) debugPrint('browserLoad: ' .. tostring(a[1]) .. ' is not opened here') end,
+        ['CoolUtil.floorDecimal'] = function(a) local m = 10 ^ (a[2] or 0) return math.floor(a[1] * m) / m end,
+        ['CoolUtil.boundTo'] = function(a) return math.max(a[2], math.min(a[3], a[1])) end,
+        ['FlxMath.bound'] = function(a) return math.max(a[2], math.min(a[3], a[1])) end,
+        ['FlxMath.lerp'] = function(a) return a[1] + (a[2] - a[1]) * a[3] end,
+        ['FlxMath.roundDecimal'] = function(a) local m = 10 ^ (a[2] or 0) return math.floor(a[1] * m + 0.5) / m end,
+        ['Std.int'] = function(a) local v = tonumber(a[1]) or 0 return v >= 0 and math.floor(v) or math.ceil(v) end,
+        ['Std.parseInt'] = function(a) local v = tonumber(a[1]) return v and (v >= 0 and math.floor(v) or math.ceil(v)) or nil end,
+        ['Std.parseFloat'] = function(a) return tonumber(a[1]) end,
+        ['Math.floor'] = function(a) return math.floor(a[1]) end,
+        ['Math.ceil'] = function(a) return math.ceil(a[1]) end,
+        ['Math.round'] = function(a) return math.floor(a[1] + 0.5) end,
+        ['Math.abs'] = function(a) return math.abs(a[1]) end,
+        ['Math.min'] = function(a) return math.min(a[1], a[2]) end,
+        ['Math.max'] = function(a) return math.max(a[1], a[2]) end,
+        ['Math.sin'] = function(a) return math.sin(a[1]) end,
+        ['Math.cos'] = function(a) return math.cos(a[1]) end,
     }
     function callMethodFromClass(class, method, args)
         local found = methods[(tostring(class or ''):match('([^%.]+)$') or '') .. '.' .. tostring(method)]
@@ -3115,5 +3135,21 @@ mod tests {
             Request::Event { name: "Hey!".to_owned(), value1: "1".to_owned(), value2: "2".to_owned() },
             Request::EndSong,
         ]);
+    }
+
+    #[test]
+    fn static_methods_of_the_haxe_engines_classes_are_called() {
+        let mut scripts = run(r#"
+            function result()
+                local c = callMethodFromClass
+                return table.concat({c('flixel.math.FlxMath', 'bound', {5, 0, 3}), c('flixel.math.FlxMath', 'lerp', {0, 10, 0.5}), c('flixel.math.FlxMath', 'roundDecimal', {1.2678, 2}),
+                    c('backend.CoolUtil', 'floorDecimal', {1.2678, 2}), c('backend.CoolUtil', 'boundTo', {-1, 0, 1}),
+                    c('Std', 'int', {-2.7}), tostring(c('Std', 'parseInt', {'x'})), c('Std', 'parseFloat', {'2.5'}), c('Math', 'round', {2.5}), c('Math', 'max', {2, 7})}, ',')
+            end
+            function onCreate() callMethodFromClass('flixel.FlxG', 'sound.play', {'scrollMenu', 0.5}) end
+        "#);
+        scripts.call("onCreate", ());
+        assert_eq!(scripts.requests(), [Request::Sound { name: "scrollMenu".to_owned(), volume: 0.5, tag: None, looped: false }]);
+        assert_eq!(scripts.call("result", ()).as_deref(), Some("3,5.0,1.27,1.26,0,-2,nil,2.5,3,7"));
     }
 }
