@@ -542,13 +542,21 @@ mod output {
     }
 }
 
+/// The song's tracks are kept in one place for the whole program: tests that load a song (here, and those that open the
+/// chart editor) hold this while they do, so that they go one at a time.
+#[cfg(test)]
+pub(crate) static ONE_SONG: std::sync::Mutex<()> = std::sync::Mutex::new(());
+
 #[cfg(test)]
 mod tests {
+    use super::ONE_SONG;
+
     #[cfg(feature = "audio")]
     #[test]
     fn sounds_are_decoded_once_and_a_songs_tracks_until_another_song() {
         use super::output::{decoded, tracks_of};
         use std::sync::Arc;
+        let _alone = ONE_SONG.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
         let sounds = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../../assets/shared/sounds");
         let [scroll, confirm, cancel] = ["scrollMenu.ogg", "confirmMenu.ogg", "cancelMenu.ogg"].map(|name| sounds.join(name));
         let track = |path: &std::path::Path| tracks_of(&[path]).remove(0).unwrap().0;
@@ -566,6 +574,7 @@ mod tests {
 
     #[test]
     fn a_paused_song_stays_where_it_is_wound_to() {
+        let _alone = ONE_SONG.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
         let mut song = super::Song::load(&[]);
         song.seek(5000.0);
         song.set_speed(2.0);

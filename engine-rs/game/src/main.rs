@@ -27,6 +27,7 @@ mod animate;
 mod atlas;
 mod audio;
 mod controls;
+mod dialog;
 mod dialogue;
 mod dialogue_editor;
 mod discord;

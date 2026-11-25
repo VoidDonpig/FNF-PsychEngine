@@ -5,6 +5,7 @@
 //! are put down in their column; the box at the right has the Haxe editor's Charting, Events, Note, Section and Song
 //! tabs, and the File, Edit and View menus at the top left do what the keys and the tabs do (and a few things more).
 use crate::gfx::*;
+use crate::dialog::{self, Answer};
 use crate::{audio, ui::Ui, Skin, HEIGHT, NOTE_NAMES, WIDTH};
 use funkin_core::content::{Paths, SongEntry};
 use serde_json::{json, Value};
@@ -163,6 +164,73 @@ pub struct ChartEditor {
     labels: bool,
     /// The View menu's Go to...: the time (ms) and section to go to, while its box is open.
     going: Option<(f64, usize)>,
+    /// The chart has no file of its own yet (File > New): Save asks where it goes. Its `entry.chart` is a name not
+    /// taken in the folder it came from.
+    untitled: bool,
+    /// The system's file dialog that is up, and what it was asked for; the editor waits for it.
+    dialog: Option<(Want, dialog::Pending)>,
+    /// With no dialog here: the file's name typed (beside the chart).
+    typed: Option<(Want, String)>,
+    /// A question about a file chosen (open it over changes not saved, the events found in it).
+    prompt: Option<Prompt>,
+    /// The View menu's Theme...: the theme, the Custom one's colours (the background, the grid's, the other
+    /// sections' grid's), whether its box is open.
+    theme: Theme,
+    custom_colors: [u32; 5],
+    theming: bool,
+}
+
+/// What a file is chosen for.
+#[derive(Clone, Copy, Debug, PartialEq)]
+enum Want {
+    OpenChart,
+    OpenEvents,
+    SaveAs,
+    SaveEventsAs,
+}
+
+impl Want {
+    fn title(self) -> &'static str {
+        match self {
+            Want::OpenChart => "Open Chart",
+            Want::OpenEvents => "Open Events",
+            Want::SaveAs => "Save Chart As",
+            Want::SaveEventsAs => "Save Events As",
+        }
+    }
+}
+
+enum Prompt {
+    /// A chart chosen while this one has changes not saved.
+    OpenChart(PathBuf),
+    /// The events of an events file: in place of the chart's or added to them.
+    Events(Vec<Value>),
+}
+
+/// The Haxe editor's themes (ChartingTheme): the background's colour, the grid's two, the other sections' grid's two.
+#[derive(Clone, Copy, Debug, PartialEq)]
+enum Theme {
+    Light,
+    Dark,
+    Default,
+    VSlice,
+    Custom,
+}
+
+/// Each theme, as it is kept and as its button reads.
+const THEMES: [(Theme, &str, &str); 5] = [(Theme::Light, "light", "Light"), (Theme::Dark, "dark", "Dark"), (Theme::Default, "default", "Default"), (Theme::VSlice, "vslice", "V-Slice"), (Theme::Custom, "custom", "Custom")];
+const DEFAULT_COLORS: [u32; 5] = [0x303030, 0xDFDFDF, 0xBFBFBF, 0x5F5F5F, 0x4A4A4A];
+
+impl Theme {
+    fn colors(self, custom: [u32; 5]) -> [u32; 5] {
+        match self {
+            Theme::Light => [0xA0A0A0, 0xDFDFDF, 0xBFBFBF, 0x5F5F5F, 0x4A4A4A],
+            Theme::Dark => [0x222222, 0x3F3F3F, 0x2F2F2F, 0x1F1F1F, 0x111111],
+            Theme::Default => DEFAULT_COLORS,
+            Theme::VSlice => [0x673AB7, 0xD0D0D0, 0xAFAFAF, 0x595959, 0x464646],
+            Theme::Custom => custom,
+        }
+    }
 }
 
 /// Pasted notes and events (the Haxe editor's moving notes).
@@ -241,6 +309,7 @@ impl ChartEditor {
             autosave_minutes: 2.0, backup_limit: 10, prefs: Value::Null, characters: crate::character_editor::character_names(&paths), stages: crate::stage_editor::stage_names(&paths),
             charts: funkin_core::content::songs(&funkin_core::content::weeks(base)).into_iter().filter(|song| song.source == entry.source).collect(),
             floating: None, lit: [0.0; 8], locked_events: false, labels: true, going: None,
+            untitled: !entry.chart.is_file(), dialog: None, typed: None, prompt: None, theme: Theme::Default, custom_colors: DEFAULT_COLORS, theming: false,
         };
         let prefs = funkin_core::files::read(&base.join(PREFS));
         editor.autosave_minutes = prefs["autosave"].as_f64().unwrap_or(2.0).clamp(0.0, 60.0);
@@ -249,6 +318,11 @@ impl ChartEditor {
         editor.wheel_snaps = prefs["mouseScrollSnap"].as_bool().unwrap_or(true);
         for (index, volume) in editor.hitsounds.iter_mut().enumerate() {
             *volume = prefs["hitsounds"][index].as_f64().unwrap_or(0.0).clamp(0.0, 1.0) as f32;
+        }
+        editor.theme = THEMES.iter().find(|(_, name, _)| prefs["theme"].as_str() == Some(*name)).map_or(Theme::Default, |(theme, _, _)| *theme);
+        let kept = [&prefs["customBgColor"], &prefs["customGridColors"][0], &prefs["customGridColors"][1], &prefs["customNextGridColors"][0], &prefs["customNextGridColors"][1]];
+        for (color, kept) in editor.custom_colors.iter_mut().zip(kept) {
+            *color = kept.as_str().and_then(hex).unwrap_or(*color);
         }
         editor.prefs = editor.prefs_json();
         editor.autosaved.1 = editor.text();
@@ -332,6 +406,22 @@ impl ChartEditor {
     }
 
     pub fn update(&mut self) -> Go {
+        // while the system's file dialog is up the editor only waits for it (still drawn as it was)
+        if let Some((want, answer)) = self.dialog.as_ref().map(|(want, pending)| (*want, pending.answer())) {
+            let Some(answer) = answer else {
+                self.ui.hold();
+                return Go::Stay;
+            };
+            self.dialog = None;
+            match answer {
+                Answer::Chosen(path) => self.chosen(want, path),
+                Answer::Cancelled => {}
+                Answer::Failed => {
+                    self.fall_back(want);
+                    self.say("The file dialog did not work: type the file's name instead.");
+                }
+            }
+        }
         // (keys typed into a box are not the editor's: what was asked before this frame's controls)
         let typing = self.ui.typing();
         self.ui.begin();
@@ -340,6 +430,9 @@ impl ChartEditor {
             return go;
         }
         self.go_to_box();
+        self.typed_box();
+        self.prompt_box();
+        self.theme_box();
         self.panel();
         let prefs = self.prefs_json();
         if prefs != self.prefs {
@@ -513,36 +606,38 @@ impl ChartEditor {
     /// The File, Edit and View menus (the Haxe editor's upper box); what the editor wants next when an entry leaves it.
     fn menus(&mut self) -> Option<Go> {
         let names = |names: &[&str]| names.iter().map(|name| name.to_string()).collect::<Vec<_>>();
-        let file = names(&["Open Chart...", "Open Autosave...", "Save", "Save Events", "Reload Chart", "Playtest (Enter)", "Exit"]);
+        let file = names(&["New", "Open Chart...", "Open Autosave...", "Open Events...", "Save", "Save As...", "Save Events", "Save Events As...", "Reload Chart", "Playtest (Enter)", "Exit"]);
         let lock = if self.locked_events { "Unlock Events" } else { "Lock Events" };
         let edit = names(&["Undo", "Redo", "Select All", lock, "Autosave Settings...", "Clear All Notes", "Clear All Events"]);
         let labels = if self.labels { "Hide Note Labels" } else { "Show Note Labels" };
-        let view = names(&[labels, if self.vortex { "Vortex Editor ON" } else { "Vortex Editor OFF" }, "Waveform...", "Go to..."]);
+        let view = names(&[labels, if self.vortex { "Vortex Editor ON" } else { "Vortex Editor OFF" }, "Waveform...", "Go to...", "Theme..."]);
         match self.ui.menus("menus", 40.0, 40.0, 330.0, &[("File", file), ("Edit", edit), ("View", view)])? {
-            // the Song tab's lists, opened
-            (0, 0) => {
-                self.tab = 5;
-                let open = self.charts.iter().position(|song| song.chart == self.entry.chart).unwrap_or(0);
-                self.ui.open_list("open chart", open);
-            }
-            (0, 1) if self.autosaves().is_empty() => self.say("No autosave files found."),
-            (0, 1) => {
+            (0, 0) if !self.ui.sure("new", 0, self.unsaved) => self.say("Unsaved changes: choose New again to start over"),
+            (0, 0) => self.new_chart(),
+            // through the system's dialog, else the Song tab's list, opened
+            (0, 1) => self.ask(Want::OpenChart),
+            (0, 2) if self.autosaves().is_empty() => self.say("No autosave files found."),
+            (0, 2) => {
                 self.tab = 5;
                 self.ui.open_list("autosaves", 0);
             }
-            (0, 2) => self.save(),
+            (0, 3) => self.ask(Want::OpenEvents),
+            (0, 4) => self.save(),
+            (0, 5) => self.ask(Want::SaveAs),
             // (a chart whose events are all in the song's events.json has none of its own: nothing is written over that file)
-            (0, 3) if self.json["events"].as_array().is_none_or(|events| events.is_empty()) => self.say("This chart has no events of its own to save."),
-            (0, 3) if self.entry.chart.with_file_name("events.json").exists() && !self.ui.sure("save events", 0, true) => self.say("events.json is there already. Choose it again to write over it."),
-            (0, 3) => self.save_events(),
-            (0, 4) if !self.ui.sure("reload chart", 0, self.unsaved) => self.say(crate::ui::UNSAVED),
-            (0, 4) => {
+            (0, 6 | 7) if self.json["events"].as_array().is_none_or(|events| events.is_empty()) => self.say("This chart has no events of its own to save."),
+            (0, 6) if self.entry.chart.with_file_name("events.json").exists() && !self.ui.sure("save events", 0, true) => self.say("events.json is there already. Choose it again to write over it."),
+            (0, 6) => self.save_events(),
+            (0, 7) => self.ask(Want::SaveEventsAs),
+            (0, 8) if self.untitled => self.say("This chart has no file to reload yet."),
+            (0, 8) if !self.ui.sure("reload chart", 0, self.unsaved) => self.say(crate::ui::UNSAVED),
+            (0, 8) => {
                 if self.open_chart(&self.entry.clone()) {
                     self.say("Chart reloaded successfully!");
                 }
             }
-            (0, 5) => return Some(self.play_test()),
-            (0, 6) => {
+            (0, 9) => return Some(self.play_test()),
+            (0, 10) => {
                 if let Go::Leave = self.leave() {
                     return Some(Go::Leave);
                 }
@@ -577,7 +672,14 @@ impl ChartEditor {
                 self.tab = 0;
                 self.ui.open_list("waveform", self.waveform.0);
             }
-            (2, 3) => self.going = Some((self.position, self.section_at(self.position))),
+            (2, 3) => {
+                self.close_boxes();
+                self.going = Some((self.position, self.section_at(self.position)));
+            }
+            (2, 4) => {
+                self.close_boxes();
+                self.theming = true;
+            }
             _ => {}
         }
         None
@@ -913,6 +1015,9 @@ impl ChartEditor {
 
     /// Over the chart's file, the one before kept as `<file>.bak`.
     fn save(&mut self) {
+        if self.untitled {
+            return self.ask(Want::SaveAs);
+        }
         let done = funkin_core::files::replace(&self.entry.chart, &self.text());
         self.unsaved &= done.is_err();
         self.say(done.unwrap_or_else(|error| error));
@@ -941,6 +1046,206 @@ impl ChartEditor {
         }
     }
 
+    /// File > New: an empty chart (the Haxe editor's openNewChart) over the song's music, with no file of its own yet.
+    fn new_chart(&mut self) {
+        self.stop();
+        let mut json = new_chart();
+        fill_sections(&mut json, self.length);
+        self.json = json;
+        let folder = self.entry.chart.parent().map(Path::to_path_buf).unwrap_or_default();
+        self.entry.chart = (1..).map(|count| folder.join(if count == 1 { "untitled.json".to_owned() } else { format!("untitled-{count}.json") }))
+            .find(|path| !path.exists()).expect("some name is free");
+        let paths = Paths::new(&self.base, &self.entry.source, "");
+        self.icons = [icon_of(&paths, "bf"), icon_of(&paths, "dad")];
+        (self.untitled, self.unsaved, self.leaving) = (true, false, false);
+        self.undo.clear();
+        self.redo.clear();
+        self.selected.clear();
+        self.floating = None;
+        self.measure();
+        self.wind(0.0);
+        self.say("New chart: Save asks where it goes");
+    }
+
+    /// Closes the boxes over the grid (one is open at a time).
+    fn close_boxes(&mut self) {
+        (self.going, self.typed, self.prompt, self.theming) = (None, None, None, false);
+    }
+
+    /// The name a file dialog (or the typed box) offers.
+    fn offered_name(&self, want: Want) -> String {
+        match want {
+            Want::SaveAs if self.untitled => format!("{}.json", song_path(self.json["song"].as_str().unwrap_or("Test"))),
+            Want::SaveAs | Want::OpenChart => self.entry.chart.file_name().map_or(String::new(), |name| name.to_string_lossy().into_owned()),
+            Want::OpenEvents | Want::SaveEventsAs => "events.json".to_owned(),
+        }
+    }
+
+    /// Asks for a file through the system's dialog, from the chart's folder; with none, the editor's own way.
+    fn ask(&mut self, want: Want) {
+        self.stop();
+        self.close_boxes();
+        let folder = self.entry.chart.parent().map(|folder| std::path::absolute(folder).unwrap_or_else(|_| folder.to_path_buf())).unwrap_or_default();
+        let pending = match want {
+            Want::OpenChart | Want::OpenEvents => dialog::open(want.title(), &["json"], &folder),
+            Want::SaveAs | Want::SaveEventsAs => dialog::save(want.title(), &self.offered_name(want), &folder),
+        };
+        match pending {
+            Some(pending) => {
+                self.dialog = Some((want, pending));
+                self.say("Choose the file in the window that opened");
+            }
+            None => self.fall_back(want),
+        }
+    }
+
+    /// With no file dialog: the Song tab's list of the folder's charts, else a box to type the file's name in.
+    fn fall_back(&mut self, want: Want) {
+        if want == Want::OpenChart {
+            self.tab = 5;
+            let open = self.charts.iter().position(|song| song.chart == self.entry.chart).unwrap_or(0);
+            self.ui.open_list("open chart", open);
+            self.say("No file dialog here: choose the chart in the list");
+        } else {
+            self.typed = Some((want, self.offered_name(want)));
+        }
+    }
+
+    /// What is done with the file chosen, as the Haxe editor's File entries.
+    fn chosen(&mut self, want: Want, path: PathBuf) {
+        let read = || std::fs::read_to_string(&path).ok().and_then(|text| serde_json::from_str::<Value>(&text).ok())
+            .map(|mut json| if json["song"].is_object() { json["song"].take() } else { json });
+        match want {
+            Want::OpenChart if read().is_none_or(|song| song.get("song").is_none()) => self.say("Error: File loaded is not a Psych Engine/FNF 0.2.x.x chart."),
+            Want::OpenChart if self.unsaved => self.prompt = Some(Prompt::OpenChart(path)),
+            Want::OpenChart => self.open_chart_file(&path),
+            Want::OpenEvents => {
+                let Some(mut file) = read().filter(|file| file.is_object() && file.get("scrollSpeed").is_none()) else {
+                    return self.say("Error: File loaded is not a Psych Engine chart/events file.");
+                };
+                convert(&mut file);
+                match file["events"].as_array() {
+                    None => self.say("Error: File loaded is not a Psych Engine chart/events file."),
+                    Some(events) if events.is_empty() => self.say("Events file loaded is empty."),
+                    Some(events) => self.prompt = Some(Prompt::Events(events.clone())),
+                }
+            }
+            Want::SaveAs => match funkin_core::files::replace(&path, &self.text()) {
+                Ok(_) => {
+                    self.say(format!("Chart saved successfully to: {}", path.display()));
+                    self.entry.chart = path;
+                    (self.untitled, self.unsaved, self.leaving) = (false, false, false);
+                }
+                Err(error) => self.say(error),
+            },
+            Want::SaveEventsAs => match funkin_core::files::replace(&path, &events_text(&self.json)) {
+                Ok(_) => self.say(format!("Events saved successfully to: {}", path.display())),
+                Err(error) => self.say(error),
+            },
+        }
+    }
+
+    /// A chart file in this editor: as the folder's chart it is, else with this song's music.
+    fn open_chart_file(&mut self, path: &Path) {
+        let real = std::fs::canonicalize(path).ok();
+        let mut entry = self.charts.iter().find(|song| std::fs::canonicalize(&song.chart).ok() == real).cloned().unwrap_or_else(|| self.entry.clone());
+        entry.chart = path.to_path_buf();
+        if self.open_chart(&entry) {
+            self.say(format!("Opened chart \"{}\" successfully!", path.display()));
+        }
+    }
+
+    /// With no file dialog: the box the file's name is typed in (it goes beside the chart).
+    fn typed_box(&mut self) {
+        let Some((want, mut name)) = self.typed.take() else { return };
+        let (x, y) = (40.0, 64.0);
+        self.ui.area(Rect::new(x, y, 330.0, 80.0));
+        self.ui.label(x + 10.0, y + 4.0, &format!("{} (a file beside the chart):", want.title()));
+        if let Some(typed) = self.ui.input("typed name", x + 10.0, y + 28.0, 310.0, &name) {
+            name = typed;
+        }
+        let verb = if matches!(want, Want::OpenChart | Want::OpenEvents) { "Open" } else { "Save" };
+        if self.ui.button(x + 170.0, y + 54.0, 70.0, verb) {
+            match beside(&self.entry.chart, &name) {
+                Some(path) if verb == "Open" && !path.is_file() => {
+                    self.say(format!("There is no {} beside the chart.", name.trim()));
+                    self.typed = Some((want, name));
+                }
+                Some(path) => self.chosen(want, path),
+                None => {
+                    self.say("Type a file's name only: it goes beside the chart.");
+                    self.typed = Some((want, name));
+                }
+            }
+        } else if !self.ui.button(x + 250.0, y + 54.0, 70.0, "Cancel") {
+            self.typed = Some((want, name));
+        }
+    }
+
+    /// The question about a file chosen: open it over changes not saved; the events found in one put in place of the
+    /// chart's, or added to them (a step to undo).
+    fn prompt_box(&mut self) {
+        let Some(prompt) = self.prompt.take() else { return };
+        let (x, y) = (40.0, 64.0);
+        self.ui.area(Rect::new(x, y, 330.0, 80.0));
+        match prompt {
+            Prompt::OpenChart(path) => {
+                self.ui.label(x + 10.0, y + 4.0, "Warning: Any unsaved progress\nwill be lost.");
+                if self.ui.button(x + 170.0, y + 54.0, 70.0, "Open") {
+                    self.open_chart_file(&path);
+                } else if !self.ui.button(x + 250.0, y + 54.0, 70.0, "Cancel") {
+                    self.prompt = Some(Prompt::OpenChart(path));
+                }
+            }
+            Prompt::Events(events) => {
+                self.ui.label(x + 10.0, y + 4.0, &format!("Events Found! ({}) Choose an action.", events.len()));
+                if self.ui.button(x + 10.0, y + 54.0, 100.0, "Replace All") {
+                    self.remember();
+                    self.json["events"] = json!(events);
+                    self.selected.retain(|picked| matches!(picked, Picked::Note(..)));
+                    self.say("Events loaded successfully!");
+                } else if self.ui.button(x + 120.0, y + 54.0, 90.0, "Add") {
+                    self.remember();
+                    if !self.json["events"].is_array() {
+                        self.json["events"] = json!([]);
+                    }
+                    self.json["events"].as_array_mut().expect("made an array").extend(events);
+                    self.say("Events added successfully!");
+                } else if !self.ui.button(x + 220.0, y + 54.0, 100.0, "Cancel") {
+                    self.prompt = Some(Prompt::Events(events));
+                }
+            }
+        }
+    }
+
+    /// The View menu's Theme... box: a theme's button, and the Custom one's colours (typed in hexadecimal).
+    fn theme_box(&mut self) {
+        if !self.theming {
+            return;
+        }
+        let (x, y) = (40.0, 64.0);
+        self.ui.area(Rect::new(x, y, 400.0, 150.0));
+        self.ui.label(x + 10.0, y + 4.0, "Chart Editor Theme:");
+        if self.ui.button(x + 370.0, y + 4.0, 24.0, "X") {
+            self.theming = false;
+        }
+        for (index, (theme, _, words)) in THEMES.iter().enumerate() {
+            if self.ui.button(x + 10.0 + index as f32 * 77.0, y + 30.0, 72.0, words) {
+                self.theme = *theme;
+            }
+        }
+        self.ui.label(x + 10.0, y + 62.0, "BG Color:");
+        self.ui.label(x + 115.0, y + 62.0, "Grid Colors:");
+        self.ui.label(x + 220.0, y + 62.0, "Next Grid Colors:");
+        const BOXES: [(&str, f32, f32); 5] = [("theme bg", 10.0, 82.0), ("theme grid", 115.0, 82.0), ("theme grid 2", 115.0, 108.0), ("theme next", 220.0, 82.0), ("theme next 2", 220.0, 108.0)];
+        for (index, (id, left, top)) in BOXES.into_iter().enumerate() {
+            if let Some(color) = self.ui.input(id, x + left, y + top, 80.0, &format!("{:06X}", self.custom_colors[index])).as_deref().and_then(hex) {
+                self.custom_colors[index] = color;
+                self.theme = Theme::Custom;
+            }
+        }
+    }
+
     /// The chosen track's loudness down the grid, a line of each screen row: out from the middle stripe by how far
     /// its left and right channels swing (the Haxe editor's waveform, in its blue).
     fn draw_waveform(&self, row_height: f32) {
@@ -962,7 +1267,10 @@ impl ChartEditor {
     }
 
     fn prefs_json(&self) -> Value {
-        json!({"autosave": self.autosave_minutes, "backups": self.backup_limit, "vortex": self.vortex, "mouseScrollSnap": self.wheel_snaps, "hitsounds": self.hitsounds})
+        let [bg, grid, grid_2, next, next_2] = self.custom_colors.map(|color| format!("{color:06X}"));
+        let theme = THEMES.iter().find(|(theme, _, _)| *theme == self.theme).map_or("default", |(_, name, _)| *name);
+        json!({"autosave": self.autosave_minutes, "backups": self.backup_limit, "vortex": self.vortex, "mouseScrollSnap": self.wheel_snaps, "hitsounds": self.hitsounds,
+            "theme": theme, "customBgColor": bg, "customGridColors": [grid, grid_2], "customNextGridColors": [next, next_2]})
     }
 
     fn backups(&self) -> PathBuf {
@@ -1030,10 +1338,11 @@ impl ChartEditor {
     }
 
     pub fn draw(&self, skin: &Skin) {
-        clear_background(Color::from_hex(0x303030));
+        let colors = self.theme.colors(self.custom_colors).map(Color::from_hex);
+        clear_background(colors[0]);
         set_camera(&Camera2D { target: vec2(WIDTH / 2.0, HEIGHT / 2.0), zoom: vec2(2.0 / WIDTH, 2.0 / HEIGHT), ..Default::default() });
         if let Some(background) = &self.background {
-            draw_texture_ex(background, 0.0, 0.0, Color::from_hex(0x303030), DrawTextureParams { dest_size: Some(vec2(WIDTH, HEIGHT)), ..Default::default() });
+            draw_texture_ex(background, 0.0, 0.0, colors[0], DrawTextureParams { dest_size: Some(vec2(WIDTH, HEIGHT)), ..Default::default() });
         }
         let row_height = GRID * ZOOMS[self.zoom];
         let current = self.section_at(self.position);
@@ -1044,7 +1353,7 @@ impl ChartEditor {
             if bottom < 0.0 || top > HEIGHT {
                 continue;
             }
-            let colors = if index == current { [0xDFDFDF, 0xBFBFBF] } else { [0x5F5F5F, 0x4A4A4A] }.map(Color::from_hex);
+            let colors = if index == current { [colors[1], colors[2]] } else { [colors[3], colors[4]] };
             for row in 0..span.rows().ceil() as usize {
                 let y = top + row as f32 * row_height;
                 if y + row_height < 0.0 || y > HEIGHT {
@@ -1137,14 +1446,18 @@ impl ChartEditor {
         }
         // pasted ones following the mouse
         if let Some(floating) = &self.floating {
-            // shortcut: a pasted hold shows its head only until it is put down; draw its tail too if that is missed
             for (event, thing) in &floating.things {
                 let y = self.y_of(floating.at + thing[0].as_f64().unwrap_or(0.0));
                 let column = if *event { 0 } else { floating.column + thing[1].as_u64().unwrap_or(0) as usize + 1 };
                 draw_rectangle(LEFT + column as f32 * GRID, y, GRID, GRID, Color { a: 0.5, ..Color::from_hex(0x00FFFF) });
                 if !event {
-                    let lane = (column - 1) % 4;
-                    skin.frame(&format!("{}0000", NOTE_NAMES[lane]), LEFT + column as f32 * GRID + GRID / 2.0, y + GRID / 2.0, Some(vec2(GRID, GRID)), Some(lane), 1.0);
+                    let (lane, x) = ((column - 1) % 4, LEFT + column as f32 * GRID + GRID / 2.0);
+                    // (its hold's tail too, as the notes put down have)
+                    let end = self.y_of(floating.at + thing[0].as_f64().unwrap_or(0.0) + thing[2].as_f64().unwrap_or(0.0));
+                    if end > y + GRID / 2.0 {
+                        skin.frame(&format!("{} hold piece0000", NOTE_NAMES[lane]), x, (y + GRID / 2.0 + end) / 2.0, Some(vec2(8.0, end - y - GRID / 2.0)), Some(lane), 1.0);
+                    }
+                    skin.frame(&format!("{}0000", NOTE_NAMES[lane]), x, y + GRID / 2.0, Some(vec2(GRID, GRID)), Some(lane), 1.0);
                 } else if let Some(icon) = &self.event_icon {
                     draw_texture_ex(icon, LEFT + 5.0, y + 5.0, WHITE, DrawTextureParams { dest_size: Some(vec2(30.0, 30.0)), ..Default::default() });
                 }
@@ -1610,6 +1923,32 @@ fn follow(column: usize, width: usize, from: usize, to: usize) -> usize {
     (column as i64 + to as i64 - from as i64).clamp(0, 7 - width.min(7) as i64) as usize
 }
 
+/// The chart File > New starts (the Haxe editor's openNewChart), before its sections are added.
+fn new_chart() -> Value {
+    json!({"song": "Test", "notes": [], "events": [], "bpm": 150, "needsVoices": true, "speed": 1, "offset": 0,
+        "player1": "bf", "player2": "dad", "gfVersion": "gf", "stage": "stage", "format": "psych_v1"})
+}
+
+/// A song's name as its files are named (Paths.formatToSongPath): lower case, spaces as dashes, characters a file
+/// name cannot hold left out.
+fn song_path(name: &str) -> String {
+    name.trim().to_lowercase().replace(' ', "-").chars().filter(|letter| !r#"~&\/;:<>#?*"|"#.contains(*letter)).collect()
+}
+
+/// The file named `name` (a name only, no folders) beside `chart`.
+fn beside(chart: &Path, name: &str) -> Option<PathBuf> {
+    let name = name.trim();
+    let plain = !name.is_empty() && name != "." && name != ".." && !name.contains(['/', '\\']);
+    plain.then(|| chart.with_file_name(name))
+}
+
+/// A colour typed in hexadecimal ("FF00AA", "#ff00aa", "0xFF00AA").
+fn hex(text: &str) -> Option<u32> {
+    let text = text.trim();
+    let digits = text.strip_prefix('#').or_else(|| text.strip_prefix("0x")).unwrap_or(text);
+    (digits.len() == 6).then(|| u32::from_str_radix(digits, 16).ok()).flatten()
+}
+
 /// The song's events.json holding a chart's events, as the Haxe editor's Save Events writes it.
 fn events_text(song: &Value) -> String {
     print(&json!({"events": song["events"].as_array().cloned().unwrap_or_default(), "format": "psych_v1"}), 0)
@@ -1754,6 +2093,31 @@ mod tests {
     use super::*;
 
     #[test]
+    fn a_new_chart_is_the_haxe_editors() {
+        let mut chart = new_chart();
+        assert_eq!(print(&chart, 0), "{\n\t\"song\": \"Test\",\n\t\"notes\": [],\n\t\"events\": [],\n\t\"bpm\": 150,\n\t\"needsVoices\": true,\n\t\"speed\": 1,\n\t\"offset\": 0,\n\t\"player1\": \"bf\",\n\t\"player2\": \"dad\",\n\t\"gfVersion\": \"gf\",\n\t\"stage\": \"stage\",\n\t\"format\": \"psych_v1\"\n}");
+        fill_sections(&mut chart, 3300.0);
+        // four beats at 150 a minute are 1.6 seconds: three sections reach past 3.3
+        assert_eq!(chart["notes"].as_array().map(Vec::len), Some(3));
+        assert_eq!(chart["notes"][0]["sectionNotes"], json!([]));
+        assert_eq!(song_path("My Song?"), "my-song");
+    }
+
+    #[test]
+    fn typed_names_stay_beside_the_chart_and_colours_are_hexadecimal() {
+        let chart = Path::new("/game/mods/m/data/song/song-hard.json");
+        assert_eq!(beside(chart, " it's $(x).json "), Some(PathBuf::from("/game/mods/m/data/song/it's $(x).json")));
+        assert_eq!(beside(chart, "../events.json"), None);
+        assert_eq!(beside(chart, ".."), None);
+        assert_eq!(beside(chart, ""), None);
+        assert_eq!(hex("#a0a0a0"), Some(0xA0A0A0));
+        assert_eq!(hex("0x673AB7"), Some(0x673AB7));
+        assert_eq!(hex("12345"), None);
+        assert_eq!(hex("GGGGGG"), None);
+        assert_eq!(Theme::Custom.colors([1, 2, 3, 4, 5]), [1, 2, 3, 4, 5]);
+    }
+
+    #[test]
     fn vortex_keys_put_notes_down_and_take_them_off() {
         let mut notes = vec![json!([1000.0, 2, 0])];
         vortex(&mut notes, 1000.4, 2, None);
@@ -1783,6 +2147,7 @@ mod tests {
 
     #[test]
     fn a_click_finds_the_note_drawn_under_it() {
+        let _alone = crate::audio::ONE_SONG.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
         // 120 beats a minute: a sixteenth is 125 ms, 40 px at the usual zoom, now at the middle line (360)
         let text = r#"{"bpm": 120, "format": "psych_v1", "notes": [{"sectionNotes": [[0, 1, 0], [125, 1, 0], [125, 2, 0]], "sectionBeats": 4}]}"#;
         let missing = PathBuf::from("no such folder");
@@ -1801,6 +2166,7 @@ mod tests {
 
     #[test]
     fn picked_notes_and_events_are_copied_pasted_and_taken_off() {
+        let _alone = crate::audio::ONE_SONG.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
         let text = r#"{"bpm": 120, "format": "psych_v1", "events": [[250, [["Hey!", "BF", ""]]]], "notes": [{"sectionNotes": [[0, 1, 0], [125, 6, 0]], "sectionBeats": 4}]}"#;
         let missing = PathBuf::from("no such folder");
         let entry = SongEntry {
@@ -1843,6 +2209,7 @@ mod tests {
 
     #[test]
     fn vortex_strums_light_up_as_notes_pass_while_the_music_plays() {
+        let _alone = crate::audio::ONE_SONG.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
         let text = r#"{"bpm": 120, "format": "psych_v1", "notes": [{"sectionNotes": [[0, 1, 0], [125, 1, 0], [150, 6, 1000], [400, 2, 0]], "sectionBeats": 4}]}"#;
         let missing = PathBuf::from("no such folder");
         let entry = SongEntry {

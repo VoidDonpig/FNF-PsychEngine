@@ -253,7 +253,11 @@ Done:
   The File, Edit and View menus (open chart or autosave, save, save events into the song's `events.json`, reload,
   play-test, exit; undo/redo, select all, lock events, clear all notes or events; note labels, Vortex Editor,
   waveform, go to a time or section); in the Vortex Editor the strums light up as notes pass them while the music
-  plays; pasted notes follow the mouse until a click puts them down (right click or Escape drops them).
+  plays; pasted notes follow the mouse until a click puts them down (right click or Escape drops them). New, Open
+  Chart..., Open Events... (replace all or add), Save As... and Save Events As... use the system's file dialog (zenity
+  or kdialog on Linux, osascript on macOS, PowerShell on Windows; the game goes on drawing under it) and fall back to
+  the Song tab's list or a typed file name beside the chart where there is none; View > Theme... has the Haxe
+  editor's Light, Dark, Default, V-Slice and Custom themes, kept in `funkin-rs-chart-editor.json`.
 - **Character editor**: 8 (Debug Key #2) during a song opens it on the song's opponent (Escape goes back to the song),
   and the editors' list has it too (on bf, in the mod folder chosen). As the Haxe editor: the character on week 1's
   stage beside the silhouettes of where the opponent and the player stand, the cross where the camera looks at it;
@@ -317,5 +321,5 @@ Not there yet:
   a camera takes its shader by setSpriteShader with its name (the Haxe engine's scripts use HScript's setFilters for
   that); `gl_FragCoord` counts from the top of the window. HScript is Haxe code run against the Haxe
   engine's own classes, so mods that use it cannot run here as they are.
-- **Editors**: the chart editor's menu entries that need a file dialog or another format (New, Open Events, Save As,
-  the V-Slice ones), its themes; a system file dialog (the stage editor lists the images instead).
+- **Editors**: the chart editor's V-Slice entries (save as, convert to and from), Update (Legacy) and Preview; the
+  system file dialog in the other editors (the stage editor lists the images instead).

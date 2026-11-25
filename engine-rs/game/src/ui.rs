@@ -70,6 +70,14 @@ impl Ui {
         sure
     }
 
+    /// The controls stay as last drawn, an open list closed and nothing done with them: while the system's file
+    /// dialog is up, in place of this frame's.
+    pub fn hold(&mut self) {
+        self.over.clear();
+        self.open = None;
+        self.opening = None;
+    }
+
     /// Whether this frame's click went to the controls or fell on their boxes.
     pub fn took_click(&self) -> bool {
         self.taken || (self.clicked && self.boxes.iter().any(|area| inside(*area, self.mouse)))
