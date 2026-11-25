@@ -61,9 +61,10 @@ Done:
   through both ways, stopping at red. Stage events: Kill Henchmen (the pole sweeping the limo's
   dancers off, the limo fetching new ones), the mall crowd cheering on Hey!, BG Freaks Expression, Trigger
   BG Ghouls, Philly Glow (lights out, the glow, sparks and everyone in one colour), Dadbattle Spotlight
-  (the light on whoever sings, the smoke), and Set Property for the camera's zoom and speed.
+  (the light on whoever sings, the smoke).
 - **Chart events**: Hey!, Set GF Speed, Add Camera Zoom, Play Animation, Camera Follow Pos, Alt Idle
-  Animation, Screen Shake, Change Character, Change Scroll Speed, Play Sound, from the chart and from the
+  Animation, Screen Shake, Change Character, Change Scroll Speed, Play Sound, Set Property (whatever Lua's setProperty sets
+  here, the scripts' sprites too), from the chart and from the
   song's `events.json`. Note types: Hurt Note, Alt Animation, Hey!, GF Sing, No Animation, the can and
   gun notes of weekend 1 (poses, sounds, camera; a missed shot costs much health), and sections marked for
   alternative poses or for the girlfriend. Characters may be drawn from several sheets, or the Animate
@@ -168,7 +169,8 @@ Done:
   getModSetting, and getProperty/setProperty for the camera, health, score and characters); the scripts' sprites
   (pictures, animated sheets, plain rectangles; behind the characters, in front, on the HUD or over everything;
   their place, size, scroll, angle, colour and animations) and tweens with Flixel's easings; the scripts of
-  custom note types and events (`custom_notetypes/`, `custom_events/`, the chart keeping its types' names); keys
+  custom note types and events (`custom_notetypes/`, `custom_events/`, the chart keeping its types' names; events
+  told to them as the song loads, onEventPushed, and moved as early as eventEarlyTrigger answers); keys
   (by the game's actions or Flixel's names) and the mouse; camera flashes; score, misses and hits; the scripts'
   own saves (`funkin-rs-lua-saves/`); files, folders and colours; the strums as scripts move them
   (getPropertyFromGroup/setPropertyFromGroup on strumLineNotes, playerStrums and opponentStrums: place, opacity,
@@ -281,8 +283,7 @@ Done:
 
 Not there yet:
 
-- **Play screen**: the events and note types that belong to scripts (Set Property beyond the camera, custom
-  ones); the rain of weekend 1 (on the streets and in the fight; the Shaders switch turns it off with the title's
+- **Play screen**: the rain of weekend 1 (on the streets and in the fight; the Shaders switch turns it off with the title's
   colour shift) is drawn as falling streaks, growing heavier through the song, not with the Haxe engine's shader.
 - **Menus**: the GPU Caching switch (nothing to switch here); update check.
 - **Scripts**: the rest of Lua's functions (notes' own textures and health, shaders, groups, and getProperty/setProperty

@@ -590,16 +590,20 @@ impl Playing {
         if let Some((since, confirmed)) = self.dead {
             return self.update_dead(since, confirmed);
         }
+        let first = !std::mem::replace(&mut self.lua_created, true);
         if !self.lua.is_empty() {
             let dt = get_frame_time().min(0.1);
             self.tell_lua();
             self.fade_sounds();
-            if !std::mem::replace(&mut self.lua_created, true) {
+            if first {
                 self.lua.call("onCreate", ());
+                self.time_events();
                 self.lua.call("onCreatePost", ());
             }
             self.lua.tick(dt as f64);
             self.lua.call("onUpdate", dt);
+        } else if first {
+            self.time_events();
         }
         // the talk's music fades away over a second and a half once it is done with, as in the Haxe engine
         if let Some(left) = self.music_fade.as_mut() {
@@ -1074,6 +1078,58 @@ impl Playing {
         }
     }
 
+    /// Sets something of the game by the Haxe engine's name for it (Lua's setProperty, the Set Property event).
+    fn set_property(&mut self, name: &str, value: &serde_json::Value) {
+        let number = value.as_f64().or_else(|| value.as_bool().map(|flag| flag as u8 as f64));
+        if name.starts_with("strum") {
+            let strum = name.strip_prefix("strum").and_then(|rest| rest.split_once('.')).and_then(|(index, field)| Some((index.parse::<usize>().ok().filter(|index| *index < 8)?, field)));
+            let number = number.unwrap_or(0.0) as f32;
+            if let Some((index, field)) = strum {
+                let strum = &mut self.strums[index / 4][index % 4];
+                match field {
+                    "x" => strum.x = number,
+                    "y" => strum.y = number,
+                    "alpha" => strum.alpha = number,
+                    "angle" => strum.angle = number,
+                    "direction" => strum.direction = number,
+                    "visible" => strum.visible = number != 0.0,
+                    _ => eprintln!("Lua: {field} of a strum is not known here"),
+                }
+            }
+            return;
+        }
+        if let Some(look) = LOOKS.iter().find(|look| **look == name) {
+            self.looks.insert(*look, number.unwrap_or(1.0) as f32);
+            return;
+        }
+        match (name, number) {
+            ("health", Some(health)) => self.play.health = health.clamp(0.0, 2.0),
+            ("songSpeed", Some(speed)) => self.speed = speed as f32,
+            ("songScore", Some(score)) => self.play.score = score as i64,
+            (_, Some(number)) => {
+                if !self.scene.as_mut().is_some_and(|scene| scene.set_property(name, number)) {
+                    eprintln!("Lua: setProperty {name} is not known here");
+                }
+            }
+            _ => eprintln!("Lua: setProperty {name} is not known here"),
+        }
+    }
+
+    /// The chart's events are told to the scripts (onEventPushed), then each is moved as early as a script wants it
+    /// (eventEarlyTrigger: so many ms) or, the henchmen's end, by the 280 ms that put its sound on the beat.
+    fn time_events(&mut self) {
+        let mut events = std::mem::take(&mut self.play.chart.events);
+        for event in &events {
+            self.lua.call("onEventPushed", (event.name.clone(), event.value1.clone(), event.value2.clone(), event.time));
+        }
+        for event in &mut events {
+            let asked = self.lua.call_number("eventEarlyTrigger", (event.name.clone(), event.value1.clone(), event.value2.clone(), event.time)).filter(|early| *early != 0.0);
+            event.time -= asked.unwrap_or(if event.name == "Kill Henchmen" { 280.0 } else { 0.0 });
+        }
+        events.sort_by(|a, b| a.time.total_cmp(&b.time));
+        self.play.chart.events = events;
+    }
+
     /// A chart event (or one a script triggered) takes place; scripts hear of it (onEvent).
     fn run_event(&mut self, event: &funkin_core::chart::ChartEvent) {
         let number = |value: &str| value.trim().parse::<f32>().ok();
@@ -1085,6 +1141,14 @@ impl Playing {
                 self.speed_change = Some((self.speed, to, event.time, number(&event.value2).unwrap_or(0.0) as f64 * 1000.0));
             }
             "Play Sound" => self.sound(&event.value1, number(&event.value2).unwrap_or(1.0), false),
+            // the second value read as true or false, a number, or else text, as the Haxe engine reads it
+            "Set Property" => {
+                let text = event.value2.trim();
+                let value = text.parse::<bool>().map(|flag| serde_json::json!(flag)).or_else(|_| text.parse::<f64>().map(|number| serde_json::json!(number))).unwrap_or_else(|_| serde_json::json!(event.value2));
+                if !self.lua.set_of_sprite(event.value1.trim(), &value) {
+                    self.set_property(event.value1.trim(), &value);
+                }
+            }
             _ => self.scene.iter_mut().for_each(|scene| scene.event(event)),
         }
         self.lua.call("onEvent", (event.name.clone(), event.value1.clone(), event.value2.clone(), event.time));
@@ -1198,37 +1262,7 @@ impl Playing {
                     self.scene.iter_mut().for_each(|scene| scene.event(&event));
                 }
                 lua::Request::Dance { who } => self.scene.iter_mut().for_each(|scene| scene.dance(&who)),
-                lua::Request::SetProperty { name, value } if name.starts_with("strum") => {
-                    let strum = name.strip_prefix("strum").and_then(|rest| rest.split_once('.')).and_then(|(index, field)| Some((index.parse::<usize>().ok().filter(|index| *index < 8)?, field)));
-                    let number = value.as_f64().or_else(|| value.as_bool().map(|flag| flag as u8 as f64)).unwrap_or(0.0) as f32;
-                    if let Some((index, field)) = strum {
-                        let strum = &mut self.strums[index / 4][index % 4];
-                        match field {
-                            "x" => strum.x = number,
-                            "y" => strum.y = number,
-                            "alpha" => strum.alpha = number,
-                            "angle" => strum.angle = number,
-                            "direction" => strum.direction = number,
-                            "visible" => strum.visible = number != 0.0,
-                            _ => eprintln!("Lua: {field} of a strum is not known here"),
-                        }
-                    }
-                }
-                lua::Request::SetProperty { name, value } if LOOKS.contains(&name.as_str()) => {
-                    let number = value.as_f64().or_else(|| value.as_bool().map(|flag| flag as u8 as f64)).unwrap_or(1.0) as f32;
-                    self.looks.extend(LOOKS.iter().find(|look| **look == name).map(|look| (*look, number)));
-                }
-                lua::Request::SetProperty { name, value } => match (name.as_str(), value.as_f64().or_else(|| value.as_bool().map(|flag| flag as u8 as f64))) {
-                    ("health", Some(health)) => self.play.health = health.clamp(0.0, 2.0),
-                    ("songSpeed", Some(speed)) => self.speed = speed as f32,
-                    ("songScore", Some(score)) => self.play.score = score as i64,
-                    (_, Some(number)) => {
-                        if !self.scene.as_mut().is_some_and(|scene| scene.set_property(&name, number)) {
-                            eprintln!("Lua: setProperty {name} is not known here");
-                        }
-                    }
-                    _ => eprintln!("Lua: setProperty {name} is not known here"),
-                },
+                lua::Request::SetProperty { name, value } => self.set_property(&name, &value),
                 lua::Request::Flash { camera, color, seconds, rising } => self.flash = Some((camera, Color::from_hex(color), get_time(), seconds, rising)),
                 lua::Request::BarColors { time, left, right } => {
                     let colors = &mut self.bar_colors[time as usize];

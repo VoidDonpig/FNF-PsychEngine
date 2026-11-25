@@ -1434,6 +1434,27 @@ impl Scripts {
         answer
     }
 
+    /// Calls `name` in every script that has it; the number the last of them answered with, if any did.
+    pub fn call_number(&mut self, name: &str, args: impl mlua::IntoLuaMulti + Clone) -> Option<f64> {
+        let mut answer = None;
+        for script in self.scripts.iter().filter(|script| !*script.closed.borrow()) {
+            let Ok(Some(function)) = script.lua.globals().get::<Option<Function>>(name) else { continue };
+            match function.call::<Value>(args.clone()) {
+                Ok(Value::Integer(whole)) => answer = Some(whole as f64),
+                Ok(Value::Number(number)) => answer = Some(number),
+                Ok(_) => {}
+                Err(error) => eprintln!("Lua {} ({name}): {error}", script.name),
+            }
+        }
+        answer
+    }
+
+    /// Sets a field of a sprite the scripts made, by "tag.field"; false if there is none of that tag or field.
+    pub fn set_of_sprite(&self, name: &str, value: &serde_json::Value) -> bool {
+        let mut shared = self.shared.borrow_mut();
+        name.split_once('.').and_then(|(tag, field)| Some(shared.sprite(tag)?.set(field, value))).unwrap_or(false)
+    }
+
     /// Whether `call` was answered with Function_Stop.
     pub fn stopped(answer: &Option<String>) -> bool {
         matches!(answer.as_deref(), Some(STOP | STOP_LUA | STOP_ALL))

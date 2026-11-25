@@ -1678,12 +1678,6 @@ impl Scene {
                     }
                 }
             }
-            // shortcut: the two properties the base game's charts set; any other needs the scripting the Haxe engine does this with.
-            "Set Property" => match (event.value1.trim(), number(&event.value2)) {
-                ("defaultCamZoom", Some(zoom)) => self.default_zoom = zoom,
-                ("cameraSpeed", Some(speed)) => self.camera_speed = speed,
-                _ => {}
-            },
             "Trigger BG Ghouls" => find(&mut self.backdrop, "weeb/bgGhouls").into_iter().for_each(|ghouls| ghouls.time = 0.0),
             "Hey!" => {
                 let hold = number(&event.value2).filter(|t| *t > 0.0).unwrap_or(0.6);
