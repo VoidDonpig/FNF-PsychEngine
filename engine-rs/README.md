@@ -205,7 +205,8 @@ Done:
   (`shaders/<name>.frag`, written for OpenFL: `#pragma header`, `bitmap`, `openfl_TextureCoordv`, `openfl_TextureSize`,
   `flixel_texture2D`, `texture2D`; ported ones with globals given values outside functions, `texture` and `mainImage`
   renamed by `#define` or a `mainImage` called by `main`; ones without the header that declare the varying and
-  `bitmap` themselves; lists of uniforms and matrices) on the scripts' sprites, the three characters and, by the names
+  `bitmap` themselves; lists of uniforms and matrices; a vertex part, `<name>.vert`, with `#pragma body` and varyings
+  of its own) on the scripts' sprites, the three characters and, by the names
   "camGame", "camHUD" and "camOther", on all a camera shows (the weekend's rain under it): initLuaShader,
   setSpriteShader, removeSpriteShader, the getShader/setShader functions (Float, Int, Bool and their arrays for vectors)
   and setShaderSampler2D; a shader that cannot be read is said so on screen and left out; the Shaders switch turns
@@ -325,8 +326,8 @@ Not there yet:
 - **Menus**: the GPU Caching switch (nothing to switch here); update check.
 - **Scripts**: the rest of Lua's functions (a note's own picture on pixel stages; groups, custom substates,
   instances, Animate atlas sprites, Discord's large image and client ID, and what getProperty/setProperty and the
-  class functions do not reach yet). Shaders on the game's own pictures other than the characters, vertex shaders, varyings of a shader's own;
-  a camera takes its shader by setSpriteShader with its name (the Haxe engine's scripts use HScript's setFilters for
+  class functions do not reach yet). Shaders on the game's own pictures other than the characters; a vertex shader gets its corners already
+  placed on screen (`openfl_Matrix` changes nothing); a camera takes its shader by setSpriteShader with its name (the Haxe engine's scripts use HScript's setFilters for
   that); `gl_FragCoord` counts from the top of the window. HScript is Haxe code run against the Haxe
   engine's own classes, so mods that use it cannot run here as they are.
 - **Editors**: the chart editor's V-Slice entries (save as, convert to and from), Update (Legacy) and Preview.

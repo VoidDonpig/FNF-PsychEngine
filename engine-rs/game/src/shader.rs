@@ -25,6 +25,8 @@ pub struct Slot {
 /// besides the sprite's own (its `sampler2D` uniforms, in the order of their bindings), and the values the file gives.
 pub struct Translated {
     pub module: naga::Module,
+    /// The shader's own vertex part, when it has one.
+    pub vertex: Option<naga::Module>,
     pub slots: Vec<Slot>,
     pub size: usize,
     pub pictures: Vec<String>,
@@ -50,15 +52,15 @@ vec4 funkin_tinted(vec4 c) { return vec4(c.rgb * funkin_color.rgb * mix(c.a, 1.0
 
 const TYPES: [&str; 12] = ["float", "int", "bool", "vec2", "vec3", "vec4", "ivec2", "ivec3", "ivec4", "mat2", "mat3", "mat4"];
 
-/// Rewrites a fragment shader written for OpenFL: its uniforms gathered into one block (and its pictures given
-/// bindings), the header's names defined, and the values it gives its globals outside any function (which only some
-/// drivers take) given at the start of `main` instead.
-// shortcut: `varying`s of its own and vertex shaders are not taken; such a shader is refused with the reason. `gl_FragCoord` counts from the top of the window here (from the bottom in OpenGL), and a picture read
+/// Takes apart one part of a shader written for OpenFL (its fragment shader, or `vertex`): its uniforms, pictures and
+/// varyings set aside, and the values it gives its globals outside any function (which only some drivers take) given
+/// at the start of `main` instead.
+// shortcut: `gl_FragCoord` counts from the top of the window here (from the bottom in OpenGL), and a picture read
 // with plain `texture(...)` (not `texture2D`, `flixel_texture2D` or the usual `#define texture flixel_texture2D`)
 // comes without its colours multiplied by its opacity.
-pub fn rewrite(source: &str) -> Result<(String, Vec<(String, Vec<f64>)>), String> {
+fn gather(source: &str, vertex: bool) -> Result<Gathered, String> {
     let source = without_comments(source);
-    let (mut block, mut pictures, mut flags, mut small, mut defaults) = (String::new(), Vec::new(), Vec::new(), Vec::new(), Vec::new());
+    let (mut block, mut pictures, mut defaults, mut varyings) = (Vec::new(), Vec::new(), Vec::new(), Vec::new());
     let (mut body, mut hoisted, mut depth, mut entry) = (String::new(), String::new(), 0usize, "main".to_owned());
     // statement by statement: up to each `;`, `{` or `}` outside brackets, and each line that starts with `#`
     let mut rest = source.as_str();
@@ -78,6 +80,8 @@ pub fn rewrite(source: &str) -> Result<(String, Vec<(String, Vec<f64>)>), String
             let words: Vec<&str> = line[1..].split_whitespace().collect();
             match words.as_slice() {
                 ["version", ..] | ["pragma", "header", ..] | ["extension", ..] => {}
+                // what OpenFL's vertex shader does where one says `#pragma body`
+                ["pragma", "body", ..] => body.push_str(&format!("{lead}{VERTEX_BODY}")),
                 // (the boilerplate of ported shaders: `#define mainImage main`)
                 ["define", name, "main"] => {
                     entry = (*name).to_owned();
@@ -114,17 +118,16 @@ pub fn rewrite(source: &str) -> Result<(String, Vec<(String, Vec<f64>)>), String
                     match *kind {
                         // (the header's own are there already)
                         _ if matches!(name, "bitmap" | "openfl_TextureSize" | "hasTransform" | "hasColorTransform" | "openfl_HasColorTransform") => {}
-                        "sampler2D" if length.is_empty() => pictures.push(name.to_owned()),
+                        _ if vertex && matches!(name, "openfl_Matrix") => {}
+                        "sampler2D" if length.is_empty() && !vertex => pictures.push(name.to_owned()),
                         "bool" if length.is_empty() => {
-                            block.push_str(&format!("    int funkin_b_{name};\n"));
-                            flags.push(name.to_owned());
+                            block.push((name.to_owned(), format!("    int funkin_b_{name};\n")));
                         }
                         // (a matrix of two by two has no place of its own among the uniforms: its four numbers do)
                         "mat2" if length.is_empty() => {
-                            block.push_str(&format!("    vec4 funkin_m_{name};\n"));
-                            small.push(name.to_owned());
+                            block.push((name.to_owned(), format!("    vec4 funkin_m_{name};\n")));
                         }
-                        kind if TYPES.contains(&kind) && !matches!(kind, "bool" | "mat2") => block.push_str(&format!("    {kind} {name}{length};\n")),
+                        kind if TYPES.contains(&kind) && !matches!(kind, "bool" | "mat2") => block.push((name.to_owned(), format!("    {kind} {name}{length};\n"))),
                         kind => return Err(format!("a uniform of a kind not taken here: {kind} {name}")),
                     }
                     // the value the file gives it: true or false, or the numbers in it
@@ -138,10 +141,19 @@ pub fn rewrite(source: &str) -> Result<(String, Vec<(String, Vec<f64>)>), String
                     }
                 }
             }
-            // what the header declares, said again by a shader without `#pragma header`
-            ["varying", .., name] if depth == 0 && statement.ends_with(';') => {
+            // what the header declares, said again by a shader without `#pragma header`; a varying of the shader's own
+            // goes from its vertex shader to its fragment shader
+            ["varying", .., kind, name] if depth == 0 && statement.ends_with(';') => {
                 if !matches!(*name, "openfl_TextureCoordv" | "openfl_Alphav" | "openfl_ColorMultiplierv" | "openfl_ColorOffsetv") {
-                    return Err(format!("a varying of the shader's own is not taken here: {name}"));
+                    if !TYPES.contains(kind) {
+                        return Err(format!("a varying of a kind not taken here: {kind} {name}"));
+                    }
+                    varyings.push(((*kind).to_owned(), (*name).to_owned()));
+                }
+            }
+            ["attribute", .., name] if depth == 0 && vertex && statement.ends_with(';') => {
+                if !matches!(*name, "openfl_Position" | "openfl_TextureCoord" | "openfl_Alpha" | "openfl_ColorMultiplier" | "openfl_ColorOffset") {
+                    return Err(format!("an attribute of the shader's own is not taken here: {name}"));
                 }
             }
             // a global given a value outside any function (one name, not a constant): declared here, given its value as
@@ -167,30 +179,78 @@ pub fn rewrite(source: &str) -> Result<(String, Vec<(String, Vec<f64>)>), String
             depth = depth.saturating_sub(1);
         }
     }
-    if !hoisted.is_empty() && !body.contains('\u{1}') {
-        return Err(format!("globals are given values outside any function, and there is no `void {entry}()` to give them in"));
+    // (a vertex shader's `main` begins by handing on what every corner carries)
+    if vertex {
+        hoisted.insert_str(0, VERTEX_START);
     }
-    let body = body.replace('\u{1}', &hoisted);
-    let mut text = String::from("#version 450\nlayout(location = 0) in vec2 openfl_TextureCoordv;\nlayout(location = 1) in vec4 funkin_color;\nlayout(location = 5) in float funkin_ready;\nlayout(location = 0) out vec4 funkin_FragColor;\n");
-    text.push_str("layout(set = 0, binding = 0) uniform texture2D funkin_bitmap_t;\nlayout(set = 0, binding = 1) uniform sampler funkin_bitmap_s;\n");
-    for (at, name) in pictures.iter().enumerate() {
+    if !hoisted.is_empty() && !body.contains('\u{1}') {
+        return Err(format!("there is no `void {entry}()`{}", if vertex { "" } else { " to give the globals their values in" }));
+    }
+    Ok(Gathered { block, pictures, defaults, varyings, body: body.replace('\u{1}', &hoisted) })
+}
+
+/// What a shader's text holds, taken apart: its uniforms (name, and how the block declares it), the pictures it asks
+/// for, the values the file gives, its own varyings (kind and name), and the rest of its text.
+struct Gathered {
+    block: Vec<(String, String)>,
+    pictures: Vec<String>,
+    defaults: Vec<(String, Vec<f64>)>,
+    varyings: Vec<(String, String)>,
+    body: String,
+}
+
+/// What a vertex shader's `main` starts with, and what stands for OpenFL's `#pragma body`: the corner as the game made
+/// it (its place on screen already worked out).
+const VERTEX_START: &str = " funkin_color = funkin_vcolor; funkin_ready = funkin_vready;";
+const VERTEX_BODY: &str = "openfl_TextureCoordv = openfl_TextureCoord; gl_Position = vec4(funkin_position, 0.0, 1.0);";
+
+/// What stands where a vertex shader says `#pragma header`.
+// shortcut: a corner comes with its place on screen worked out already, so `openfl_Matrix` is the matrix that changes
+// nothing and `openfl_Position` is in the screen's own measure (-1 to 1), not in pixels
+const VERTEX_HEADER: &str = "#define openfl_Position vec4(funkin_position, 0.0, 1.0)
+#define openfl_Matrix mat4(1.0)
+#define openfl_Alpha funkin_vcolor.a
+#define openfl_ColorMultiplier funkin_vcolor
+#define openfl_ColorOffset vec4(0.0)
+#define openfl_Alphav funkin_color.a
+#define openfl_ColorMultiplierv funkin_color
+#define openfl_HasColorTransform false
+vec4 openfl_ColorOffsetv;
+";
+
+/// The text of one of a shader's two parts for today's GLSL: what goes in and out, the uniforms both parts share (in
+/// one block, in one order), the header's names, then the shader's own text.
+fn text_of(vertex: bool, block: &[(String, String)], varyings: &[(String, String)], part: &Gathered) -> String {
+    let mut text = String::from("#version 450\n");
+    text.push_str(if vertex {
+        "layout(location = 0) in vec2 funkin_position;\nlayout(location = 1) in vec2 openfl_TextureCoord;\nlayout(location = 2) in vec4 funkin_vcolor;\nlayout(location = 6) in float funkin_vready;\nlayout(location = 0) out vec2 openfl_TextureCoordv;\nlayout(location = 1) out vec4 funkin_color;\nlayout(location = 5) out float funkin_ready;\n"
+    } else {
+        "layout(location = 0) in vec2 openfl_TextureCoordv;\nlayout(location = 1) in vec4 funkin_color;\nlayout(location = 5) in float funkin_ready;\nlayout(location = 0) out vec4 funkin_FragColor;\nlayout(set = 0, binding = 0) uniform texture2D funkin_bitmap_t;\nlayout(set = 0, binding = 1) uniform sampler funkin_bitmap_s;\n"
+    });
+    // (the game's own corners hand on seven things: the shader's own varyings come after them)
+    for (at, (kind, name)) in varyings.iter().enumerate() {
+        text.push_str(&format!("layout(location = {}) {} {kind} {name};\n", 7 + at, if vertex { "out" } else { "in" }));
+    }
+    for (at, name) in part.pictures.iter().enumerate() {
         text.push_str(&format!("layout(set = 1, binding = {}) uniform texture2D funkin_t_{name};\nlayout(set = 1, binding = {}) uniform sampler funkin_s_{name};\n", 1 + 2 * at, 2 + 2 * at));
     }
-    text.push_str(&format!("layout(set = 1, binding = 0) uniform Funkin {{\n    vec2 openfl_TextureSize;\n{block}}};\n"));
-    for name in &pictures {
+    let members: String = block.iter().map(|(_, line)| line.as_str()).collect();
+    text.push_str(&format!("layout(set = 1, binding = 0) uniform Funkin {{\n    vec2 openfl_TextureSize;\n{members}}};\n"));
+    for name in &part.pictures {
         text.push_str(&format!("#define {name} sampler2D(funkin_t_{name}, funkin_s_{name})\n"));
     }
-    for name in &flags {
-        text.push_str(&format!("#define {name} (funkin_b_{name} != 0)\n"));
+    // (the uniforms that are true or false, and the small matrices, by the names the shader knows them by)
+    for (name, line) in block {
+        if line.contains(&format!("funkin_b_{name};")) {
+            text.push_str(&format!("#define {name} (funkin_b_{name} != 0)\n"));
+        } else if line.contains(&format!("funkin_m_{name};")) {
+            text.push_str(&format!("#define {name} mat2(funkin_m_{name}.xy, funkin_m_{name}.zw)\n"));
+        }
     }
-    for name in &small {
-        text.push_str(&format!("#define {name} mat2(funkin_m_{name}.xy, funkin_m_{name}.zw)\n"));
-    }
-    text.push_str(HEADER);
-    text.push_str(&body);
+    text.push_str(if vertex { VERTEX_HEADER } else { HEADER });
+    text.push_str(&part.body);
     text.push('\n');
-    defaults.extend(pictures.into_iter().map(|name| (format!("\u{1}{name}"), Vec::new())));
-    Ok((text, defaults))
+    text
 }
 
 /// The name and the value of a statement `<type> <name> = <value>;` that declares one global; none for another shape.
@@ -243,17 +303,46 @@ fn without_comments(source: &str) -> String {
 
 /// Reads a fragment shader written for OpenFL: rewritten, checked, its uniforms listed. An error says what the shader
 /// has that is not taken here, or where it is wrong.
+#[cfg(test)]
 pub fn translate(source: &str) -> Result<Translated, String> {
-    let (text, mut defaults) = rewrite(source)?;
-    // (a mod's file must not end the game: should the reader give up on one, that is an error like any other)
-    let parsed = std::panic::catch_unwind(|| naga::front::glsl::Frontend::default().parse(&naga::front::glsl::Options::from(naga::ShaderStage::Fragment), &text));
-    let module = parsed.map_err(|_| "the shader could not be read".to_owned())?.map_err(|errors| {
-        // with the line of the rewritten text each error is at, and that line
-        errors.errors.iter().map(|error| {
-            let line = error.meta.location(&text).line_number as usize;
-            format!("{} (\"{}\")", error.kind, text.lines().nth(line.saturating_sub(1)).unwrap_or("").trim())
-        }).collect::<Vec<_>>().join("; ")
-    })?;
+    translate_pair(Some(source), None)
+}
+
+/// Reads a shader's two parts, either of which may be left to the usual one: the fragment shader (`.frag`) and the
+/// vertex shader (`.vert`).
+pub fn translate_pair(fragment: Option<&str>, vertex: Option<&str>) -> Result<Translated, String> {
+    const PLAIN: &str = "#pragma header\nvoid main() { gl_FragColor = flixel_texture2D(bitmap, openfl_TextureCoordv); }";
+    let fragment = gather(fragment.unwrap_or(PLAIN), false)?;
+    let vertex = vertex.map(|source| gather(source, true)).transpose()?;
+    // both parts share the uniforms (the fragment shader's first, then those only the vertex shader has) and the
+    // shader's own varyings, which go from the one to the other in the order of their names
+    let (mut block, mut varyings, mut defaults) = (fragment.block.clone(), fragment.varyings.clone(), fragment.defaults.clone());
+    if let Some(part) = &vertex {
+        block.extend(part.block.iter().filter(|(name, _)| !fragment.block.iter().any(|(known, _)| known == name)).cloned());
+        varyings.extend(part.varyings.iter().cloned());
+        defaults.extend(part.defaults.iter().cloned());
+    }
+    varyings.sort();
+    varyings.dedup();
+    if vertex.is_none() && !varyings.is_empty() {
+        return Err(format!("the varying {} needs the shader's vertex part (a .vert file)", varyings[0].1));
+    }
+    let read = |text: String, stage: naga::ShaderStage| -> Result<naga::Module, String> {
+        // (a mod's file must not end the game: should the reader give up on one, that is an error like any other)
+        let parsed = std::panic::catch_unwind(|| naga::front::glsl::Frontend::default().parse(&naga::front::glsl::Options::from(stage), &text));
+        let module = parsed.map_err(|_| "the shader could not be read".to_owned())?.map_err(|errors| {
+            // with the line of the rewritten text each error is at, and that line
+            errors.errors.iter().map(|error| {
+                let line = error.meta.location(&text).line_number as usize;
+                format!("{} (\"{}\")", error.kind, text.lines().nth(line.saturating_sub(1)).unwrap_or("").trim())
+            }).collect::<Vec<_>>().join("; ")
+        })?;
+        // (checked as the graphics card's side will check it, so that what is wrong is said here)
+        naga::valid::Validator::new(naga::valid::ValidationFlags::all(), naga::valid::Capabilities::empty()).validate(&module).map_err(|error| error.to_string())?;
+        Ok(module)
+    };
+    let module = read(text_of(false, &block, &varyings, &fragment), naga::ShaderStage::Fragment)?;
+    let corners = vertex.as_ref().map(|part| read(text_of(true, &block, &varyings, part), naga::ShaderStage::Vertex)).transpose()?;
     let block = module.types.iter().find(|(_, kind)| kind.name.as_deref() == Some("Funkin")).map(|(_, kind)| &kind.inner);
     let Some(naga::TypeInner::Struct { members, span }) = block else { return Err("the shader's uniforms were not found".to_owned()) };
     let slots = members.iter().filter_map(|member| {
@@ -275,12 +364,8 @@ pub fn translate(source: &str) -> Result<Translated, String> {
         };
         Some(Slot { name: name.trim_start_matches("funkin_b_").trim_start_matches("funkin_m_").to_owned(), kind, offset: member.offset as usize, count, stride })
     }).collect();
-    // (checked as the graphics card's side will check it, so that what is wrong is said here)
-    naga::valid::Validator::new(naga::valid::ValidationFlags::all(), naga::valid::Capabilities::empty()).validate(&module).map_err(|error| error.to_string())?;
-    let pictures = defaults.iter().filter_map(|(name, _)| name.strip_prefix('\u{1}').map(str::to_owned)).collect();
-    defaults.retain(|(name, _)| !name.starts_with('\u{1}'));
     let size = (*span as usize).next_multiple_of(16);
-    Ok(Translated { module, slots, size, pictures, defaults })
+    Ok(Translated { module, vertex: corners, slots, size, pictures: fragment.pictures, defaults })
 }
 
 /// Where the numbers of a uniform lie in the uniforms' bytes, in the order scripts give them (a list's or a matrix's
@@ -360,7 +445,6 @@ mod tests {
             translate(shape).unwrap_or_else(|error| panic!("{error}\n{shape}"));
         }
         assert!(translate("#pragma header\nvec2 uv = openfl_TextureCoordv;\nvoid other() {}").is_err_and(|error| error.contains("no `void main()`")));
-        assert!(translate("varying vec2 mine;\nvoid main() {}").is_err_and(|error| error.contains("varying")));
         // lists and matrices: every element in its own place
         let lists = translate("#pragma header\n#define COUNT 3\nuniform float amounts[COUNT];\nuniform vec2 points[2];\nuniform mat2 turn;\nuniform mat3 warp;\nvoid main() { gl_FragColor = flixel_texture2D(bitmap, turn * openfl_TextureCoordv + points[1]) * amounts[2] * warp[2][2]; }").unwrap_or_else(|error| panic!("{error}"));
         let slot = |name: &str| lists.slots.iter().find(|slot| slot.name == name).cloned().unwrap();
@@ -369,6 +453,13 @@ mod tests {
         write(&mut bytes, &slot("amounts"), &[1.0, 2.0, 3.0]);
         write(&mut bytes, &slot("warp"), &[1.0, 0.0, 0.0, 0.0, 1.0, 0.0, 0.5, 0.25, 1.0]);
         assert_eq!((super::read(&bytes, &slot("amounts")), super::read(&bytes, &slot("warp"))[6..].to_vec()), (vec![1.0, 2.0, 3.0], vec![0.5, 0.25, 1.0]));
+        // a shader with a vertex part of its own, and a varying from the one to the other
+        let pair = translate_pair(
+            Some("#pragma header\nvarying float wobble;\nuniform float iTime;\nvoid main() { gl_FragColor = flixel_texture2D(bitmap, openfl_TextureCoordv) * wobble * iTime; }"),
+            Some("#pragma header\nvarying float wobble;\nuniform float amount;\nvoid main() {\n#pragma body\nwobble = sin(openfl_TextureCoord.y * amount);\ngl_Position.x += wobble * 0.1;\n}"),
+        ).unwrap_or_else(|error| panic!("{error}"));
+        assert!(pair.vertex.is_some() && ["iTime", "amount"].iter().all(|name| pair.slots.iter().any(|slot| slot.name == *name)));
+        assert!(translate("#pragma header\nvarying float wobble;\nvoid main() { gl_FragColor = vec4(wobble); }").is_err_and(|error| error.contains(".vert")));
         // what is not taken, or wrong, is said
         assert!(translate("uniform float list[SOME];\nvoid main() {}").is_err_and(|error| error.contains("how long")));
         assert!(translate("#pragma header\nvoid main() { gl_FragColor = nothing; }").is_err_and(|error| error.contains("nothing")));

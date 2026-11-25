@@ -564,10 +564,11 @@ struct ShaderUse {
 }
 
 impl Shader {
-    /// Reads a fragment shader written for OpenFL (a mod's `shaders/<name>.frag`). The error says what is wrong with it.
-    pub fn load(source: &str) -> Result<Shader, String> {
+    /// Reads a shader written for OpenFL (a mod's `shaders/<name>.frag` and `.vert`, either of which may be left to
+    /// the usual one). The error says what is wrong with it.
+    pub fn load(fragment: Option<&str>, vertex: Option<&str>) -> Result<Shader, String> {
         with(|context| {
-            let program = context.program(source)?;
+            let program = context.program(fragment, vertex)?;
             Ok(context.shader_use(program))
         })
     }
@@ -1047,11 +1048,13 @@ impl Context {
 
     /// Reads a mod's fragment shader and makes what draws through it. Whatever the graphics card's side finds wrong with
     /// it is the error (the game goes on without the shader).
-    fn program(&mut self, source: &str) -> Result<Rc<Program>, String> {
-        let crate::shader::Translated { module, slots, size, pictures, defaults } = crate::shader::translate(source)?;
+    fn program(&mut self, fragment: Option<&str>, vertex: Option<&str>) -> Result<Rc<Program>, String> {
+        let crate::shader::Translated { module, vertex, slots, size, pictures, defaults } = crate::shader::translate_pair(fragment, vertex)?;
         let scope = self.device.push_error_scope(wgpu::ErrorFilter::Validation);
         let fragment = self.device.create_shader_module(wgpu::ShaderModuleDescriptor { label: None, source: wgpu::ShaderSource::Naga(std::borrow::Cow::Owned(module)) });
-        let mut entries = vec![wgpu::BindGroupLayoutEntry { binding: 0, visibility: wgpu::ShaderStages::FRAGMENT, ty: wgpu::BindingType::Buffer { ty: wgpu::BufferBindingType::Uniform, has_dynamic_offset: false, min_binding_size: None }, count: None }];
+        // (the corners go through the shader's own vertex part when it has one, else through the game's)
+        let corners = vertex.map(|module| self.device.create_shader_module(wgpu::ShaderModuleDescriptor { label: None, source: wgpu::ShaderSource::Naga(std::borrow::Cow::Owned(module)) }));
+        let mut entries = vec![wgpu::BindGroupLayoutEntry { binding: 0, visibility: wgpu::ShaderStages::VERTEX_FRAGMENT, ty: wgpu::BindingType::Buffer { ty: wgpu::BufferBindingType::Uniform, has_dynamic_offset: false, min_binding_size: None }, count: None }];
         for at in 0..pictures.len() as u32 {
             let picture = wgpu::BindingType::Texture { sample_type: wgpu::TextureSampleType::Float { filterable: true }, view_dimension: wgpu::TextureViewDimension::D2, multisampled: false };
             entries.push(wgpu::BindGroupLayoutEntry { binding: 1 + 2 * at, visibility: wgpu::ShaderStages::FRAGMENT, ty: picture, count: None });
@@ -1063,8 +1066,8 @@ impl Context {
             label: None,
             layout: Some(&pipeline_layout),
             vertex: wgpu::VertexState {
-                module: &self.module,
-                entry_point: Some("corner"),
+                module: corners.as_ref().unwrap_or(&self.module),
+                entry_point: Some(if corners.is_some() { "main" } else { "corner" }),
                 compilation_options: Default::default(),
                 buffers: &[Some(wgpu::VertexBufferLayout { array_stride: std::mem::size_of::<Vertex>() as u64, step_mode: wgpu::VertexStepMode::Vertex, attributes: &ATTRIBUTES })],
             },
