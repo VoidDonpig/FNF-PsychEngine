@@ -228,10 +228,16 @@ impl Skin {
 
     /// Draws a sheet frame centred on (x, y), stretched to `size` if given. `lane` recolours it.
     fn frame(&self, name: &str, x: f32, y: f32, size: Option<Vec2>, lane: Option<usize>, alpha: f32) {
-        let Some(source) = self.frames.iter().find(|(n, _)| n == name).map(|(_, f)| f.source) else { return };
+        self.frame_of((&self.sheet, &self.frames), name, x, y, size, lane, alpha);
+    }
+
+    /// As `frame`, from another sheet of the same kind (a note's own picture).
+    #[allow(clippy::too_many_arguments)]
+    fn frame_of(&self, (sheet, frames): (&Texture2D, &[(String, atlas::Frame)]), name: &str, x: f32, y: f32, size: Option<Vec2>, lane: Option<usize>, alpha: f32) {
+        let Some(source) = frames.iter().find(|(n, _)| n == name).map(|(_, f)| f.source) else { return };
         let size = size.unwrap_or(vec2(source.w, source.h) * self.note_scale);
         recolor(lane.and_then(|lane| self.colors(lane)));
-        draw_texture_ex(&self.sheet, x - size.x / 2.0, y - size.y / 2.0, Color::new(1.0, 1.0, 1.0, alpha), DrawTextureParams { dest_size: Some(size), source: Some(source), ..Default::default() });
+        draw_texture_ex(sheet, x - size.x / 2.0, y - size.y / 2.0, Color::new(1.0, 1.0, 1.0, alpha), DrawTextureParams { dest_size: Some(size), source: Some(source), ..Default::default() });
         recolor(None);
     }
 
@@ -300,6 +306,8 @@ struct Playing {
     lua: lua::Scripts,
     /// The type names of notes whose kind a script changed (hitCausesMiss, noAnimation...), which callbacks still pass.
     renamed: HashMap<usize, String>,
+    /// The note pictures scripts gave single notes (their `texture`), by name: the sheet and its frames.
+    note_art: HashMap<String, (Texture2D, Vec<(String, atlas::Frame)>)>,
     /// What scripts faded or hid (LOOKS), by name.
     looks: HashMap<&'static str, f32>,
     /// The strums, where the game or the scripts put them.
@@ -459,7 +467,7 @@ impl Playing {
         };
         let video = opening.and_then(|name| paths.video(name)).and_then(|path| video::Video::open(&path, true, true, false, false).map_err(|error| eprintln!("{error}")).ok());
         let end_video = closing.and_then(|name| paths.video(name));
-        Ok(Playing { charting, video, end_video, speech: None, countdown_asked: false, countdown_held: false, entry: entry.clone(), play, song, player_voice, own_skin: None, music_fade: None, lua, looks: Default::default(), renamed: Default::default(), strums: strums(settings), flash: None, sounds: HashMap::new(), fades: Vec::new(), music_volume: 1.0, bar_colors: Default::default(), lua_step: i64::MIN, lua_section: usize::MAX, lua_created: false, end_asked: false, end_held: false, base: base.to_path_buf(), staged, bowing: false, tune: false, paused_at: 0.0, pause_scroll: 0.0, deaths: 0, scene, waited: 0.0, clock: Default::default(), ticked: std::time::Instant::now(), started: false, paused: None, choosing: None, skip_time: 0.0, skip_held: 0.0, difficulties, story, taunt_until: None, start_at, position: -lead_in, settings: settings.clone(), held_keys: Vec::new(), flash_until: [[f64::MIN; 4]; 2], judgement: None, last_hit: f64::MIN, lanes_used: [false; 4], idled: false, idle_for: 0.0, sang_for: 0.0,
+        Ok(Playing { charting, video, end_video, speech: None, countdown_asked: false, countdown_held: false, entry: entry.clone(), play, song, player_voice, own_skin: None, music_fade: None, lua, looks: Default::default(), renamed: Default::default(), note_art: HashMap::new(), strums: strums(settings), flash: None, sounds: HashMap::new(), fades: Vec::new(), music_volume: 1.0, bar_colors: Default::default(), lua_step: i64::MIN, lua_section: usize::MAX, lua_created: false, end_asked: false, end_held: false, base: base.to_path_buf(), staged, bowing: false, tune: false, paused_at: 0.0, pause_scroll: 0.0, deaths: 0, scene, waited: 0.0, clock: Default::default(), ticked: std::time::Instant::now(), started: false, paused: None, choosing: None, skip_time: 0.0, skip_held: 0.0, difficulties, story, taunt_until: None, start_at, position: -lead_in, settings: settings.clone(), held_keys: Vec::new(), flash_until: [[f64::MIN; 4]; 2], judgement: None, last_hit: f64::MIN, lanes_used: [false; 4], idled: false, idle_for: 0.0, sang_for: 0.0,
             paths, cutscene, lead_in, counted: i64::MIN, popups: Vec::new(), splashes: Vec::new(), dead: None, next_event: 0, speed, speed_change: None }.with(settings))
     }
 
@@ -883,9 +891,13 @@ impl Playing {
                 };
             }
         }
+        // what scripts switched on for single notes
+        let set = |note: usize, field: &str| self.lua.shared.borrow().notes.get(note).and_then(|note| note.fields.get(field)).is_some_and(|value| value == true);
+        // a note missed that is to show no miss: nobody moves for it
+        let shown: Vec<Event> = events.iter().copied().filter(|event| !matches!(event, Event::Miss { note: Some(note), .. } if set(*note, "noMissAnimation"))).collect();
         for &event in &events {
             match event {
-                Event::Hit { lane, rating, diff_ms, .. } => {
+                Event::Hit { lane, rating, diff_ms, note } => {
                     self.flash_until[1][lane] = judged + 120.0;
                     let color = if diff_ms < 0.0 { Color::from_hex(0x7FC8FF) } else { Color::from_hex(0xFF9F7F) };
                     if self.settings.show_ms {
@@ -896,7 +908,7 @@ impl Playing {
                     if self.settings.hitsound_volume > 0.0 && !self.play.botplay {
                         self.sound("hitsound", self.settings.hitsound_volume as f32, false);
                     }
-                    if rating == Rating::Sick {
+                    if rating == Rating::Sick && !set(note, "noteSplashData.disabled") {
                         self.splashes.push((lane, judged));
                     }
                     if self.settings.hide_hud {
@@ -951,7 +963,7 @@ impl Playing {
             }
             (scene.health, scene.combo, scene.practice) = (self.play.health, self.play.combo, self.settings.practice);
             scene.progress = (judged / length) as f32;
-            scene.update(dt * rate as f32, judged, &self.play.chart, &events);
+            scene.update(dt * rate as f32, judged, &self.play.chart, &shown);
         }
         self.stage_sounds();
         if self.started {
@@ -1302,8 +1314,23 @@ impl Playing {
                         "hitCausesMiss" if flag => kind_to(NoteKind::Hurt),
                         "noAnimation" if flag => kind_to(NoteKind::NoAnimation),
                         "gfNote" if flag => kind_to(NoteKind::GfSing),
-                        // (drawn with what the scripts set: visible, multAlpha)
-                        "visible" | "multAlpha" => {}
+                        "hitHealth" => self.play.tweaks.entry(index).or_default().hit_health = value.as_f64(),
+                        "missHealth" => self.play.tweaks.entry(index).or_default().miss_health = value.as_f64(),
+                        "lowPriority" => self.play.tweaks.entry(index).or_default().low_priority = flag,
+                        // shortcut: a note's own picture is a sheet like the usual notes'; on pixel stages (a grid of
+                        // small pictures) it is not looked for
+                        "texture" => {
+                            let name = value.as_str().unwrap_or("").to_owned();
+                            if !name.is_empty() && !self.note_art.contains_key(&name) {
+                                let found = self.paths.find(&format!("images/{name}.png")).and_then(|file| Some((atlas::picture(&file)?, atlas::parse(&std::fs::read_to_string(file.with_extension("xml")).ok()?))));
+                                match found {
+                                    Some(art) => drop(self.note_art.insert(name, art)),
+                                    None => eprintln!("Lua: the note picture {name} was not found"),
+                                }
+                            }
+                        }
+                        // (drawn, or left alone, with what the scripts set)
+                        "visible" | "multAlpha" | "offsetX" | "offsetY" | "rgbShader.enabled" | "noteSplashData.disabled" | "noMissAnimation" => {}
                         _ => eprintln!("Lua: {field} of a note is not used here"),
                     }
                 }
@@ -1501,6 +1528,12 @@ impl Playing {
                 let x = centre.x + turn.cos() * (y_at(note.time) - strum_y);
                 let along = |time: f64| centre.y + turn.sin() * (y_at(time) - strum_y);
                 let faint = strum.alpha * look(index, "multAlpha").and_then(|alpha| alpha.as_f64()).unwrap_or(1.0) as f32;
+                // its own picture and place, and its colours left as painted, as a script set them
+                let own = look(index, "texture").and_then(|name| self.note_art.get(name.as_str()?)).map(|(sheet, frames)| (sheet, frames.as_slice()));
+                let art = own.unwrap_or((&skin.sheet, &skin.frames));
+                let painted = look(index, "rgbShader.enabled").is_some_and(|on| on == false);
+                let moved = |field: &str| look(index, field).and_then(|by| by.as_f64()).unwrap_or(0.0) as f32;
+                let (x, along) = (x + moved("offsetX"), |time: f64| along(time) + moved("offsetY"));
                 let alpha = if state == NoteState::Missed { 0.3 } else { 1.0 } * faint;
                 let pieces = self.play.pieces(index);
                 if pass == 0 && !pieces.is_empty() {
@@ -1534,13 +1567,13 @@ impl Playing {
                             continue;
                         }
                         let (name, height) = if end { ("hold end", length * way) } else { ("hold piece", length) };
-                        skin.frame(&format!("{} {name}0000", NOTE_NAMES[note.lane]), x, (from + to) / 2.0, Some(vec2(skin.hold.x, height)), Some(note.lane), 0.6 * faint);
+                        skin.frame_of(art, &format!("{} {name}0000", NOTE_NAMES[note.lane]), x, (from + to) / 2.0, Some(vec2(skin.hold.x, height)), Some(note.lane).filter(|_| !painted), 0.6 * faint);
                     }
                 }
                 if pass == 1 && matches!(state, NoteState::Pending | NoteState::Missed) && on_screen(along(note.time)) {
-                    let tint = if note.kind == NoteKind::Hurt { None } else { Some(note.lane) }; // hurt notes show as raw masks
+                    let tint = if note.kind == NoteKind::Hurt || painted { None } else { Some(note.lane) }; // hurt notes show as raw masks
                     let at = vec2(x, along(note.time));
-                    turned(at, strum.angle, &|| skin.frame(&format!("{}0000", NOTE_NAMES[note.lane]), at.x, at.y, None, tint, alpha));
+                    turned(at, strum.angle, &|| skin.frame_of(art, &format!("{}0000", NOTE_NAMES[note.lane]), at.x, at.y, None, tint, alpha));
                 }
             }
         }

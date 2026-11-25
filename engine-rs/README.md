@@ -177,7 +177,9 @@ Done:
   turn, direction, visibility; noteTweenX/Y/Alpha/Angle/Direction; the default strum places), the notes following
   their strum along its direction; texts (makeLuaText and the setText/getText functions: words, size, width,
   alignment, colour, outline, font); the notes (getPropertyFromGroup/setPropertyFromGroup on unspawnNotes and
-  notes: their time, lane, side, type, state; ignoreNote, hitCausesMiss, noAnimation, gfNote, visible, multAlpha).
+  notes: their time, lane, side, type, state; ignoreNote, hitCausesMiss, noAnimation, noMissAnimation, gfNote, visible,
+  multAlpha, offsetX/offsetY; a note's own picture, `texture`, in its painted colours with `rgbShader.enabled` off;
+  hitHealth, missHealth, lowPriority, `noteSplashData.disabled`).
   getProperty/setProperty (and tweens) on the cameras' and the HUD's pieces (camHUD, camGame, iconP1, iconP2,
   healthBar, scoreTxt, timeBar, timeTxt, botplayTxt: alpha and visible), songSpeed, camFollow,
   isCameraOnForcedPos and the characters' visible. Videos: weekend 1's in story mode (before Darnell, after 2hot
@@ -286,8 +288,8 @@ Not there yet:
 - **Play screen**: the rain of weekend 1 (on the streets and in the fight; the Shaders switch turns it off with the title's
   colour shift) is drawn as falling streaks, growing heavier through the song, not with the Haxe engine's shader.
 - **Menus**: the GPU Caching switch (nothing to switch here); update check.
-- **Scripts**: the rest of Lua's functions (notes' own textures and health, shaders, groups, and getProperty/setProperty
-  beyond the camera, health, score, the characters' place and the scripts' sprites); custom events and note types run by scripts. HScript is Haxe code run against the Haxe
+- **Scripts**: the rest of Lua's functions (a note's other fields: animSuffix, its own picture on pixel stages; shaders, groups, and getProperty/setProperty
+  beyond the camera, health, score, the characters' place and the scripts' sprites). HScript is Haxe code run against the Haxe
   engine's own classes, so mods that use it cannot run here as they are. Custom shaders.
 - **Editors**: the chart editor's File/Edit/View menus, the vortex editor's strums lighting up, pasted notes following the mouse before they are put down;
   the system clipboard off Windows (the game keeps its own there); the stage editor's image file picker.

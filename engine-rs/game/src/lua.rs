@@ -262,6 +262,11 @@ impl NoteView {
             "visible" => json!(true),
             "multAlpha" => json!(1.0),
             "texture" | "animSuffix" => json!(""),
+            "hitHealth" => json!(0.02),
+            "missHealth" => json!(0.1),
+            "offsetX" | "offsetY" => json!(0),
+            "rgbShader.enabled" => json!(true),
+            "noteSplashData.disabled" => json!(false),
             _ => serde_json::Value::Null,
         }
     }

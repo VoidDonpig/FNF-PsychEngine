@@ -68,12 +68,24 @@ pub enum Event {
     PieceHit { lane: usize, note: usize, player: bool },
 }
 
+/// What a script changed of one note (the Haxe engine's Note fields of these names).
+#[derive(Clone, Copy, Debug, Default, PartialEq)]
+pub struct Tweak {
+    /// The health hitting it gives and missing it takes, in place of the usual.
+    pub hit_health: Option<f64>,
+    pub miss_health: Option<f64>,
+    /// With another note on top of it, the other one is the one hit (hurt notes are so by themselves).
+    pub low_priority: bool,
+}
+
 pub struct Play {
     pub chart: Chart,
     /// One entry per chart note: its head's state. A hold whose head was hit is `Held` until all its pieces are over.
     pub state: Vec<NoteState>,
     /// Notes set aside by scripts (ignoreNote): not played by the bot or the opponent, not missed when let go.
     pub ignored: Vec<bool>,
+    /// Notes scripts changed, by their number.
+    pub tweaks: std::collections::HashMap<usize, Tweak>,
     pub held: [bool; 4],
     pub botplay: bool,
     /// Off: a press with nothing to hit counts as a miss.
@@ -120,7 +132,7 @@ impl Play {
             pieces.extend(chart.hold_pieces(note).into_iter().map(|time| Piece { time, state: NoteState::Pending }));
             piece_start.push(pieces.len());
         }
-        Play { ignored: vec![false; state.len()], chart, state, held: [false; 4], botplay, ghost_tapping: true, timing: Timing::default(), health_gain: 1.0, health_loss: 1.0, instakill: false, one_note_holds: true, ratings: [0; 4], score: 0, misses: 0, combo: 0, health: 1.0, rated: 0, weight: 0.0, first_open: 0, pieces, piece_start, pressed_at: [f64::MIN; 4] }
+        Play { ignored: vec![false; state.len()], tweaks: Default::default(), chart, state, held: [false; 4], botplay, ghost_tapping: true, timing: Timing::default(), health_gain: 1.0, health_loss: 1.0, instakill: false, one_note_holds: true, ratings: [0; 4], score: 0, misses: 0, combo: 0, health: 1.0, rated: 0, weight: 0.0, first_open: 0, pieces, piece_start, pressed_at: [f64::MIN; 4] }
     }
 
     /// Accuracy from 0 to 1, once anything was rated.
@@ -188,12 +200,24 @@ impl Play {
     pub fn press(&mut self, lane: usize, pos: f64) -> Option<Event> {
         self.held[lane] = true;
         self.pressed_at[lane] = pos;
-        let found = (self.first_open..self.chart.notes.len())
+        let mut hittable = (self.first_open..self.chart.notes.len())
             .take_while(|&i| self.chart.notes[i].time <= pos + self.timing.safe)
-            .find(|&i| {
+            .filter(|&i| {
                 let note = &self.chart.notes[i];
                 note.player && note.lane == lane && self.state[i] == NoteState::Pending && (note.time - pos).abs() <= self.timing.safe
             });
+        let mut found = hittable.next();
+        // two notes on top of each other: the one that is not of low priority is hit and the other goes, as the Haxe
+        // engine's key press does with the two front notes
+        if let (Some(first), Some(second)) = (found, hittable.next()) {
+            if (self.chart.notes[second].time - self.chart.notes[first].time).abs() < 1.0 {
+                let low = |i: usize| self.chart.notes[i].kind == NoteKind::Hurt || self.tweaks.get(&i).is_some_and(|tweak| tweak.low_priority);
+                let (hit, gone) = if low(first) && !low(second) { (second, first) } else { (first, second) };
+                self.state[gone] = NoteState::Done;
+                self.lose_pieces(gone);
+                found = Some(hit);
+            }
+        }
         let Some(index) = found else {
             if self.ghost_tapping || self.botplay {
                 return None;
@@ -265,7 +289,7 @@ impl Play {
                 } else {
                     // no score, combo or rating: only health, and that only when pieces are notes of their own
                     if !self.one_note_holds {
-                        self.health = (self.health + HIT_HEALTH * self.health_gain).min(2.0);
+                        self.health = (self.health + self.hit_health(i) * self.health_gain).min(2.0);
                     }
                     events.push(Event::PieceHit { lane, note: i, player: true });
                 }
@@ -340,7 +364,7 @@ impl Play {
                         if self.pieces[k].state == NoteState::Pending && self.pieces[k].time <= pos {
                             self.pieces[k].state = NoteState::Done;
                             if note.player && !self.one_note_holds {
-                                self.health = (self.health + HIT_HEALTH * self.health_gain).min(2.0);
+                                self.health = (self.health + self.hit_health(i) * self.health_gain).min(2.0);
                             }
                             events.push(Event::PieceHit { lane: note.lane, note: i, player: note.player });
                         }
@@ -366,8 +390,13 @@ impl Play {
         self.combo += 1;
         self.rated += 1;
         self.weight += rating.weight();
-        self.health = (self.health + HIT_HEALTH * self.health_gain).min(2.0);
+        self.health = (self.health + self.hit_health(note) * self.health_gain).min(2.0);
         Event::Hit { lane, rating, diff_ms, note }
+    }
+
+    /// The health hitting note `note` gives: the usual, or what a script gave it.
+    fn hit_health(&self, note: usize) -> f64 {
+        self.tweaks.get(&note).and_then(|tweak| tweak.hit_health).unwrap_or(HIT_HEALTH)
     }
 
     /// `piece`: what got away was a piece of the note's hold, not its head.
@@ -379,8 +408,10 @@ impl Play {
         self.rated += 1;
         let kind = note.map(|index| self.chart.notes[index].kind);
         // a stray press costs half of what a missed note does, a hurt hold's piece more
+        let own = note.and_then(|index| self.tweaks.get(&index)).and_then(|tweak| tweak.miss_health);
         self.health -= self.health_loss * match note {
             None => MISS_HEALTH * 0.5,
+            Some(_) if own.is_some() => own.unwrap_or(MISS_HEALTH),
             Some(_) if piece && kind == Some(NoteKind::Hurt) => HURT_PIECE_HEALTH,
             Some(_) => MISS_HEALTH,
         };
@@ -660,6 +691,22 @@ mod tests {
         assert_eq!(p.press(0, 100.0), Some(Event::Miss { lane: 0, note: None, piece: false, combo: 0 }));
         assert_eq!((p.misses, p.score), (1, -10));
         assert!((p.health - 0.95).abs() < 1e-9);
+    }
+
+    #[test]
+    fn a_note_a_script_changed_gives_and_takes_its_own_health_and_yields_to_the_note_on_top_of_it() {
+        let mut p = play(&[(1000.0, 0, true, 0.0), (2000.0, 1, true, 0.0), (3000.0, 2, true, 0.0), (3000.0, 2, true, 0.0), (4000.0, 3, true, 0.0)], false);
+        p.tweaks.insert(0, Tweak { hit_health: Some(0.5), ..Tweak::default() });
+        p.tweaks.insert(1, Tweak { miss_health: Some(0.3), ..Tweak::default() });
+        p.tweaks.insert(2, Tweak { low_priority: true, ..Tweak::default() });
+        p.press(0, 1000.0);
+        assert!((p.health - 1.5).abs() < 1e-9);
+        p.update(2500.0);
+        assert!((p.health - 1.2).abs() < 1e-9);
+        // the second of the two at 3000 is hit; the first, of low priority, goes without a miss
+        assert!(matches!(p.press(2, 3000.0), Some(Event::Hit { note: 3, .. })));
+        p.update(3500.0);
+        assert_eq!((p.state[2], p.misses), (NoteState::Done, 1));
     }
 
     #[test]
