@@ -199,6 +199,8 @@ enum Want {
     VSliceChart,
     VSliceMetadata,
     VSliceToPsych,
+    /// File > Update (Legacy)...: an older chart, made a Psych 1.0 one in its own file.
+    UpdateLegacy,
 }
 
 impl Want {
@@ -213,11 +215,12 @@ impl Want {
             Want::VSliceChart => "Open a V-Slice Chart file",
             Want::VSliceMetadata => "Open a V-Slice Metadata file",
             Want::VSliceToPsych => "Save Converted Psych JSONs",
+            Want::UpdateLegacy => "Update a Legacy Chart",
         }
     }
 
     fn opens(self) -> bool {
-        matches!(self, Want::OpenChart | Want::OpenEvents | Want::PsychChart | Want::VSliceChart | Want::VSliceMetadata)
+        matches!(self, Want::OpenChart | Want::OpenEvents | Want::PsychChart | Want::VSliceChart | Want::VSliceMetadata | Want::UpdateLegacy)
     }
 
     fn folder(self) -> bool {
@@ -655,7 +658,7 @@ impl ChartEditor {
     /// The File, Edit and View menus (the Haxe editor's upper box); what the editor wants next when an entry leaves it.
     fn menus(&mut self) -> Option<Go> {
         let names = |names: &[&str]| names.iter().map(|name| name.to_string()).collect::<Vec<_>>();
-        let file = names(&["New", "Open Chart...", "Open Autosave...", "Open Events...", "Save", "Save As...", "Save Events", "Save Events As...", "Save (V-Slice)...", "Psych to V-Slice...", "V-Slice to Psych...", "Reload Chart", "Playtest (Enter)", "Exit"]);
+        let file = names(&["New", "Open Chart...", "Open Autosave...", "Open Events...", "Save", "Save As...", "Save Events", "Save Events As...", "Save (V-Slice)...", "Psych to V-Slice...", "V-Slice to Psych...", "Update (Legacy)...", "Reload Chart", "Playtest (Enter)", "Exit"]);
         let lock = if self.locked_events { "Unlock Events" } else { "Lock Events" };
         let edit = names(&["Undo", "Redo", "Select All", lock, "Autosave Settings...", "Clear All Notes", "Clear All Events"]);
         let labels = if self.labels { "Hide Note Labels" } else { "Show Note Labels" };
@@ -681,15 +684,16 @@ impl ChartEditor {
             (0, 8) => self.ask(Want::SaveVSlice),
             (0, 9) => self.ask(Want::PsychChart),
             (0, 10) => self.ask(Want::VSliceChart),
-            (0, 11) if self.untitled => self.say("This chart has no file to reload yet."),
-            (0, 11) if !self.ui.sure("reload chart", 0, self.unsaved) => self.say(crate::ui::UNSAVED),
-            (0, 11) => {
+            (0, 11) => self.ask(Want::UpdateLegacy),
+            (0, 12) if self.untitled => self.say("This chart has no file to reload yet."),
+            (0, 12) if !self.ui.sure("reload chart", 0, self.unsaved) => self.say(crate::ui::UNSAVED),
+            (0, 12) => {
                 if self.open_chart(&self.entry.clone()) {
                     self.say("Chart reloaded successfully!");
                 }
             }
-            (0, 12) => return Some(self.play_test()),
-            (0, 13) => {
+            (0, 13) => return Some(self.play_test()),
+            (0, 14) => {
                 if let Go::Leave = self.leave() {
                     return Some(Go::Leave);
                 }
@@ -1130,7 +1134,7 @@ impl ChartEditor {
             Want::SaveAs if self.untitled => format!("{}.json", song_path(self.json["song"].as_str().unwrap_or("Test"))),
             Want::SaveAs | Want::OpenChart => self.entry.chart.file_name().map_or(String::new(), |name| name.to_string_lossy().into_owned()),
             Want::OpenEvents | Want::SaveEventsAs => "events.json".to_owned(),
-            Want::PsychChart => self.entry.chart.file_name().map_or(String::new(), |name| name.to_string_lossy().into_owned()),
+            Want::PsychChart | Want::UpdateLegacy => self.entry.chart.file_name().map_or(String::new(), |name| name.to_string_lossy().into_owned()),
             Want::VSliceChart => format!("{}-chart.json", song_path(self.json["song"].as_str().unwrap_or("Test"))),
             Want::VSliceMetadata => format!("{}-metadata.json", song_path(self.json["song"].as_str().unwrap_or("Test"))),
             // (a folder: blank is the chart's own)
@@ -1198,6 +1202,21 @@ impl ChartEditor {
                 }
                 Err(error) => self.say(error),
             },
+            // an older chart made a Psych 1.0 one, written over its file (the one before kept as `.bak`), as the Haxe editor's
+            // Update (Legacy) does; it is not opened
+            Want::UpdateLegacy => {
+                let name = path.file_stem().map_or(String::new(), |name| name.to_string_lossy().into_owned());
+                let Some(mut song) = read().filter(|song| song.get("song").is_some()) else {
+                    return self.say("Error: File loaded is not a Psych Engine 0.x.x/FNF 0.2.x.x chart.");
+                };
+                match updated(&mut song) {
+                    Err(format) => self.say(format!("Chart is already up-to-date! Format: \"{format}\"")),
+                    Ok(format) => match funkin_core::files::replace(&path, &print(&json!({ "song": song }), 0)) {
+                        Ok(_) => self.say(format!("Updated \"{name}\" from format \"{format}\" to \"psych_v1\" successfully!")),
+                        Err(error) => self.say(format!("Error: {error}")),
+                    },
+                }
+            }
             Want::SaveEventsAs => match funkin_core::files::replace(&path, &events_text(&self.json)) {
                 Ok(_) => self.say(format!("Events saved successfully to: {}", path.display())),
                 Err(error) => self.say(error),
@@ -2251,6 +2270,19 @@ fn round(ms: f64) -> f64 {
     (ms * 1000.0).round() / 1000.0
 }
 
+/// Update (Legacy): an older chart (its format not psych_v1) made a Psych 1.0 one; the format it had, or (as an error)
+/// the one it has when it is up to date already.
+fn updated(song: &mut Value) -> Result<String, String> {
+    let format = song["format"].as_str().filter(|format| !format.is_empty()).unwrap_or("unknown").to_owned();
+    if format.starts_with("psych_v1") {
+        return Err(format);
+    }
+    // (the file is marked as the Haxe editor marks it: converted)
+    convert(song);
+    song["format"] = json!("psych_v1_convert");
+    Ok(format)
+}
+
 /// An older chart made a Psych 1.0 one, as Song.convert does: each note's column made absolute (0-3 the player's,
 /// 4-7 the opponent's), events kept among the notes moved to the events, the format named.
 fn convert(song: &mut Value) {
@@ -2512,6 +2544,31 @@ mod tests {
         assert_eq!(song["notes"][1]["sectionNotes"], json!([[2000, 2, 0]]));
         assert_eq!(song["notes"][0]["sectionBeats"], json!(4.0));
         assert_eq!(song["events"], json!([[200, [["Hey!", "", ""]]]]));
+    }
+
+    #[test]
+    fn a_legacy_chart_is_updated_once_in_its_own_file() {
+        let mut song = json!({"bpm": 120, "notes": [{"mustHitSection": false, "sectionNotes": [[0, 1, 0]]}]});
+        assert_eq!(updated(&mut song), Ok("unknown".to_owned()));
+        assert_eq!((song["format"].as_str(), &song["notes"][0]["sectionNotes"]), (Some("psych_v1_convert"), &json!([[0, 5, 0]])));
+        assert_eq!(updated(&mut song), Err("psych_v1_convert".to_owned()), "up to date: left alone");
+        // the File entry: the file chosen is written over, the one before kept, the chart open stays as it was
+        let _alone = crate::audio::ONE_SONG.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
+        let folder = std::env::temp_dir().join(format!("funkin-legacy-{}", std::process::id()));
+        std::fs::create_dir_all(&folder).unwrap();
+        let old = r#"{"song": {"song": "Old", "bpm": 120, "player3": "gf", "notes": [{"mustHitSection": false, "lengthInSteps": 16, "sectionNotes": [[0, 1, 0], [750, -1, "Hey!", "", ""]]}]}}"#;
+        std::fs::write(folder.join("old.json"), old).unwrap();
+        let missing = PathBuf::from("no such folder");
+        let entry = SongEntry {
+            title: "T".to_owned(), difficulty: "Hard".to_owned(), source: String::new(), week: 0, icon: String::new(), color: [0; 3],
+            chart: missing.join("t.json"), inst: missing.join("Inst.ogg"), voices_player: None, voices_opponent: None,
+        };
+        let mut editor = ChartEditor::open(&missing, &entry, Some(r#"{"bpm": 100, "format": "psych_v1", "notes": []}"#.to_owned())).unwrap();
+        editor.chosen(Want::UpdateLegacy, folder.join("old.json"));
+        let written: Value = serde_json::from_str(&std::fs::read_to_string(folder.join("old.json")).unwrap()).unwrap();
+        assert_eq!((written["song"]["format"].as_str(), &written["song"]["notes"][0]["sectionNotes"], &written["song"]["events"]), (Some("psych_v1_convert"), &json!([[0, 5, 0]]), &json!([[750, [["Hey!", "", ""]]]])));
+        assert_eq!((std::fs::read_to_string(folder.join("old.json.bak")).ok().as_deref(), editor.json["bpm"].as_f64()), (Some(old), Some(100.0)));
+        let _ = std::fs::remove_dir_all(&folder);
     }
 
     #[test]
