@@ -133,7 +133,8 @@ Done:
   volume keys and display; auto pause; the flashing lights warning at first start; Alt+Enter; memory in the FPS
   counter; note skins and note splash skins; stages of mods built from the `objects` of their stage file; the
   spirit's ghost trail in Thorns; Tankman's lines at week 7's game over; the counted Roadkill Enthusiast
-  achievement; a loading picture while a song is read; a crash log (`funkin-rs-crash.log`); a mod's own
+  achievement; a loading picture while a song is read; a crash log (`funkin-rs-crash.log`; on Linux and macOS its backtrace gives addresses, not
+  function names: the program is built without them, a fifth smaller); a mod's own
   title screen (`images/gfDanceTitle.json`: places, tempo, the dancer's frames, a background), the menus
   looking in the first mod switched on before the game's files; the title screen's four hidden dancers
   (their words typed on it, the jingles, Pessy's achievement); a dark edge closing over the old screen

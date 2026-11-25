@@ -170,11 +170,7 @@ impl MenuCharacterEditor {
         let tip = "Space - Play \"Start Press\" animation (Boyfriend Character Type)";
         skin.text(tip, (WIDTH - measure_text(tip, skin.font.as_ref(), 16, 1.0).width) / 2.0, 590.0, 16, WHITE);
         skin.text(&format!("Editing: {}", self.name), 20.0, 462.0, 20, WHITE);
-        if let Some((words, when)) = &self.said {
-            if when.elapsed().as_secs_f32() < 3.0 {
-                skin.text(words, 20.0, 484.0, 20, WHITE);
-            }
-        }
+        skin.said(&self.said, 20.0, 484.0);
         self.ui.draw(skin.font.as_ref());
     }
 }

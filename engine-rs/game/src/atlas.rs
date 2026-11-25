@@ -119,16 +119,21 @@ pub fn preload(files: &[PathBuf]) {
         for file in &wanted {
             let send = send.clone();
             scope.spawn(move || {
-                let image = std::fs::read(file).ok().and_then(|bytes| Image::from_file_with_format(&bytes, None).ok());
+                // a large picture is only read here: it goes to the card a band at a time, never whole in memory
+                let large = |bytes: &[u8]| bytes.get(16..24).is_some_and(|size| u32::from_be_bytes(size[..4].try_into().unwrap()) as u64 * u32::from_be_bytes(size[4..].try_into().unwrap()) as u64 > 4 << 20);
+                let image = std::fs::read(file).ok().and_then(|bytes| if large(&bytes) { Some(Err(bytes)) } else { Image::from_file_with_format(&bytes, None).ok().map(Ok) });
                 let _ = send.send((*file, image));
             });
         }
         drop(send);
         // (each is let go of as soon as the card has it: not all of them are held at once)
         for (file, image) in read {
-            if let Some(image) = image {
-                PICTURES.with(|pictures| pictures.borrow_mut().insert(file.clone(), Texture2D::from_image(&image)));
-            }
+            let texture = match image {
+                Some(Ok(image)) => Texture2D::from_image(&image),
+                Some(Err(bytes)) => Texture2D::from_file_with_format(&bytes, None),
+                None => continue,
+            };
+            PICTURES.with(|pictures| pictures.borrow_mut().insert(file.clone(), texture));
         }
     });
 }

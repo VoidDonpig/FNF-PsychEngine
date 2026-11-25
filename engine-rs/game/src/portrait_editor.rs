@@ -302,11 +302,7 @@ impl PortraitEditor {
             let words = if count == 0 { "ERROR! NO ANIMATIONS FOUND".to_owned() } else { format!("Animation: {current} ({} / {count}) - Press W or S to scroll", self.expression + 1) };
             skin.text(&words, 10.0, 46.0, 16, WHITE);
         }
-        if let Some((words, when)) = &self.said {
-            if when.elapsed().as_secs_f32() < 3.0 {
-                skin.text(words, 10.0, 140.0, 20, WHITE);
-            }
-        }
+        skin.said(&self.said, 10.0, 140.0);
         self.ui.draw(skin.font.as_ref());
     }
 }

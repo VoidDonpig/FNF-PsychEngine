@@ -4,3 +4,5 @@ members = ["core", "game"]
 
 [profile.release]
 lto = "thin"
+# (no symbol names in the program: about a fifth smaller on Linux and macOS; a crash log's backtrace then shows addresses)
+strip = true

@@ -737,11 +737,7 @@ impl StageEditor {
         let words = format!("Stage: {}{}   Zoom: {:.2}   Camera: [{:.0}, {:.0}]", self.name, if self.unsaved { " *" } else { "" }, self.zoom, self.camera.x, self.camera.y);
         skin.text(&words, 25.0, HEIGHT - 12.0, 16, WHITE);
         skin.text("Press F1 for Help", WIDTH - 180.0, HEIGHT - 12.0, 16, WHITE);
-        if let Some((words, when)) = &self.said {
-            if when.elapsed().as_secs_f32() < 3.0 {
-                skin.text(words, 25.0, HEIGHT - 36.0, 20, WHITE);
-            }
-        }
+        skin.said(&self.said, 25.0, HEIGHT - 36.0);
         self.ui.draw(skin.font.as_ref());
         if self.help {
             draw_rectangle(0.0, 0.0, WIDTH, HEIGHT, Color::new(0.0, 0.0, 0.0, 0.6));

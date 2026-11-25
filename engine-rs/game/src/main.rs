@@ -253,6 +253,13 @@ impl Skin {
         recolor(None);
     }
 
+    /// An editor's last message, shown for three seconds.
+    fn said(&self, said: &Option<(String, std::time::Instant)>, x: f32, y: f32) {
+        if let Some((words, _)) = said.as_ref().filter(|(_, when)| when.elapsed().as_secs_f32() < 3.0) {
+            self.text(words, x, y, 20, WHITE);
+        }
+    }
+
     fn text(&self, text: &str, x: f32, y: f32, size: u16, color: Color) {
         // a dark copy underneath keeps it readable over notes
         for (dx, dy, color) in [(2.0, 2.0, Color { a: color.a, ..BLACK }), (0.0, 0.0, color)] {

@@ -355,11 +355,7 @@ impl SplashEditor {
         if self.sheet.is_none() {
             skin.text(&format!("images/noteSplashes/{}.png not found", self.name), 10.0, 100.0, 18, Color::from_hex(0xFF5555));
         }
-        if let Some((words, when)) = &self.said {
-            if when.elapsed().as_secs_f32() < 3.0 {
-                skin.text(words, 10.0, 124.0, 20, WHITE);
-            }
-        }
+        skin.said(&self.said, 10.0, 124.0);
         self.ui.draw(skin.font.as_ref());
     }
 }

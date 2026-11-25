@@ -143,6 +143,44 @@ pub enum FilterMode {
     Nearest,
 }
 
+/// Reads a PNG file a row at a time: `row` gets the picture's width and height, the row's number and its red, green, blue,
+/// alpha bytes, top row first.
+fn png_rows(bytes: &[u8], mut row: impl FnMut(u32, u32, u32, &[u8])) -> Result<(), String> {
+    let mut decoder = png::Decoder::new(bytes);
+    // palettes and odd bit depths become plain 8-bit channels
+    decoder.set_transformations(png::Transformations::normalize_to_color8());
+    let mut reader = decoder.read_info().map_err(|error| error.to_string())?;
+    let (width, height, color) = (reader.info().width, reader.info().height, reader.output_color_type().0);
+    if width > u16::MAX as u32 || height > u16::MAX as u32 {
+        return Err("too large".to_owned());
+    }
+    let mut y = 0;
+    let mut put = |line: &[u8], rgba: &mut Vec<u8>| {
+        rgba.clear();
+        match color {
+            png::ColorType::Rgba => rgba.extend_from_slice(&line[..width as usize * 4]),
+            png::ColorType::Rgb => rgba.extend(line.chunks(3).flat_map(|p| [p[0], p[1], p[2], 255])),
+            png::ColorType::GrayscaleAlpha => rgba.extend(line.chunks(2).flat_map(|p| [p[0], p[0], p[0], p[1]])),
+            png::ColorType::Grayscale => rgba.extend(line.iter().flat_map(|&p| [p, p, p, 255])),
+            png::ColorType::Indexed => return Err("a palette the decoder left in place".to_owned()),
+        }
+        row(width, height, y, rgba);
+        y += 1;
+        Ok(())
+    };
+    let mut rgba = Vec::with_capacity(width as usize * 4);
+    // (rows of an interlaced file come in seven passes: those are put together whole first)
+    if reader.info().interlaced {
+        let mut raw = vec![0; reader.output_buffer_size()];
+        let info = reader.next_frame(&mut raw).map_err(|error| error.to_string())?;
+        return raw.chunks(info.line_size).take(height as usize).try_for_each(|line| put(line, &mut rgba));
+    }
+    while let Some(line) = reader.next_row().map_err(|error| error.to_string())? {
+        put(line.data(), &mut rgba)?;
+    }
+    Ok(())
+}
+
 /// A picture in main memory: rows of red, green, blue, alpha bytes, top row first.
 pub struct Image {
     pub bytes: Vec<u8>,
@@ -153,27 +191,15 @@ pub struct Image {
 impl Image {
     /// From the bytes of a PNG file.
     pub fn from_file_with_format(bytes: &[u8], _format: Option<()>) -> Result<Image, String> {
-        let mut decoder = png::Decoder::new(bytes);
-        // palettes and odd bit depths become plain 8-bit channels
-        decoder.set_transformations(png::Transformations::normalize_to_color8());
-        let mut reader = decoder.read_info().map_err(|error| error.to_string())?;
-        let mut raw = vec![0; reader.output_buffer_size()];
-        let info = reader.next_frame(&mut raw).map_err(|error| error.to_string())?;
-        let pixels = info.width as usize * info.height as usize;
-        let bytes: Vec<u8> = match info.color_type {
-            png::ColorType::Rgba => {
-                raw.truncate(pixels * 4);
-                raw
+        let mut image = Image { bytes: Vec::new(), width: 0, height: 0 };
+        png_rows(bytes, |width, height, y, row| {
+            if y == 0 {
+                image.bytes.reserve_exact(width as usize * height as usize * 4);
+                (image.width, image.height) = (width as u16, height as u16);
             }
-            png::ColorType::Rgb => raw[..pixels * 3].chunks(3).flat_map(|p| [p[0], p[1], p[2], 255]).collect(),
-            png::ColorType::GrayscaleAlpha => raw[..pixels * 2].chunks(2).flat_map(|p| [p[0], p[0], p[0], p[1]]).collect(),
-            png::ColorType::Grayscale => raw[..pixels].iter().flat_map(|&p| [p, p, p, 255]).collect(),
-            png::ColorType::Indexed => return Err("a palette the decoder left in place".to_owned()),
-        };
-        if info.width > u16::MAX as u32 || info.height > u16::MAX as u32 {
-            return Err("too large".to_owned());
-        }
-        Ok(Image { bytes, width: info.width as u16, height: info.height as u16 })
+            image.bytes.extend_from_slice(row);
+        })?;
+        Ok(image)
     }
 
     pub fn gen_image_color(width: u16, height: u16, color: Color) -> Image {
@@ -236,12 +262,31 @@ pub struct Texture2D(Rc<Picture>);
 
 impl Texture2D {
     /// From the bytes of a PNG file. A file that cannot be read becomes one transparent dot.
-    pub fn from_file_with_format(bytes: &[u8], format: Option<()>) -> Texture2D {
-        let image = Image::from_file_with_format(bytes, format).unwrap_or_else(|error| {
-            eprintln!("Picture: {error}");
-            Image::gen_image_color(1, 1, Color::new(0.0, 0.0, 0.0, 0.0))
+    /// It goes to the card some rows at a time: a large picture (a character's sheet can be 200 MB) is never whole in main memory.
+    pub fn from_file_with_format(bytes: &[u8], _format: Option<()>) -> Texture2D {
+        let (mut texture, mut band) = (None, Vec::new());
+        let read = png_rows(bytes, |width, height, y, row| {
+            let texture: &Texture2D = texture.get_or_insert_with(|| with(|context| context.picture(width, height, &[])));
+            band.extend_from_slice(row);
+            if band.len() >= 8 << 20 || y + 1 == height {
+                let rows = (band.len() / row.len()) as u32;
+                // (a picture too large for the card became a dot: nothing goes in it)
+                if texture.0.width == width {
+                    with(|context| context.write(&texture.0.texture, 0, y + 1 - rows, width, rows, &band));
+                }
+                band.clear();
+            }
         });
-        Texture2D::from_image(&image)
+        match (read, texture) {
+            (Ok(()), Some(texture)) => {
+                with(|context| context.queue.submit([]));
+                texture
+            }
+            (read, _) => {
+                eprintln!("Picture: {}", read.err().unwrap_or_else(|| "no rows".to_owned()));
+                Texture2D::from_image(&Image::gen_image_color(1, 1, Color::new(0.0, 0.0, 0.0, 0.0)))
+            }
+        }
     }
 
     pub fn from_image(image: &Image) -> Texture2D {
@@ -876,17 +921,11 @@ impl Context {
             eprintln!("A picture of {width} by {height} cannot be drawn by this graphics card");
             return self.picture(1, 1, &[0; 4]);
         }
-        let texture = self.device.create_texture(&wgpu::TextureDescriptor {
-            label: None,
-            size: wgpu::Extent3d { width, height, depth_or_array_layers: 1 },
-            mip_level_count: 1,
-            sample_count: 1,
-            dimension: wgpu::TextureDimension::D2,
-            format: wgpu::TextureFormat::Rgba8Unorm,
-            usage: wgpu::TextureUsages::TEXTURE_BINDING | wgpu::TextureUsages::COPY_DST,
-            view_formats: &[],
-        });
-        self.write(&texture, 0, 0, width, height, pixels);
+        let texture = Self::blank(&self.device, width, height, wgpu::TextureFormat::Rgba8Unorm, wgpu::TextureUsages::TEXTURE_BINDING | wgpu::TextureUsages::COPY_DST);
+        // (none: they are put in afterwards)
+        if !pixels.is_empty() {
+            self.write(&texture, 0, 0, width, height, pixels);
+        }
         // sent off now: the copy of the pixels made for the card is let go of at once, not when the frame is drawn (a song
         // loading many large pictures would otherwise hold a second copy of all of them until then)
         self.queue.submit([]);
@@ -898,6 +937,13 @@ impl Context {
         let groups = [group(&self.samplers[0]), group(&self.samplers[1])];
         self.pictures += 1;
         Texture2D(Rc::new(Picture { texture, width, height, groups, filter: Cell::new(FilterMode::Linear), id: self.pictures }))
+    }
+
+    /// A blank picture on the card, of one layer and one size.
+    fn blank(device: &wgpu::Device, width: u32, height: u32, format: wgpu::TextureFormat, usage: wgpu::TextureUsages) -> wgpu::Texture {
+        let size = wgpu::Extent3d { width, height, depth_or_array_layers: 1 };
+        let dimension = wgpu::TextureDimension::D2;
+        device.create_texture(&wgpu::TextureDescriptor { label: None, size, mip_level_count: 1, sample_count: 1, dimension, format, usage, view_formats: &[] })
     }
 
     /// Puts pixels into a part of a picture.
@@ -1114,16 +1160,7 @@ impl Context {
             return;
         }
         if self.layer_stages.get(layer).is_none_or(|(_, _, made)| *made != size) {
-            let texture = self.device.create_texture(&wgpu::TextureDescriptor {
-                label: None,
-                size: wgpu::Extent3d { width: size.0, height: size.1, depth_or_array_layers: 1 },
-                mip_level_count: 1,
-                sample_count: 1,
-                dimension: wgpu::TextureDimension::D2,
-                format: self.format,
-                usage: wgpu::TextureUsages::RENDER_ATTACHMENT | wgpu::TextureUsages::TEXTURE_BINDING,
-                view_formats: &[],
-            });
+            let texture = Self::blank(&self.device, size.0, size.1, self.format, wgpu::TextureUsages::RENDER_ATTACHMENT | wgpu::TextureUsages::TEXTURE_BINDING);
             let view = texture.create_view(&Default::default());
             let entries = [wgpu::BindGroupEntry { binding: 0, resource: wgpu::BindingResource::TextureView(&view) }, wgpu::BindGroupEntry { binding: 1, resource: wgpu::BindingResource::Sampler(&self.samplers[0]) }];
             let group = self.device.create_bind_group(&wgpu::BindGroupDescriptor { label: None, layout: &self.layout, entries: &entries });
@@ -1179,16 +1216,7 @@ impl Context {
         }
         let Some(rain) = &mut self.rain else { return };
         if rain.stage.as_ref().is_none_or(|(_, _, made)| *made != size) {
-            let texture = self.device.create_texture(&wgpu::TextureDescriptor {
-                label: None,
-                size: wgpu::Extent3d { width: size.0, height: size.1, depth_or_array_layers: 1 },
-                mip_level_count: 1,
-                sample_count: 1,
-                dimension: wgpu::TextureDimension::D2,
-                format: self.format,
-                usage: wgpu::TextureUsages::RENDER_ATTACHMENT | wgpu::TextureUsages::TEXTURE_BINDING,
-                view_formats: &[],
-            });
+            let texture = Self::blank(&self.device, size.0, size.1, self.format, wgpu::TextureUsages::RENDER_ATTACHMENT | wgpu::TextureUsages::TEXTURE_BINDING);
             let view = texture.create_view(&Default::default());
             let group = self.device.create_bind_group(&wgpu::BindGroupDescriptor {
                 label: None,
@@ -1206,16 +1234,7 @@ impl Context {
     /// The frame so far as a picture in main memory.
     fn capture(&mut self) -> Image {
         let (width, height) = (self.config.width, self.config.height);
-        let texture = self.device.create_texture(&wgpu::TextureDescriptor {
-            label: None,
-            size: wgpu::Extent3d { width, height, depth_or_array_layers: 1 },
-            mip_level_count: 1,
-            sample_count: 1,
-            dimension: wgpu::TextureDimension::D2,
-            format: self.format,
-            usage: wgpu::TextureUsages::RENDER_ATTACHMENT | wgpu::TextureUsages::COPY_SRC,
-            view_formats: &[],
-        });
+        let texture = Self::blank(&self.device, width, height, self.format, wgpu::TextureUsages::RENDER_ATTACHMENT | wgpu::TextureUsages::COPY_SRC);
         self.render(&texture.create_view(&Default::default()));
         // rows in a buffer start at multiples of 256 bytes
         let row = (width * 4).next_multiple_of(256);

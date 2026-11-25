@@ -2428,17 +2428,22 @@ mod tests {
         assert!(past_limit(&names, 10).is_empty());
     }
 
-    #[test]
-    fn a_click_finds_the_note_drawn_under_it() {
-        let _alone = crate::audio::ONE_SONG.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
-        // 120 beats a minute: a sixteenth is 125 ms, 40 px at the usual zoom, now at the middle line (360)
-        let text = r#"{"bpm": 120, "format": "psych_v1", "notes": [{"sectionNotes": [[0, 1, 0], [125, 1, 0], [125, 2, 0]], "sectionBeats": 4}]}"#;
+    /// An editor with `text` as its chart, of a song whose files are nowhere.
+    fn editor_on(text: &str) -> ChartEditor {
         let missing = PathBuf::from("no such folder");
         let entry = SongEntry {
             title: "T".to_owned(), difficulty: "Hard".to_owned(), source: String::new(), week: 0, icon: String::new(), color: [0; 3],
             chart: missing.join("t.json"), inst: missing.join("Inst.ogg"), voices_player: None, voices_opponent: None,
         };
-        let editor = ChartEditor::open(&missing, &entry, Some(text.to_owned())).unwrap();
+        ChartEditor::open(&missing, &entry, Some(text.to_owned())).unwrap()
+    }
+
+    #[test]
+    fn a_click_finds_the_note_drawn_under_it() {
+        let _alone = crate::audio::ONE_SONG.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
+        // 120 beats a minute: a sixteenth is 125 ms, 40 px at the usual zoom, now at the middle line (360)
+        let text = r#"{"bpm": 120, "format": "psych_v1", "notes": [{"sectionNotes": [[0, 1, 0], [125, 1, 0], [125, 2, 0]], "sectionBeats": 4}]}"#;
+        let editor = editor_on(text);
         // a sixteenth apart in one column: each is found by its own box, even where one beat snap holds both
         assert_eq!(editor.note_at(2, 370.0), Some((0, 0)));
         assert_eq!(editor.note_at(2, 410.0), Some((0, 1)));
@@ -2451,12 +2456,7 @@ mod tests {
     fn picked_notes_and_events_are_copied_pasted_and_taken_off() {
         let _alone = crate::audio::ONE_SONG.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
         let text = r#"{"bpm": 120, "format": "psych_v1", "events": [[250, [["Hey!", "BF", ""]]]], "notes": [{"sectionNotes": [[0, 1, 0], [125, 6, 0]], "sectionBeats": 4}]}"#;
-        let missing = PathBuf::from("no such folder");
-        let entry = SongEntry {
-            title: "T".to_owned(), difficulty: "Hard".to_owned(), source: String::new(), week: 0, icon: String::new(), color: [0; 3],
-            chart: missing.join("t.json"), inst: missing.join("Inst.ogg"), voices_player: None, voices_opponent: None,
-        };
-        let mut editor = ChartEditor::open(&missing, &entry, Some(text.to_owned())).unwrap();
+        let mut editor = editor_on(text);
         let original = editor.json.clone();
         editor.pick_all();
         assert_eq!(editor.selected.len(), 3);
@@ -2494,12 +2494,7 @@ mod tests {
     fn vortex_strums_light_up_as_notes_pass_while_the_music_plays() {
         let _alone = crate::audio::ONE_SONG.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
         let text = r#"{"bpm": 120, "format": "psych_v1", "notes": [{"sectionNotes": [[0, 1, 0], [125, 1, 0], [150, 6, 1000], [400, 2, 0]], "sectionBeats": 4}]}"#;
-        let missing = PathBuf::from("no such folder");
-        let entry = SongEntry {
-            title: "T".to_owned(), difficulty: "Hard".to_owned(), source: String::new(), week: 0, icon: String::new(), color: [0; 3],
-            chart: missing.join("t.json"), inst: missing.join("Inst.ogg"), voices_player: None, voices_opponent: None,
-        };
-        let mut editor = ChartEditor::open(&missing, &entry, Some(text.to_owned())).unwrap();
+        let mut editor = editor_on(text);
         (editor.heard, editor.position) = (0.0, 200.0);
         editor.light_strums();
         assert_eq!(editor.lit, [0.0; 8], "not in the Vortex Editor");
@@ -2573,12 +2568,7 @@ mod tests {
         std::fs::create_dir_all(&folder).unwrap();
         let old = r#"{"song": {"song": "Old", "bpm": 120, "player3": "gf", "notes": [{"mustHitSection": false, "lengthInSteps": 16, "sectionNotes": [[0, 1, 0], [750, -1, "Hey!", "", ""]]}]}}"#;
         std::fs::write(folder.join("old.json"), old).unwrap();
-        let missing = PathBuf::from("no such folder");
-        let entry = SongEntry {
-            title: "T".to_owned(), difficulty: "Hard".to_owned(), source: String::new(), week: 0, icon: String::new(), color: [0; 3],
-            chart: missing.join("t.json"), inst: missing.join("Inst.ogg"), voices_player: None, voices_opponent: None,
-        };
-        let mut editor = ChartEditor::open(&missing, &entry, Some(r#"{"bpm": 100, "format": "psych_v1", "notes": []}"#.to_owned())).unwrap();
+        let mut editor = editor_on(r#"{"bpm": 100, "format": "psych_v1", "notes": []}"#);
         editor.chosen(Want::UpdateLegacy, folder.join("old.json"));
         let written: Value = serde_json::from_str(&std::fs::read_to_string(folder.join("old.json")).unwrap()).unwrap();
         assert_eq!((written["song"]["format"].as_str(), &written["song"]["notes"][0]["sectionNotes"], &written["song"]["events"]), (Some("psych_v1_convert"), &json!([[0, 5, 0]]), &json!([[750, [["Hey!", "", ""]]]])));

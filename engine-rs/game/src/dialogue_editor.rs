@@ -229,11 +229,7 @@ impl DialogueEditor {
             None => format!("Animation: {now} (not one of its {}) - Press W or S to scroll", expressions.len()),
         };
         skin.text(&words, 10.0, 86.0, 24, WHITE);
-        if let Some((words, when)) = &self.said {
-            if when.elapsed().as_secs_f32() < 3.0 {
-                skin.text(words, 10.0, 116.0, 20, WHITE);
-            }
-        }
+        skin.said(&self.said, 10.0, 116.0);
         self.ui.draw(skin.font.as_ref());
     }
 }

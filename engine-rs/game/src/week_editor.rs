@@ -269,11 +269,7 @@ impl WeekEditor {
                 skin.text(&words, (WIDTH - measure_text(&words, skin.font.as_ref(), 24, 1.0).width) / 2.0, 520.0, 24, WHITE);
             }
         }
-        if let Some((words, when)) = &self.said {
-            if when.elapsed().as_secs_f32() < 3.0 {
-                skin.text(words, 10.0, 45.0, 20, WHITE);
-            }
-        }
+        skin.said(&self.said, 10.0, 45.0);
         self.ui.draw(skin.font.as_ref());
     }
 }
