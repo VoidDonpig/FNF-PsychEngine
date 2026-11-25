@@ -1136,6 +1136,19 @@ fn trace(lua: &Lua, shared: &mut Shared, line: String, deprecated: bool) {
     }
 }
 
+/// An argument table read by index up to its length, so a nil in the middle keeps its place as in Haxe's Lua bridge (which counts
+/// with the table's length and takes each of 1 to that); mlua's own list reading leaves the nils out and moves the rest down.
+struct Holes(Vec<Value>);
+
+impl mlua::FromLua for Holes {
+    fn from_lua(value: Value, _lua: &Lua) -> mlua::Result<Self> {
+        match value {
+            Value::Table(table) => (1..=table.raw_len()).map(|at| table.raw_get(at)).collect::<mlua::Result<Vec<Value>>>().map(Holes),
+            other => Err(mlua::Error::FromLuaConversionError { from: other.type_name(), to: "Holes".to_owned(), message: Some("a table of arguments is expected".to_owned()) }),
+        }
+    }
+}
+
 fn color_of(value: &Value) -> u32 {
     match value {
         Value::Integer(number) => *number as u32 & 0xFFFFFF,
@@ -1494,7 +1507,8 @@ impl Scripts {
         // the methods of the scripts' objects and of the play screen, by a path as getProperty has it (__instanceMethod, the
         // prelude, lists them)
         // shortcut: only those; the Haxe engine calls any method of any of its objects
-        function!("callMethod", |lua, shared, args: (String, Option<Vec<Value>>)| {
+        function!("callMethod", |lua, shared, args: (String, Option<Holes>)| {
+            let args = (args.0, args.1.map(|holes| holes.0));
             let mut unknown = false;
             match args.0.as_str() {
                 "videoCutscene.play" | "videoCutscene.videoSprite.play" => shared.borrow_mut().requests.push(Request::PlayVideo),
@@ -1877,7 +1891,7 @@ impl Scripts {
         request!("setTimeBarColors", |args: (Option<Value>, Option<Value>)| Request::BarColors { time: true, left: args.0.as_ref().map(color_of), right: args.1.as_ref().map(color_of) });
         // other scripts are reached once this one's call is over (what they answer is not passed back)
         for name in ["callOnLuas", "callOnScripts"] {
-            request!(name, |args: (String, Option<Vec<Value>>)| Request::Call { name: args.0, args: args.1.unwrap_or_default().iter().map(to_json).collect() });
+            request!(name, |args: (String, Option<Holes>)| Request::Call { name: args.0, args: args.1.map_or_else(Vec::new, |holes| holes.0).iter().map(to_json).collect() });
         }
         for name in ["setOnLuas", "setOnScripts"] {
             function!(name, |_lua, shared, args: (String, Value)| {
@@ -1939,13 +1953,13 @@ impl Scripts {
         });
         // a function of another script called, and what it answered (Function_Continue for nothing)
         let scripts = list.clone();
-        function!("callScript", |lua, shared, args: (String, String, Option<Vec<Value>>)| {
+        function!("callScript", |lua, shared, args: (String, String, Option<Holes>)| {
             let found = shared.borrow().find_script(&args.0);
             let list = scripts.upgrade().map(|list| list.borrow().clone()).unwrap_or_default();
             let Some(script) = list.iter().find(|script| found.as_ref().is_some_and(|file| same_file(&script.name, file))) else { return Ok(Value::Nil) };
             let function = script.lua.globals().get::<Option<Function>>(args.1.as_str()).ok().flatten();
             let Some(function) = function.filter(|_| !*script.closed.borrow()) else { return Ok(Value::String(lua.create_string(CONTINUE)?)) };
-            let values: Vec<Value> = args.2.unwrap_or_default().iter().map(|value| from_json(&script.lua, &to_json(value))).collect::<mlua::Result<_>>()?;
+            let values: Vec<Value> = args.2.map_or_else(Vec::new, |holes| holes.0).iter().map(|value| from_json(&script.lua, &to_json(value))).collect::<mlua::Result<_>>()?;
             match function.call::<Value>(MultiValue::from_iter(values)) {
                 Ok(Value::Nil) => Ok(Value::String(lua.create_string(CONTINUE)?)),
                 Ok(answer) => from_json(lua, &to_json(&answer)),
@@ -2633,9 +2647,9 @@ impl Scripts {
         // shortcut: the classes built here are Flixel's sprite, text, group and camera ones and the engine's sprites and health
         // icons, characters, backdrops and bars; a made camera is a layer over camOther (zoom, alpha, angle, x and y). A bar
         // follows a field of a sprite of the scripts or of the game's values; its border is not drawn
-        function!("createInstance", |lua, shared, args: (String, String, Option<Vec<Value>>)| {
+        function!("createInstance", |lua, shared, args: (String, String, Option<Holes>)| {
             let tag = args.0.trim().replace('.', "");
-            let given = args.2.unwrap_or_default();
+            let given = args.2.map_or_else(Vec::new, |holes| holes.0);
             let number = |at: usize, or: f64| match given.get(at) {
                 Some(Value::Integer(number)) => *number as f64,
                 Some(Value::Number(number)) => *number,
@@ -3182,6 +3196,17 @@ mod tests {
         let shared = scripts.shared.borrow();
         assert_eq!([&shared.vars["again"], &shared.vars["x"], &shared.vars["y"]], [&serde_json::json!(false), &serde_json::json!(5.0), &serde_json::json!(20.0)]);
         assert!(shared.groups["crowd"].members.is_empty() && shared.has("ab") && !shared.has("c"));
+    }
+
+    #[test]
+    fn a_nil_in_an_argument_table_keeps_the_place_of_the_arguments_after_it() {
+        let scripts = run(r#"
+            createInstance('t', 'flixel.text.FlxText', {10, nil, 100, 'hi', 12})
+            createInstance('u', 'flixel.text.FlxText', {nil, nil, 50, 'yo', nil})
+        "#);
+        let mut shared = scripts.shared.borrow_mut();
+        let seen: Vec<(f64, f64, f64, String, f64)> = ["t", "u"].map(|tag| { let sprite = shared.sprite(tag).unwrap(); let text = sprite.text.clone().unwrap(); (sprite.x, sprite.y, text.width, text.words, text.size) }).to_vec();
+        assert_eq!(seen, [(10.0, 0.0, 100.0, "hi".to_owned(), 12.0), (0.0, 0.0, 50.0, "yo".to_owned(), 8.0)]);
     }
 
     #[test]
