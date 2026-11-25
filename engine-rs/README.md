@@ -133,7 +133,7 @@ Done:
   taken off).
 
 - **Since**: rating names and full-combo grades in the score line; the pause menu's Change Difficulty (in story mode too: the rest of
-  the week follows it) and Options; holds that turn with their strum's direction; a script's note texture with the
+  the week follows it) and Options (leaving them starts the song over); the pause music from somewhere in its first half; holds that turn with their strum's direction; a script's note texture with the
   chosen note skin's ending, as skinPostfix adds it; "Sustains as One Note" (on: a hold is one note, lost whole as one miss; off: every piece gives health or is a miss of its own); arrows dropping in at the start;
   a chart's `offset`; a character's own voice file (`vocals_file`); menu and volume keys that can be bound;
   volume keys and display; auto pause; the flashing lights warning at first start; Alt+Enter; memory in the FPS

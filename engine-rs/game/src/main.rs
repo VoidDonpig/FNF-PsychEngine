@@ -594,10 +594,15 @@ impl Playing {
         self.scene.as_ref().is_some_and(|scene| scene.pixel)
     }
 
-    /// The pause menu's music, if one is chosen: it starts silent and creeps up, as in the Haxe engine.
+    /// The pause menu's music, if one is chosen: it starts silent and creeps up, somewhere in its first half (not its
+    /// quiet opening), as PauseSubState.hx's play(false, random).
     fn pause_music(&mut self) {
-        if self.settings.pause_music > 0 {
-            self.sound(&funkin_core::content::song_path(settings::PAUSE_MUSIC[self.settings.pause_music]), 0.0, true);
+        let name = funkin_core::content::song_path(settings::PAUSE_MUSIC[self.settings.pause_music.min(3)]);
+        if let Some(path) = self.paths.find(&format!("music/{name}.ogg")).filter(|_| self.settings.pause_music > 0) {
+            if let Some(id) = self.song.play_sound(&path, 0.0, true) {
+                let from = self.song.sound_length_ms(id).unwrap_or(0.0) * rand::gen_range(0.0, 0.5);
+                self.song.tune_sound(id, None, None, Some(from), None);
+            }
         }
     }
 
@@ -1798,7 +1803,7 @@ impl Playing {
                 let hit = position < self.flash_until[side][lane];
                 let held = side == 1 && !self.play.botplay && self.lane_held(lane);
                 // outside story mode the arrows drop in one after the other, over a second each
-                let arrived = if self.story { 1.0 } else { ((self.waited as f32 / 1000.0 - 0.5 - 0.2 * lane as f32).clamp(0.0, 1.0) - 1.0).powi(2) };
+                let arrived = if self.story { 0.0 } else { ((self.waited as f32 / 1000.0 - 0.5 - 0.2 * lane as f32).clamp(0.0, 1.0) - 1.0).powi(2) };
                 let (shown, at) = ((1.0 - arrived).sqrt() * strum.alpha, middle(strum) - vec2(0.0, 10.0 * (1.0 - (1.0 - arrived).sqrt())));
                 shade(self.game_shader(&format!("strum{}", side * 4 + lane), "strums").as_ref());
                 turned(at, strum.angle, &|| {
@@ -2600,9 +2605,13 @@ fn main() {
                 pixel_skin.iter().for_each(|skin| skin.recolor(&settings.pixel_note_colors));
                 if left {
                     settings.save(&base);
-                    // opened from a paused song: back to it, with what was changed
+                    // opened from a paused song: the song starts over with what was changed (OptionsState.hx's BACK
+                    // loads a new PlayState), its talk already heard and its game overs still counted
                     match held.take() {
-                        Some(playing) => Screen::Playing(Box::new(playing.with(&settings))),
+                        Some(playing) => Playing::open(&base, &playing.entry, &songs, &settings, 0.0, story.is_some(), true, playing.charting.clone()).map_or_else(Screen::Failed, |mut again| {
+                            again.deaths = playing.deaths;
+                            Screen::Playing(Box::new(again))
+                        }),
                         None => Screen::Menu(back),
                     }
                 } else {

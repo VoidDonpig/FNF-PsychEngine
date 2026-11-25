@@ -201,6 +201,17 @@ impl Song {
         }
     }
 
+    /// How long a sound still playing (or paused) is, in ms.
+    pub fn sound_length_ms(&self, id: u64) -> Option<f64> {
+        #[cfg(feature = "audio")]
+        return self.output.as_ref()?.sounds.lock().unwrap().iter().find(|voice| voice.id == id).map(|voice| voice.length_ms());
+        #[cfg(not(feature = "audio"))]
+        {
+            let _ = id;
+            None
+        }
+    }
+
     /// Changes a sound: what is given of its volume, pausing, place (ms) and pitch.
     pub fn tune_sound(&self, id: u64, volume: Option<f32>, paused: Option<bool>, ms: Option<f64>, pitch: Option<f64>) {
         #[cfg(feature = "audio")]
@@ -382,6 +393,10 @@ mod output {
     impl Voice {
         pub(super) fn ms(&self) -> f64 {
             self.cursor / self.rate * 1000.0
+        }
+
+        pub(super) fn length_ms(&self) -> f64 {
+            (self.samples.len() / 2) as f64 / self.rate * 1000.0
         }
 
         pub(super) fn set_ms(&mut self, ms: f64) {
