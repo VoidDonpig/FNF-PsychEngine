@@ -111,20 +111,21 @@ fn kdialog(ask: &Ask) -> Run {
     Run { program: "kdialog", args, env: Vec::new() }
 }
 
-/// The script reads what is asked from its arguments (`argv`): the title, the folder, the name offered.
+/// The script reads what is asked from its arguments (`argv`): the title, the folder, the name offered, the endings.
 #[cfg_attr(not(target_os = "macos"), allow(dead_code))]
 fn osascript(ask: &Ask) -> Run {
-    // shortcut: the endings are not used to filter the files offered (choose file would need their type names)
     let choose = match ask.save {
         None if ask.directory => "set chosen to choose folder with prompt (item 1 of argv) default location ((POSIX file (item 2 of argv)) as alias)",
         Some(_) => "set chosen to choose file name with prompt (item 1 of argv) default name (item 3 of argv) default location ((POSIX file (item 2 of argv)) as alias)",
-        None => "set chosen to choose file with prompt (item 1 of argv) default location ((POSIX file (item 2 of argv)) as alias)",
+        // (the endings come as one argument, split at spaces; with none, every file is offered)
+        None if ask.endings.is_empty() => "set chosen to choose file with prompt (item 1 of argv) default location ((POSIX file (item 2 of argv)) as alias)",
+        None => "set chosen to choose file with prompt (item 1 of argv) default location ((POSIX file (item 2 of argv)) as alias) of type (words of (item 4 of argv))",
     };
     let mut args = Vec::new();
     for line in ["on run argv", choose, "return POSIX path of chosen", "end run"] {
         args.extend([OsString::from("-e"), OsString::from(line)]);
     }
-    args.extend([OsString::from(ask.title), ask.folder.as_os_str().to_owned(), OsString::from(ask.save.unwrap_or(""))]);
+    args.extend([OsString::from(ask.title), ask.folder.as_os_str().to_owned(), OsString::from(ask.save.unwrap_or("")), OsString::from(ask.endings.join(" "))]);
     Run { program: "osascript", args, env: Vec::new() }
 }
 
@@ -262,9 +263,10 @@ mod tests {
         for ask in [&save, &open] {
             let run = osascript(ask);
             // the script lines hold nothing asked; the title, folder and name follow them, one argument each
-            let tail = &run.args[run.args.len() - 3..];
+            let tail = &run.args[run.args.len() - 4..];
             assert_eq!(tail[0], OsString::from(HOSTILE));
             assert_eq!(tail[1], folder.as_os_str());
+            assert_eq!(tail[3], OsString::from(ask.endings.join(" ")));
             assert_eq!(count(&run, "here"), 1);
             assert_eq!(count(&run, "touch"), if ask.save.is_some() { 2 } else { 1 });
             let run = powershell(ask);
@@ -276,6 +278,18 @@ mod tests {
         assert!(powershell(&save).env.contains(&("FUNKIN_DIALOG_NAME", OsString::from(HOSTILE))));
         assert!(powershell(&save).args.iter().any(|arg| arg.to_string_lossy().contains("SaveFileDialog")));
         assert!(powershell(&open).env.contains(&("FUNKIN_DIALOG_FILTER", OsString::from("*.json|*.json|All files (*.*)|*.*"))));
+    }
+
+    #[test]
+    fn open_dialogs_offer_only_the_endings_asked() {
+        let ask = Ask { title: "t", folder: Path::new("/f"), save: None, endings: &["json", "png"], directory: false };
+        assert!(osascript(&ask).args.iter().any(|arg| arg.to_string_lossy().ends_with("of type (words of (item 4 of argv))")));
+        assert_eq!(osascript(&ask).args.last(), Some(&OsString::from("json png")));
+        assert!(zenity(&ask).args.contains(&OsString::from("--file-filter=*.json *.png | *.json *.png")));
+        assert_eq!(kdialog(&ask).args.last(), Some(&OsString::from("*.json *.png")));
+        assert!(powershell(&ask).env.contains(&("FUNKIN_DIALOG_FILTER", OsString::from("*.json;*.png|*.json;*.png|All files (*.*)|*.*"))));
+        let any = Ask { endings: &[], ..ask };
+        assert!(!osascript(&any).args.iter().any(|arg| arg.to_string_lossy().contains("of type")));
     }
 
     #[test]
