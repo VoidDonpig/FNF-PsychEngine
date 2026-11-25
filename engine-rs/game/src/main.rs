@@ -1274,7 +1274,8 @@ impl Playing {
         match (name, number) {
             ("FlxG.fullscreen" | "Lib.application.window.fullscreen", Some(on)) => self.settings.fullscreen = on != 0.0,
             // kept for the scripts to read back (Shared.class_props), the game acts on none of them
-            ("Lib.application.window.title" | "FlxG.sound.volume" | "FlxG.sound.muted" | "FlxG.timeScale" | "FlxG.autoPause" | "GameOverSubstate.deathDelay" | "FlxTransitionableState.skipNextTransIn" | "FlxTransitionableState.skipNextTransOut", _) => {}
+            ("Lib.application.window.title", _) => if let Some(title) = value.as_str() { set_title(title) },
+            ("FlxG.sound.volume" | "FlxG.sound.muted" | "FlxG.timeScale" | "FlxG.autoPause" | "GameOverSubstate.deathDelay" | "FlxTransitionableState.skipNextTransIn" | "FlxTransitionableState.skipNextTransOut", _) => {}
             ("health", Some(health)) => self.play.health = health.clamp(0.0, 2.0),
             ("songSpeed", Some(speed)) => self.speed = speed as f32,
             ("songScore", Some(score)) => self.play.score = score as i64,

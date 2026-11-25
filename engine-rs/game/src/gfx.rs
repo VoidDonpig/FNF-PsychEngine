@@ -247,8 +247,9 @@ struct Mouse {
     down: bool,
     pressed: bool,
     released: bool,
-    /// The right button is down.
+    /// The right button is down, and went down this frame.
     right: bool,
+    right_pressed: bool,
     /// Notches turned this frame, away from the player positive.
     wheel: f32,
     moved: bool,
@@ -1364,7 +1365,7 @@ impl Context {
         self.released.clear();
         self.typed.clear(); // letters nobody read this frame were not meant for the next screen
         self.alt_enter = false;
-        (self.mouse.pressed, self.mouse.released, self.mouse.wheel, self.mouse.moved) = (false, false, 0.0, false);
+        (self.mouse.pressed, self.mouse.released, self.mouse.wheel, self.mouse.moved, self.mouse.right_pressed) = (false, false, 0.0, false, false);
         if let Some(mut event_loop) = self.event_loop.take() {
             if let winit::platform::pump_events::PumpStatus::Exit(_) = event_loop.pump_app_events(Some(Duration::ZERO), &mut self.app) {
                 self.open = false;
@@ -1392,7 +1393,10 @@ impl Context {
                     self.mouse.at = vec2(position.x as f32 / self.config.width as f32, position.y as f32 / self.config.height as f32);
                     self.mouse.moved = true;
                 }
-                WindowEvent::MouseInput { state, button: winit::event::MouseButton::Right, .. } => self.mouse.right = state == ElementState::Pressed,
+                WindowEvent::MouseInput { state, button: winit::event::MouseButton::Right, .. } => {
+                    self.mouse.right_pressed |= state == ElementState::Pressed && !self.mouse.right;
+                    self.mouse.right = state == ElementState::Pressed;
+                }
                 WindowEvent::MouseInput { state, button: winit::event::MouseButton::Left, .. } => {
                     self.mouse.down = state == ElementState::Pressed;
                     self.mouse.pressed |= self.mouse.down;
@@ -1693,6 +1697,11 @@ pub fn is_mouse_pressed() -> bool {
     with(|context| context.mouse.pressed)
 }
 
+/// The right button went down this frame.
+pub fn is_mouse_right_pressed() -> bool {
+    with(|context| context.mouse.right_pressed)
+}
+
 pub fn is_mouse_right_down() -> bool {
     with(|context| context.mouse.right)
 }
@@ -1752,6 +1761,11 @@ pub fn get_fps() -> i32 {
 /// How many pictures a second the display the window is on shows, where the system says.
 pub fn refresh_rate() -> Option<f64> {
     with(|context| context.window.current_monitor()?.refresh_rate_millihertz().map(|rate| rate as f64 / 1000.0))
+}
+
+/// The window's title (a script's Lib.application.window.title).
+pub fn set_title(title: &str) {
+    with(|context| context.window.set_title(title));
 }
 
 /// `exclusive`: the display is taken for the game alone, instead of covered by a window without borders.

@@ -83,8 +83,8 @@ function instanceArg(name, class)
     return text
 end
 -- the few static methods of the Haxe engine's classes with an answer here, by class (its package left off) and name
--- shortcut: only those listed here are called (FlxG's camera, random and sound.play, CoolUtil, FlxMath, Std, Math); openURL and
--- browserLoad only say they cannot open a page; each other class not known here says so once
+-- shortcut: only those listed here are called (FlxG's camera, random and sound.play, openURL, CoolUtil, FlxMath, Std, Math); each
+-- other class not known here says so once
 do
     local told = {}
     local methods = {
@@ -97,8 +97,8 @@ do
         ['FlxG.resetState'] = function() restartSong() end,
         ['FlxG.cameras.add'] = function() end,
         ['FlxG.sound.play'] = function(a) playSound(a[1], a[2] or 1) end,
-        ['FlxG.openURL'] = function(a) debugPrint('openURL: ' .. tostring(a[1]) .. ' is not opened here') end,
-        ['CoolUtil.browserLoad'] = function(a) debugPrint('browserLoad: ' .. tostring(a[1]) .. ' is not opened here') end,
+        ['FlxG.openURL'] = function(a) __openLink(tostring(a[1])) end,
+        ['CoolUtil.browserLoad'] = function(a) __openLink(tostring(a[1])) end,
         ['CoolUtil.floorDecimal'] = function(a) local m = 10 ^ (a[2] or 0) return math.floor(a[1] * m) / m end,
         ['CoolUtil.boundTo'] = function(a) return math.max(a[2], math.min(a[3], a[1])) end,
         ['FlxMath.bound'] = function(a) return math.max(a[2], math.min(a[3], a[1])) end,
@@ -359,8 +359,8 @@ pub struct Scripts {
 
 /// What getPropertyFromClass answers: the Haxe engine's classes scripts read, by class (its package left off) and field.
 /// shortcut: these classes only (ClientPrefs.data, PlayState and its instance, Conductor, FlxG's size, time, sound, camera,
-/// mouse and keys, GameOverSubstate, Lib's window, FlxTransitionableState); the rest are said not to be known. The mouse's
-/// right button reads as held (not just pressed), and the camera's x, y and angle are always 0.
+/// mouse and keys, GameOverSubstate, Lib's window, FlxTransitionableState); the rest are said not to be known. The camera's
+/// x, y and angle always read 0.
 fn class_read(shared: &Shared, class: &str, field: &str) -> Option<serde_json::Value> {
     use serde_json::json;
     if (class, field) == ("CustomSubstate", "name") {
@@ -386,7 +386,8 @@ fn class_read(shared: &Shared, class: &str, field: &str) -> Option<serde_json::V
         ("FlxG", "mouse.justPressed") => return Some(json!(is_mouse_pressed())),
         ("FlxG", "mouse.pressed") => return Some(json!(is_mouse_down())),
         ("FlxG", "mouse.justReleased") => return Some(json!(is_mouse_released())),
-        ("FlxG", "mouse.justPressedRight" | "mouse.pressedRight") => return Some(json!(is_mouse_right_down())),
+        ("FlxG", "mouse.justPressedRight") => return Some(json!(is_mouse_right_pressed())),
+        ("FlxG", "mouse.pressedRight") => return Some(json!(is_mouse_right_down())),
         ("FlxG", "mouse.wheel") => return Some(json!(mouse_wheel())),
         _ => {}
     }
@@ -1668,6 +1669,8 @@ impl Scripts {
         for (name, state) in [("gamepadJustPressed", crate::pad::pressed as fn(crate::pad::Button) -> bool), ("gamepadPressed", crate::pad::down), ("gamepadReleased", crate::pad::released)] {
             g.set(name, lua.create_function(move |_, args: (Value, String)| Ok(crate::pad::named(&args.1).is_some_and(state)))?)?;
         }
+        // (only web addresses are opened, by the credits menu's link opener)
+        g.set("__openLink", lua.create_function(|_, link: String| { crate::menu::open_link(&link); Ok(()) })?)?;
         g.set("mouseClicked", lua.create_function(|_, _args: Option<String>| Ok(is_mouse_pressed()))?)?;
         g.set("mousePressed", lua.create_function(|_, _args: Option<String>| Ok(is_mouse_down()))?)?;
         g.set("getMouseX", lua.create_function(|_, _args: Option<String>| Ok(mouse_position(vec2(1280.0, 720.0)).x as f64))?)?;
