@@ -3,7 +3,7 @@ use crate::atlas::{draw_frame, Frame, Sheet};
 use crate::audio::Song;
 use crate::{Skin, HEIGHT, WIDTH};
 use funkin_core::content::{mods as find_mods, save_mods, song_path, top_mod, Paths, SongEntry, Week};
-use funkin_core::achievements::{LIST as ACHIEVEMENTS, ROADKILL};
+use funkin_core::achievements::{all as all_achievements, floor_decimal, Listed};
 use funkin_core::save::Save;
 use funkin_core::lang::{phrase, phrase_with};
 use funkin_core::title::{typed, Title};
@@ -489,6 +489,8 @@ pub struct Menus {
     /// Selected achievement, and how far its list has scrolled.
     achievement: usize,
     achievement_scroll: f32,
+    /// Every achievement there is: the game's, then the mods'; read again when the mods change.
+    listed: Rc<Vec<Listed>>,
     /// An achievement was unlocked while the menus had no sound: its chime is still owed.
     pub chime: bool,
     /// For how long Up or Down has been held: a list runs on after half a second.
@@ -595,7 +597,7 @@ impl Menus {
             art, look: None, letters: String::new(), secret: None, jingle: None, fade: None, hue: 0.0,
             alphabet: Alphabet::load(&paths), paths, audio: None, music_at: 0.0, intro: true, wacky: [wacky.0.to_owned(), wacky.1.to_owned()], flash: (f64::MIN, 1.0), chosen: None,
             main_row: 0, main_side: 0, main_slide: 0.0, main_spots: Vec::new(), main_pointed: false, week: 0, week_scroll: 0.0, difficulty: "Normal".to_owned(), rows: Vec::new(), song: 0, song_scroll: 0.0, editor: 0, editor_scroll: 0.0, editor_folder: 0, said: None, tint: Vec3::ONE, shown: (0.0, 0.0),
-            credits: Vec::new(), credit: 0, credit_scroll: 0.0, mods: Vec::new(), mod_row: 0, mods_changed: false, mod_center: 2, mod_focus: None, mod_hover: None, mod_dragging: false, mods_scan: 0.0, reload: false, flashing: true, shaders: true, achievement: 0, achievement_scroll: 0.0, chime: false, held: 0.0, preview: false, asking: None, player: Player::default(), restart: false,
+            credits: Vec::new(), credit: 0, credit_scroll: 0.0, mods: Vec::new(), mod_row: 0, mods_changed: false, mod_center: 2, mod_focus: None, mod_hover: None, mod_dragging: false, mods_scan: 0.0, reload: false, flashing: true, shaders: true, achievement: 0, achievement_scroll: 0.0, listed: Rc::new(all_achievements(base)), chime: false, held: 0.0, preview: false, asking: None, player: Player::default(), restart: false,
         }
     }
 
@@ -1357,26 +1359,28 @@ impl Menus {
         friday_night().then_some("friday_night_play")
     }
 
-    /// The picture of an achievement: its own, or the padlock while it is locked.
-    fn badge(&mut self, id: &str, unlocked: bool) -> Option<Texture2D> {
+    /// The picture of an achievement: its own (looked for in the mod that declared it first), or the padlock while it is locked.
+    fn badge(&mut self, id: &str, from: Option<&str>, unlocked: bool) -> Option<Texture2D> {
         if !unlocked {
             return self.art.own("achievements/lockedachievement");
         }
-        [format!("achievements/{id}-pixel"), format!("achievements/{id}"), "unknownMod".to_owned()].iter().find_map(|name| self.art.own(name))
+        let (pixel, plain) = (format!("achievements/{id}-pixel"), format!("achievements/{id}"));
+        [pixel, plain].iter().find_map(|name| self.art.image(from.unwrap_or(""), name)).or_else(|| self.art.own("unknownMod"))
     }
 
     /// The notice that an achievement was unlocked, `age` seconds after it was. It drops in at the top left, stays, and leaves.
     pub fn popup(&mut self, skin: &Skin, id: &str, age: f32, slot: usize) {
-        let Some(achievement) = ACHIEVEMENTS.iter().find(|achievement| achievement.id == id) else { return };
+        let all = self.listed.clone();
+        let Some(achievement) = all.iter().find(|achievement| achievement.id == id) else { return };
         let shown = (age / 0.4).min((4.0 - age) / 0.4).clamp(0.0, 1.0);
         let (x, y) = (20.0, -130.0 + 150.0 * shown + slot as f32 * 140.0);
         draw_rectangle(x, y, 420.0, 130.0, BLACK);
-        if let Some(picture) = self.badge(id, true) {
+        if let Some(picture) = self.badge(id, achievement.from.as_deref(), true) {
             draw_texture_ex(&picture, x + 15.0, y + 15.0, WHITE, DrawTextureParams { dest_size: Some(vec2(100.0, 100.0)), ..Default::default() });
         }
-        label(skin, &phrase(&format!("achievement_{id}"), achievement.name), x + 130.0, y + 35.0, 16, WHITE, false);
+        label(skin, &phrase(&format!("achievement_{id}"), &achievement.name), x + 130.0, y + 35.0, 16, WHITE, false);
         let measure = |text: &str| measure_text(text, skin.font.as_ref(), 16, 1.0).width;
-        for (row, line) in wrap(&phrase(&format!("description_{id}"), achievement.text), 270.0, measure).iter().enumerate() {
+        for (row, line) in wrap(&phrase(&format!("description_{id}"), &achievement.text), 270.0, measure).iter().enumerate() {
             label(skin, line, x + 130.0, y + 65.0 + row as f32 * 18.0, 16, WHITE, false);
         }
     }
@@ -1444,7 +1448,8 @@ impl Menus {
             draw_texture_ex(&picture, (WIDTH - size.x) / 2.0, (HEIGHT - size.y) / 2.0, WHITE, DrawTextureParams { dest_size: Some(size), ..Default::default() });
         }
         // hidden ones stay out of the list until they are unlocked
-        let listed: Vec<_> = ACHIEVEMENTS.iter().filter(|achievement| !achievement.hidden || save.unlocked(achievement.id)).collect();
+        let all = self.listed.clone();
+        let listed: Vec<_> = all.iter().filter(|achievement| !achievement.hidden || save.unlocked(&achievement.id)).collect();
         let (dx, dy) = (pressed(&RIGHT) as i32 - pressed(&LEFT) as i32, pressed(&DOWN) as i32 - pressed(&UP) as i32);
         self.achievement = self.achievement.min(listed.len() - 1);
         if dx != 0 || dy != 0 {
@@ -1459,7 +1464,7 @@ impl Menus {
         draw_rectangle((WIDTH - 750.0) / 2.0, top - 30.0, 750.0, height + 60.0, Color::new(0.0, 0.0, 0.0, 0.6));
         for (index, achievement) in listed.iter().enumerate() {
             let at = vec2(295.0 + 180.0 * (index % 4) as f32, top + (index / 4) as f32 * 180.0);
-            if let Some(picture) = self.badge(achievement.id, save.unlocked(achievement.id)) {
+            if let Some(picture) = self.badge(&achievement.id, achievement.from.as_deref(), save.unlocked(&achievement.id)) {
                 let params = DrawTextureParams { dest_size: Some(vec2(150.0, 150.0)), ..Default::default() };
                 draw_texture_ex(&picture, at.x, at.y, white(if index == self.achievement { 1.0 } else { 0.6 }), params);
             }
@@ -1469,15 +1474,16 @@ impl Menus {
         let centred = |text: &str, top: f32, size: u16| {
             label(skin, text, (WIDTH - measure_text(text, skin.font.as_ref(), size, 1.0).width) / 2.0, top, size, WHITE, false);
         };
-        let (name, text) = (phrase(&format!("achievement_{}", selected.id), selected.name), phrase(&format!("description_{}", selected.id), selected.text));
-        centred(if save.unlocked(selected.id) { &name } else { "???" }, 580.0, 32);
+        let (name, text) = (phrase(&format!("achievement_{}", selected.id), &selected.name), phrase(&format!("description_{}", selected.id), &selected.text));
+        centred(if save.unlocked(&selected.id) { &name } else { "???" }, 580.0, 32);
         // one that is counted up to says how far it is
-        let counted = Some(save.counted(selected.id)).filter(|count| selected.id == ROADKILL.0 && *count < ROADKILL.1);
-        centred(&counted.map_or(text.clone(), |count| format!("{text} ({count} / {})", ROADKILL.1)), 618.0, 24);
-        if save.unlocked(selected.id) {
+        let counted = Some(save.counted(&selected.id)).filter(|_| selected.max_score >= 1.0 && !save.unlocked(&selected.id));
+        let shown = |value: f64| floor_decimal(value, selected.max_decimals);
+        centred(&counted.map_or(text.clone(), |count| format!("{text} ({} / {})", shown(count), shown(selected.max_score))), 618.0, 24);
+        if save.unlocked(&selected.id) {
             label(skin, "R: reset", WIDTH - 10.0, 690.0, 16, GRAY, true);
             if pressed(&Ui::Reset) {
-                self.asking = Some((Reset::Achievement, selected.id.to_owned(), String::new(), format!("{}?", selected.name), false, 0.0));
+                self.asking = Some((Reset::Achievement, selected.id.clone(), String::new(), format!("{}?", selected.name), false, 0.0));
             }
         }
         if pressed(&BACK) {
@@ -1871,6 +1877,7 @@ impl Menus {
                 // everything found through the mods is found again
                 (self.reload, self.mods_changed) = (true, false);
                 self.art = Art::new(&base);
+                self.listed = Rc::new(all_achievements(&base));
                 self.paths = Paths::new(&base, &self.art.top, "");
                 self.look = None;
                 self.rows.clear();

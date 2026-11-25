@@ -4,7 +4,7 @@ use serde_json::{json, Value};
 use std::collections::{BTreeMap, BTreeSet};
 use std::path::{Path, PathBuf};
 
-#[derive(Debug, Default, PartialEq)]
+#[derive(Clone, Debug, Default, PartialEq)]
 pub struct Save {
     /// Best score of a song on a difficulty, with the accuracy (0 to 1) of that run.
     songs: BTreeMap<String, (i64, f64)>,
@@ -14,8 +14,8 @@ pub struct Save {
     completed: BTreeSet<String>,
     /// Achievements unlocked, by id.
     achievements: BTreeSet<String>,
-    /// How far the achievements that are counted up to have got.
-    counts: BTreeMap<String, u32>,
+    /// How far the achievements that are counted up to have got (a mod's may count in fractions).
+    counts: BTreeMap<String, f64>,
     /// The word last typed on the title screen, while its dancer stays.
     pub egg: String,
 }
@@ -76,16 +76,21 @@ impl Save {
     /// One more toward an achievement that is counted up to `goal`. True when this one reached it.
     pub fn count(&mut self, achievement: &str, goal: u32) -> bool {
         let count = self.counts.entry(achievement.to_owned()).or_default();
-        *count = (*count + 1).min(goal);
-        *count == goal && self.unlock(achievement)
+        *count = (*count + 1.0).min(goal as f64);
+        *count == goal as f64 && self.unlock(achievement)
     }
 
-    pub fn counted(&self, achievement: &str) -> u32 {
-        self.counts.get(achievement).copied().unwrap_or(0)
+    pub fn counted(&self, achievement: &str) -> f64 {
+        self.counts.get(achievement).copied().unwrap_or(0.0)
     }
 
     pub fn unlocked(&self, achievement: &str) -> bool {
         self.achievements.contains(achievement)
+    }
+
+    /// Sets how far a counted achievement has got.
+    pub fn set_counted(&mut self, achievement: &str, count: f64) {
+        self.counts.insert(achievement.to_owned(), count);
     }
 
     /// A week stays locked until the week before it is finished.
@@ -113,8 +118,8 @@ impl Save {
         self.completed.extend(entries("weekCompleted").filter(|(_, done)| *done == true).map(|(week, _)| week));
         self.achievements.extend(saved["achievementsUnlocked"].as_array().into_iter().flatten().filter_map(|id| id.as_str().map(str::to_owned)));
         for (id, count) in entries("achievementsVariables") {
-            let kept = self.counts.entry(id).or_insert(0);
-            *kept = (*kept).max(count.as_f64().unwrap_or(0.0) as u32);
+            let kept = self.counts.entry(id).or_insert(0.0);
+            *kept = kept.max(count.as_f64().unwrap_or(0.0));
         }
         if self.egg.is_empty() {
             self.egg = saved["psychDevsEasterEgg"].as_str().unwrap_or("").to_owned();
@@ -144,7 +149,7 @@ impl Save {
             weeks: entries("weeks").filter_map(|(name, score)| Some((name, score.as_i64()?))).collect(),
             completed: names("completed"),
             achievements: names("achievements"),
-            counts: entries("counts").filter_map(|(name, count)| Some((name, count.as_u64()? as u32))).collect(),
+            counts: entries("counts").filter_map(|(name, count)| Some((name, count.as_f64()?))).collect(),
             egg: value["egg"].as_str().unwrap_or("").to_owned(),
         }
     }
@@ -157,6 +162,21 @@ impl Save {
         if let Err(error) = crate::files::write(&file(base), &self.to_json()) {
             eprintln!("Could not save the scores: {error}");
         }
+    }
+}
+
+impl crate::achievements::Progress for Save {
+    fn unlocked(&self, id: &str) -> bool {
+        Save::unlocked(self, id)
+    }
+    fn unlock(&mut self, id: &str) -> bool {
+        Save::unlock(self, id)
+    }
+    fn value(&self, id: &str) -> f64 {
+        self.counted(id)
+    }
+    fn set_value(&mut self, id: &str, value: f64) {
+        self.set_counted(id, value);
     }
 }
 
@@ -177,7 +197,7 @@ mod tests {
         assert_eq!((save.song("Fresh", "Normal"), save.song("Bopeebo", "Hard")), ((900, 0.5), (1200, 0.95)));
         assert_eq!((save.week("week1", "Hard"), save.completed.contains("week1"), save.completed.contains("week2")), (5000, true, false));
         assert!(save.unlocked("ur_bad") && save.unlocked("hype"));
-        assert_eq!((save.counted("roadkill_enthusiast"), save.egg.as_str()), (12, "PESSY"));
+        assert_eq!((save.counted("roadkill_enthusiast"), save.egg.as_str()), (12.0, "PESSY"));
     }
 
     #[test]
@@ -206,7 +226,7 @@ mod tests {
         save.forget("hype");
         // counted up to: unlocked by the count that reaches the goal, and only by that one
         assert_eq!([save.count("roadkill", 3), save.count("roadkill", 3), save.count("roadkill", 3), save.count("roadkill", 3)], [false, false, true, false]);
-        assert!(save.unlocked("roadkill") && save.counted("roadkill") == 3 && save.counted("hype") == 0);
+        assert!(save.unlocked("roadkill") && save.counted("roadkill") == 3.0 && save.counted("hype") == 0.0);
         assert!(save.unlocked("ur_good") && !save.unlocked("hype"));
         assert_eq!(Save::from_json(&save.to_json()), save);
         assert_eq!(Save::from_json("not json"), Save::default());

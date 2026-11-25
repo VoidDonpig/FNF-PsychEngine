@@ -94,7 +94,10 @@ Done:
   back to its title screen. Mods switched off bring no weeks; mods that run globally lend their files to every song.
 - **Achievements**: the Haxe engine's list and rules (a week on Hard without a miss, a rating of 100% or
   under 20%, no idling, two keys only, ten seconds of singing, Friday night, the lowest graphics), a
-  notice when one is unlocked, and the achievements menu (R locks one again).
+  notice when one is unlocked, and the achievements menu (R locks one again). Mods' own (`data/achievements.json`:
+  `save`, `name`, `description`, `hidden`, `maxScore`, `maxDecimals`) are listed after the game's, with their pictures
+  from the mod's `images/achievements/<save>.png`; Lua counts them up and unlocks them (getAchievementScore,
+  setAchievementScore, addAchievementScore, unlockAchievement, isAchievementUnlocked, achievementExists).
 - **Saved data**: best score and accuracy of every song and difficulty, best week scores, finished weeks
   (which unlock the weeks after them). Runs on botplay are not kept.
 - **Options**: key binds (two per lane); gameplay: downscroll, middlescroll, opponent notes, ghost
@@ -281,7 +284,7 @@ Not there yet:
 - **Play screen**: the events and note types that belong to scripts (Set Property beyond the camera, custom
   ones); the rain of weekend 1 (on the streets and in the fight; the Shaders switch turns it off with the title's
   colour shift) is drawn as falling streaks, growing heavier through the song, not with the Haxe engine's shader.
-- **Menus**: achievements of mods; the GPU Caching switch (nothing to switch here); update check.
+- **Menus**: the GPU Caching switch (nothing to switch here); update check.
 - **Scripts**: the rest of Lua's functions (notes' own textures and health, shaders, groups, and getProperty/setProperty
   beyond the camera, health, score, the characters' place and the scripts' sprites); custom events and note types run by scripts. HScript is Haxe code run against the Haxe
   engine's own classes, so mods that use it cannot run here as they are. Custom shaders.

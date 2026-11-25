@@ -1962,7 +1962,7 @@ fn main() {
     // story mode: the week being played, the songs still to come, and the score and the misses so far
     let mut story: Option<(usize, Vec<usize>, i64, u32)> = None;
     // achievements just unlocked, with the time each was, and whether their chime is still to play
-    let mut toasts: Vec<(&'static str, f64)> = Vec::new();
+    let mut toasts: Vec<(String, f64)> = Vec::new();
     let mut chime = false;
     let mut greeted = false;
     let mut fullscreen = (settings.fullscreen, false);
@@ -2112,7 +2112,7 @@ fn main() {
                 Some(Go::Unlock(id)) => {
                     if save.unlock(id) {
                         save.save(&base);
-                        toasts.push((id, get_time()));
+                        toasts.push((id.to_owned(), get_time()));
                         chime = true;
                     }
                     Screen::Menu(page)
@@ -2159,16 +2159,29 @@ fn main() {
                     Some(skin) => {
                         let own = playing.own_skin.clone();
                         let skin = own.as_deref().or(pixel_skin.as_ref().filter(|_| playing.pixel())).unwrap_or(skin);
+                        // the scripts' achievement functions work on a copy of the save
+                        if !playing.lua.is_empty() && playing.lua.shared.borrow().achievements.is_none() {
+                            playing.lua.shared.borrow_mut().achievements = Some((funkin_core::achievements::all(&base), save.clone()));
+                        }
                         let flow = playing.update(&key_events, skin);
                         playing.draw(skin, &|text, x, y, alpha| menus.write(skin, text, true, x, y, 1.0, alpha));
                         flow
                     }
                     None => Flow::Quit,
                 };
+                // what the scripts counted toward achievements, and those they unlocked
+                for (id, score, unlocked) in std::mem::take(&mut playing.lua.shared.borrow_mut().achieved) {
+                    score.into_iter().for_each(|score| save.set_counted(&id, score));
+                    if unlocked && save.unlock(&id) {
+                        toasts.push((id, get_time()));
+                        chime = true;
+                    }
+                    save.save(&base);
+                }
                 // the henchmen swept off the limo, fifty times over all the songs ever played
                 for _ in 0..playing.scene.as_mut().map_or(0, |scene| std::mem::take(&mut scene.kills)) {
                     if save.count(ROADKILL.0, ROADKILL.1) {
-                        toasts.push((ROADKILL.0, get_time()));
+                        toasts.push((ROADKILL.0.to_owned(), get_time()));
                         chime = true;
                     }
                     save.save(&base);
@@ -2176,7 +2189,7 @@ fn main() {
                 // ten seconds of singing without a rest
                 if playing.sang_for >= 10.0 && playing.settings.keeps_scores() && save.unlock("oversinging") {
                     save.save(&base);
-                    toasts.push(("oversinging", get_time()));
+                    toasts.push(("oversinging".to_owned(), get_time()));
                     chime = true;
                 }
                 // what the week goes on with, as its folder is called
@@ -2206,7 +2219,7 @@ fn main() {
                             lanes_used: playing.lanes_used.iter().filter(|used| **used).count(), flawless_week };
                         for id in earned(&run) {
                             if save.unlock(id) {
-                                toasts.push((id, get_time()));
+                                toasts.push((id.to_owned(), get_time()));
                                 chime = true;
                             }
                         }
@@ -2453,7 +2466,7 @@ fn main() {
         if matches!(screen, Screen::Menu(Page::Main)) && !std::mem::replace(&mut greeted, true) {
             if let Some(id) = menus.greeting().filter(|id| save.unlock(id)) {
                 save.save(&base);
-                toasts.push((id, get_time()));
+                toasts.push((id.to_owned(), get_time()));
                 chime = true;
             }
         }

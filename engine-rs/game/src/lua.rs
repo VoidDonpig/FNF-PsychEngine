@@ -4,6 +4,7 @@
 //! which the play screen keeps up to date.
 use crate::atlas::{Frame, Sheet};
 use crate::gfx::*;
+use funkin_core::achievements::{exists, score, Op};
 use mlua::{Function, Lua, MultiValue, Value};
 use std::cell::RefCell;
 use std::collections::HashMap;
@@ -147,6 +148,10 @@ pub struct Shared {
     running: Vec<String>,
     /// The tagged sounds playing ("" the song's music), as the play screen last told: volume, place in ms, pitch.
     pub sounds: HashMap<String, (f32, f64, f64)>,
+    /// The achievements there are (the game's and the mods') and a copy of the save, which the achievement functions
+    /// work on; what they changed (id, score, unlocked just now) is the game's to keep.
+    pub achievements: Option<(Vec<funkin_core::achievements::Listed>, funkin_core::save::Save)>,
+    pub achieved: Vec<(String, Option<f64>, bool)>,
 }
 
 struct Script {
@@ -820,6 +825,51 @@ impl Scripts {
             }
             Ok(())
         });
+        // the achievements: scores counted up to a top that unlocks, as Achievements.addLuaCallbacks
+        for (name, op, amount) in [("getAchievementScore", Op::Get, 0.0), ("setAchievementScore", Op::Set, 0.0), ("addAchievementScore", Op::Add, 1.0)] {
+            function!(name, |_lua, shared, args: (String, Option<f64>)| {
+                let mut shared = shared.borrow_mut();
+                let shared = &mut *shared;
+                let Some((list, save)) = shared.achievements.as_mut().filter(|(list, _)| exists(list, &args.0)) else {
+                    shared.printed.push((format!("{name}: Couldnt find achievement: {}", args.0), crate::gfx::get_time()));
+                    return Ok(Some(-1.0));
+                };
+                match score(list, save, &args.0, op, args.1.unwrap_or(amount)) {
+                    Ok(now) => {
+                        if op != Op::Get {
+                            shared.achieved.push((args.0, Some(now.value), now.unlocked_now));
+                        }
+                        Ok(Some(now.value))
+                    }
+                    Err(error) => {
+                        shared.printed.push((error, crate::gfx::get_time()));
+                        Ok(None)
+                    }
+                }
+            });
+        }
+        function!("unlockAchievement", |_lua, shared, args: String| {
+            let mut shared = shared.borrow_mut();
+            let shared = &mut *shared;
+            let Some((_, save)) = shared.achievements.as_mut().filter(|(list, _)| exists(list, &args)) else {
+                shared.printed.push((format!("unlockAchievement: Couldnt find achievement: {args}"), crate::gfx::get_time()));
+                return Ok(None);
+            };
+            if !save.unlock(&args) {
+                return Ok(None);
+            }
+            shared.achieved.push((args.clone(), None, true));
+            Ok(Some(args))
+        });
+        function!("isAchievementUnlocked", |_lua, shared, args: String| {
+            let mut shared = shared.borrow_mut();
+            let known = shared.achievements.as_ref().filter(|(list, _)| exists(list, &args)).map(|(_, save)| save.unlocked(&args));
+            if known.is_none() {
+                shared.printed.push((format!("isAchievementUnlocked: Couldnt find achievement: {args}"), crate::gfx::get_time()));
+            }
+            Ok(known)
+        });
+        function!("achievementExists", |_lua, shared, args: String| Ok(shared.borrow().achievements.as_ref().is_some_and(|(list, _)| exists(list, &args))));
         request!("restartSong", |_args: Option<bool>| Request::RestartSong);
         request!("exitSong", |_args: Option<bool>| Request::ExitSong);
         function!("setProperty", |_lua, shared, args: (String, Value)| {
