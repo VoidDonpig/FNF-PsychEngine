@@ -478,13 +478,11 @@ impl Playing {
         tracks.extend(voices_opponent.as_deref());
         // the tracks are decoded while the stage and the characters load (the song then finds them decoded)
         let scene = std::thread::scope(|scope| {
-            if start_at <= 0.0 {
-                scope.spawn(|| audio::decode(&tracks));
-            }
+            scope.spawn(|| audio::decode(&tracks));
             scene::Scene::load(base, &entry.source, &chart, settings.low_quality, settings.shaders, story).map_err(|e| eprintln!("Stage: {e}")).ok()
         });
-        // shortcut: --at only moves the silent clock (it exists for screenshots); seek the audio too to make it a practice feature.
-        let song = audio::Song::load_at(if start_at > 0.0 { &[] } else { &tracks }, settings.playback_rate);
+        // --at starts the music there (Haxe's startOnTime), without the countdown
+        let mut song = audio::Song::load_at(&tracks, settings.playback_rate);
         // five beats of countdown, as the Haxe engine does
         let lead_in = if start_at > 0.0 { 0.0 } else { 5.0 * 60000.0 / chart.bpm };
         let speed = settings.note_speed(chart.speed) as f32;
@@ -496,6 +494,7 @@ impl Playing {
         let settings = &Settings { botplay: settings.botplay || std::env::args().any(|arg| arg == "--bot"), ..settings.clone() };
         let mut play = Play::new(chart, settings.botplay);
         play.skip_to(start_at);
+        song.seek(start_at - play.chart.offset);
         // shortcut: in story mode the week goes on at the difficulty it began with; let the rest of the week change with it if that is missed
         let difficulties = if story { Vec::new() } else { songs.iter().filter(|other| other.week == entry.week && other.title == entry.title).map(|other| other.difficulty.clone()).collect() };
         atlas::forget_unused();
@@ -840,7 +839,7 @@ impl Playing {
                     // the song goes on from there, back or forward: the notes before it count for nothing
                     let to = self.skip_time;
                     self.play.skip_to(to);
-                    self.song.seek(to - self.start_at - self.play.chart.offset);
+                    self.song.seek(to - self.play.chart.offset);
                     self.position = to;
                     self.paused = None;
                     self.lua.call("onResume", ());
@@ -892,7 +891,7 @@ impl Playing {
         // (the music at a script's speed: the song keeps time by it; held by a script, it waits)
         let elapsed = std::mem::replace(&mut self.ticked, std::time::Instant::now()).elapsed().as_secs_f64() * 1000.0 * self.music_pitch.unwrap_or(rate);
         let now = match (self.started, self.music_held) {
-            (true, false) => self.clock.advance(elapsed, self.start_at + self.song.position_ms() + self.play.chart.offset),
+            (true, false) => self.clock.advance(elapsed, self.song.position_ms() + self.play.chart.offset),
             (true, true) => self.position,
             _ => self.waited - lead_in + self.preview.unwrap_or(0.0),
         };
@@ -1141,7 +1140,7 @@ impl Playing {
                     }
                 }
                 Time(ms) => {
-                    let to = ms.max(0.0) + self.start_at + self.play.chart.offset;
+                    let to = ms.max(0.0) + self.play.chart.offset;
                     // (back: the notes from there come again; forward: those passed are missed, as in Haxe)
                     if to < self.position {
                         self.play.skip_to(to);
