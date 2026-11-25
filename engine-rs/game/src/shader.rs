@@ -209,10 +209,10 @@ const VERTEX_BODY: &str = "openfl_TextureCoordv = openfl_TextureCoord; gl_Positi
 /// What stands where a vertex shader says `#pragma header`: the corner where the sprite put it, in the world's pixels
 /// (before the camera), and the matrix of the camera's way to the screen, so `openfl_Matrix * openfl_Position` is where
 /// the corner is.
-// shortcut: `openfl_Position` is in the world's pixels, with the camera's scroll still in them (Flixel hands over places with
-// the scroll taken off); `openfl_Matrix` carries the scroll and zoom, so their product is the same
-const VERTEX_HEADER: &str = "#define openfl_Position vec4(funkin_world, 0.0, 1.0)
-#define openfl_Matrix mat4(funkin_view.x, 0.0, 0.0, 0.0, 0.0, funkin_view.z, 0.0, 0.0, 0.0, 0.0, 1.0, 0.0, funkin_view.y, funkin_view.w, 0.0, 1.0)
+// As in Flixel, `openfl_Position` has the camera's scroll taken off (the scroll is where the view's left/top edge, -1/+1 on
+// screen, lies in the world: worked back from `funkin_view`), so `openfl_Matrix` only scales and moves the view's corner to -1/+1.
+const VERTEX_HEADER: &str = "#define openfl_Position vec4(funkin_world - vec2((-1.0 - funkin_view.y) / funkin_view.x, (1.0 - funkin_view.w) / funkin_view.z), 0.0, 1.0)
+#define openfl_Matrix mat4(funkin_view.x, 0.0, 0.0, 0.0, 0.0, funkin_view.z, 0.0, 0.0, 0.0, 0.0, 1.0, 0.0, -1.0, 1.0, 0.0, 1.0)
 #define openfl_Alpha funkin_vcolor.a
 #define openfl_ColorMultiplier funkin_vcolor
 #define openfl_ColorOffset vec4(0.0)
@@ -456,6 +456,12 @@ mod tests {
         // a vertex shader that moves each corner by 100 pixels through openfl_Matrix and openfl_Position
         let moved = translate_pair(None, Some("#pragma header\nvoid main() {\n#pragma body\ngl_Position = openfl_Matrix * (openfl_Position + vec4(100.0, 0.0, 0.0, 0.0));\n}")).unwrap_or_else(|error| panic!("{error}"));
         assert!(moved.vertex.is_some());
+        // the scroll comes off the position and the matrix puts the view's corner at (-1, 1): same screen place as the built-in path
+        assert!(VERTEX_HEADER.contains("(-1.0 - funkin_view.y) / funkin_view.x") && VERTEX_HEADER.contains("-1.0, 1.0, 0.0, 1.0)"));
+        let (view, world) = ([0.002f32, -0.5, -0.004, 1.0], [300.0f32, 100.0]);
+        let scroll = [(-1.0 - view[1]) / view[0], (1.0 - view[3]) / view[2]];
+        let screen = [view[0] * (world[0] - scroll[0]) - 1.0, view[2] * (world[1] - scroll[1]) + 1.0];
+        assert!((screen[0] - (view[0] * world[0] + view[1])).abs() < 1e-5 && (screen[1] - (view[2] * world[1] + view[3])).abs() < 1e-5);
         // lists and matrices: every element in its own place
         let lists = translate("#pragma header\n#define COUNT 3\nuniform float amounts[COUNT];\nuniform vec2 points[2];\nuniform mat2 turn;\nuniform mat3 warp;\nvoid main() { gl_FragColor = flixel_texture2D(bitmap, turn * openfl_TextureCoordv + points[1]) * amounts[2] * warp[2][2]; }").unwrap_or_else(|error| panic!("{error}"));
         let slot = |name: &str| lists.slots.iter().find(|slot| slot.name == name).cloned().unwrap();
