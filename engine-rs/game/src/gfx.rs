@@ -747,7 +747,7 @@ struct Context {
     layers: Vec<(usize, usize)>,
     layer_open: Option<usize>,
     /// The shader a HUD piece's layer (`shade_piece`) is going to be seen through.
-    piece: Option<Shader>,
+    piece: Option<(usize, Shader)>,
     layer_stages: Vec<(wgpu::TextureView, wgpu::BindGroup, (u32, u32))>,
     /// The next thing drawn starts a call of its own (a layer or the rain's reach ends before it).
     cut: bool,
@@ -1105,7 +1105,9 @@ impl Context {
             pass.set_vertex_buffer(0, buffer.slice(..));
             let mut adding = None;
             for index in range {
-                if self.layers.iter().enumerate().any(|(layer, (first, end))| (*first..*end).contains(&index) && inside != Some(layer)) {
+                // (a layer within a layer: what is drawn belongs to the innermost, the smallest range holding it)
+                let owner = self.layers.iter().enumerate().filter(|(_, (first, end))| (*first..*end).contains(&index)).min_by_key(|(_, (first, end))| end - first).map(|(layer, _)| layer);
+                if owner != inside {
                     continue;
                 }
                 let call = &self.calls[index];
@@ -1544,14 +1546,14 @@ pub fn layer_end(shader: &Shader) {
 
 /// What is drawn from now on, up to the next call, is a HUD piece (the health bar, the score text...) seen through
 /// `shader`: drawn into a picture of its own first, as Flixel's bars and texts are pictures. None ends the piece.
-/// (Inside a camera's layer it is left to the camera's shader.)
+/// (Inside a camera's layer, the piece's picture goes into the camera's.)
 pub fn shade_piece(shader: Option<&Shader>) {
     with(|context| {
-        if let Some((shader, first)) = context.piece.take().zip(context.layer_open.take()) {
+        if let Some((first, shader)) = context.piece.take() {
             context.end_layer(first, &shader, true);
         }
-        if let Some(shader) = shader.filter(|_| context.layer_open.is_none()) {
-            (context.layer_open, context.piece, context.cut) = (Some(context.calls.len()), Some(shader.clone()), true);
+        if let Some(shader) = shader {
+            (context.piece, context.cut) = (Some((context.calls.len(), shader.clone())), true);
         }
     });
 }
