@@ -248,7 +248,7 @@ mod tests {
         assert!(run.args.contains(&joined("--filename=", folder.join(HOSTILE))));
         assert!(run.args.contains(&OsString::from("--save")));
         let run = zenity(&open);
-        assert!(run.args.contains(&joined("--filename=", "/songs/it's $(here)/")));
+        assert!(run.args.contains(&joined("--filename=", folder.join(""))));
         assert!(run.args.contains(&OsString::from("--file-filter=*.json | *.json")));
         let run = kdialog(&save);
         assert_eq!(run.args, ["--title", HOSTILE, "--getsavefilename", &format!("/songs/it's $(here)/{HOSTILE}")].map(OsString::from));
@@ -296,7 +296,7 @@ mod tests {
     fn folders_are_asked_for_with_the_same_care() {
         let folder = Path::new("/songs/it's $(here)");
         let ask = Ask { title: HOSTILE, folder, save: None, endings: &[], directory: true };
-        assert_eq!(zenity(&ask).args, [OsString::from("--file-selection"), joined("--title=", HOSTILE), OsString::from("--directory"), joined("--filename=", "/songs/it's $(here)/")]);
+        assert_eq!(zenity(&ask).args, [OsString::from("--file-selection"), joined("--title=", HOSTILE), OsString::from("--directory"), joined("--filename=", folder.join(""))]);
         assert_eq!(kdialog(&ask).args, ["--title", HOSTILE, "--getexistingdirectory", "/songs/it's $(here)"].map(OsString::from));
         let run = osascript(&ask);
         assert!(count(&run, "choose folder") == 1 && count(&run, "touch") == 1 && count(&run, "here") == 1);

@@ -3417,7 +3417,8 @@ mod tests {
     fn a_script_starts_another_calls_it_and_stops_it() {
         let other = std::env::temp_dir().join(format!("funkin-lua-other-{}.lua", std::process::id()));
         std::fs::write(&other, "function onCreate() created = songName end\nfunction double(x) return x * 2 end\nfunction tell() return created end").unwrap();
-        let path = other.to_string_lossy().trim_end_matches(".lua").to_owned();
+        // forward slashes: a Windows temp path in a quoted Lua string would read as escapes
+        let path = other.to_string_lossy().trim_end_matches(".lua").replace('\\', "/");
         let mut scripts = run(&format!(r#"
             addLuaScript('{path}'); addLuaScript('{path}')
             local answer, made, count, running = callScript('{path}', 'double', {{21}}), callScript('{path}', 'tell'), #getRunningScripts(), isRunning('{path}')
