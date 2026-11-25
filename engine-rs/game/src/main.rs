@@ -339,6 +339,11 @@ struct Playing {
     lua_step: i64,
     lua_section: usize,
     lua_created: bool,
+    /// What scripts set the rating to show (its percent, name and full-combo mark) until it is worked out again.
+    rating_set: (Option<f64>, Option<String>, Option<String>),
+    /// The song's music paused (or stopped) by a script: the song waits for it; and the speed a script plays it at.
+    music_held: bool,
+    music_pitch: Option<f64>,
     end_asked: bool,
     end_held: bool,
     /// The chart editor's chart, when this is a play-test of it: the debug key and the song's end go back to the editor.
@@ -483,7 +488,7 @@ impl Playing {
         let video = opening.and_then(|name| paths.video(name)).and_then(|path| video::Video::open(&path, true, true, false, false).map_err(|error| eprintln!("{error}")).ok());
         let end_video = closing.and_then(|name| paths.video(name));
         lua.shared.borrow_mut().class_props.insert("PlayState.isPixelStage".to_owned(), serde_json::json!(scene.as_ref().is_some_and(|scene| scene.pixel)));
-        Ok(Playing { charting, video, end_video, speech: None, countdown_asked: false, countdown_held: false, entry: entry.clone(), play, song, player_voice, own_skin: None, music_fade: None, lua, looks: Default::default(), renamed: Default::default(), note_art: HashMap::new(), strums: strums(settings), flash: None, sounds: HashMap::new(), fades: Vec::new(), music_volume: 1.0, bar_colors: Default::default(), lua_step: i64::MIN, lua_section: usize::MAX, lua_created: false, end_asked: false, end_held: false, base: base.to_path_buf(), staged, bowing: false, tune: false, paused_at: 0.0, pause_scroll: 0.0, deaths: 0, scene, waited: 0.0, clock: Default::default(), ticked: std::time::Instant::now(), started: false, paused: None, choosing: None, skip_time: 0.0, skip_held: 0.0, difficulties, story, taunt_until: None, start_at, position: -lead_in, settings: settings.clone(), held_keys: Vec::new(), flash_until: [[f64::MIN; 4]; 2], judgement: None, last_hit: f64::MIN, lanes_used: [false; 4], idled: false, idle_for: 0.0, sang_for: 0.0,
+        Ok(Playing { charting, video, end_video, speech: None, countdown_asked: false, countdown_held: false, entry: entry.clone(), play, song, player_voice, own_skin: None, music_fade: None, lua, looks: Default::default(), renamed: Default::default(), note_art: HashMap::new(), strums: strums(settings), flash: None, sounds: HashMap::new(), fades: Vec::new(), music_volume: 1.0, bar_colors: Default::default(), lua_step: i64::MIN, lua_section: usize::MAX, lua_created: false, rating_set: Default::default(), music_held: false, music_pitch: None, end_asked: false, end_held: false, base: base.to_path_buf(), staged, bowing: false, tune: false, paused_at: 0.0, pause_scroll: 0.0, deaths: 0, scene, waited: 0.0, clock: Default::default(), ticked: std::time::Instant::now(), started: false, paused: None, choosing: None, skip_time: 0.0, skip_held: 0.0, difficulties, story, taunt_until: None, start_at, position: -lead_in, settings: settings.clone(), held_keys: Vec::new(), flash_until: [[f64::MIN; 4]; 2], judgement: None, last_hit: f64::MIN, lanes_used: [false; 4], idled: false, idle_for: 0.0, sang_for: 0.0,
             paths, cutscene, lead_in, counted: i64::MIN, popups: Vec::new(), splashes: Vec::new(), dead: None, next_event: 0, speed, speed_change: None }.with(settings))
     }
 
@@ -762,7 +767,7 @@ impl Playing {
                     self.lua.call("onResume", ());
                     self.forget_released();
                     self.song.stop_sounds();
-                    if self.started {
+                    if self.started && !self.music_held {
                         self.song.start();
                     }
                     Flow::Continue
@@ -793,7 +798,9 @@ impl Playing {
                     self.lua.call("onResume", ());
                     self.forget_released();
                     self.song.stop_sounds();
-                    self.song.start();
+                    if !self.music_held {
+                        self.song.start();
+                    }
                     Flow::Continue
                 }
                 Some(_) => Flow::Quit,
@@ -828,8 +835,13 @@ impl Playing {
         }
         // The sound card's clock wobbles by a few ms between callbacks: the notes move by an even one that follows it.
         // The song never runs backwards.
-        let elapsed = std::mem::replace(&mut self.ticked, std::time::Instant::now()).elapsed().as_secs_f64() * 1000.0 * rate;
-        let now = if self.started { self.clock.advance(elapsed, self.start_at + self.song.position_ms() + self.play.chart.offset) } else { self.waited - lead_in };
+        // (the music at a script's speed: the song keeps time by it; held by a script, it waits)
+        let elapsed = std::mem::replace(&mut self.ticked, std::time::Instant::now()).elapsed().as_secs_f64() * 1000.0 * self.music_pitch.unwrap_or(rate);
+        let now = match (self.started, self.music_held) {
+            (true, false) => self.clock.advance(elapsed, self.start_at + self.song.position_ms() + self.play.chart.offset),
+            (true, true) => self.position,
+            _ => self.waited - lead_in,
+        };
         self.position = self.position.max(now);
 
         // the countdown: a sound on each of the four beats before the song, a picture on the last three
@@ -892,7 +904,11 @@ impl Playing {
                 events.extend(self.play.release(lane, judged));
             }
         }
+        let shown = self.rating();
         events.extend(self.play.update(judged));
+        if events.iter().any(|event| matches!(event, Event::Hit { .. } | Event::Miss { .. })) {
+            self.recalculate_rating(shown);
+        }
         if !self.lua.is_empty() {
             for &event in &events {
                 let kind = |note: usize| self.renamed.get(&note).cloned().unwrap_or_else(|| self.play.chart.notes.get(note).map_or(String::new(), |note| self.play.chart.type_name(note.kind)));
@@ -1052,10 +1068,35 @@ impl Playing {
             self.fades.retain(|fade| fade.0 != tag);
         }
         if tag.is_empty() {
-            // shortcut: stopping, pausing, winding or retuning the song's music from a script is not done; the song keeps time by it
-            if let Volume(volume) = op {
-                self.music_volume = volume;
-                self.song.set_volume(0, volume);
+            // the song's tracks, which the song keeps time by: held, it waits; wound, the notes follow
+            match op {
+                Volume(volume) => {
+                    self.music_volume = volume;
+                    self.song.set_volume(0, volume);
+                }
+                // shortcut: a stopped song's music is held where it is; Haxe's goes back to its start, not playing
+                Stop | Pause => {
+                    self.song.pause();
+                    self.music_held = true;
+                }
+                Resume => {
+                    self.music_held = false;
+                    if self.started && self.paused.is_none() && self.dead.is_none() {
+                        self.song.start();
+                    }
+                }
+                Time(ms) => {
+                    let to = ms.max(0.0) + self.start_at + self.play.chart.offset;
+                    // (back: the notes from there come again; forward: those passed are missed, as in Haxe)
+                    if to < self.position {
+                        self.play.skip_to(to);
+                    }
+                    self.song.seek(ms.max(0.0));
+                    self.position = to;
+                    self.clock = Default::default();
+                }
+                Pitch(pitch) => self.set_music_speed(pitch),
+                Fade { .. } | FadeCancel => {}
             }
             return;
         }
@@ -1071,6 +1112,14 @@ impl Playing {
             Time(ms) => self.song.tune_sound(id, None, None, Some(ms), None),
             Pitch(pitch) => self.song.tune_sound(id, None, None, None, Some(pitch)),
             Fade { .. } | FadeCancel => {}
+        }
+    }
+
+    /// The song's music played `speed` times as fast (setSoundPitch on it, or the playbackRate property).
+    fn set_music_speed(&mut self, speed: f64) {
+        if speed > 0.0 {
+            self.song.set_speed(speed);
+            self.music_pitch = Some(speed);
         }
     }
 
@@ -1125,6 +1174,9 @@ impl Playing {
                 }
             }
             return;
+        }
+        if name == "playbackRate" {
+            return self.set_music_speed(number.unwrap_or(1.0));
         }
         if let Some(look) = LOOKS.iter().find(|look| **look == name) {
             self.looks.insert(*look, number.unwrap_or(1.0) as f32);
@@ -1229,6 +1281,49 @@ impl Playing {
         }
     }
 
+    /// The run's score, misses or hits set (or added to) by a script.
+    fn set_score(&mut self, field: &str, value: f64, add: bool) {
+        let play = &mut self.play;
+        match field {
+            "score" => play.score = if add { play.score + value as i64 } else { value as i64 },
+            "misses" => play.misses = if add { play.misses + value as u32 } else { value as u32 },
+            // hits are counted as sick ones: what the others count stays
+            _ => {
+                let others: u32 = play.ratings[1..].iter().sum();
+                play.ratings[0] = if add { play.ratings[0] + value as u32 } else { (value as u32).saturating_sub(others) };
+            }
+        }
+    }
+
+    /// The rating shown: its percent, name and full-combo mark (what scripts set, else the run's), and whether any note
+    /// was judged yet.
+    fn rating(&self) -> (f64, String, String, bool) {
+        let accuracy = self.play.accuracy();
+        let percent = self.rating_set.0.or(accuracy).unwrap_or(0.0);
+        let name = self.rating_set.1.clone().unwrap_or_else(|| accuracy.map_or("?", funkin_core::play::rating_name).to_owned());
+        let fc = self.rating_set.2.clone().unwrap_or_else(|| self.play.full_combo().to_owned());
+        (percent, name, fc, accuracy.is_some())
+    }
+
+    /// The rating worked out again (as Haxe's RecalculateRating, on each note judged and score set): unless a script
+    /// stops it in onRecalculateRating, which keeps what was shown before.
+    fn recalculate_rating(&mut self, shown: (f64, String, String, bool)) {
+        if self.lua.is_empty() {
+            self.rating_set = Default::default();
+            return;
+        }
+        let play = &self.play;
+        self.lua.set("score", play.score);
+        self.lua.set("misses", play.misses);
+        self.lua.set("hits", play.ratings.iter().sum::<u32>());
+        self.lua.set("combo", play.combo);
+        self.rating_set = if lua::Scripts::stopped(&self.lua.call("onRecalculateRating", ())) { (Some(shown.0), Some(shown.1), Some(shown.2)) } else { Default::default() };
+        let (percent, name, fc, _) = self.rating();
+        self.lua.set("rating", percent);
+        self.lua.set("ratingName", name);
+        self.lua.set("ratingFC", fc);
+    }
+
     /// What scripts may read of the game this frame: the run's numbers as globals, and the values getProperty asks for.
     fn tell_lua(&mut self) {
         let play = &self.play;
@@ -1238,16 +1333,17 @@ impl Playing {
         self.lua.set("misses", play.misses);
         self.lua.set("hits", hits);
         self.lua.set("combo", play.combo);
-        self.lua.set("rating", play.accuracy().unwrap_or(0.0));
-        self.lua.set("ratingFC", play.full_combo());
+        let (percent, name, fc, _) = self.rating();
+        self.lua.set("rating", percent);
+        self.lua.set("ratingName", name.as_str());
+        self.lua.set("ratingFC", fc.as_str());
         self.lua.set("startedCountdown", true);
-        let accuracy = play.accuracy();
         let mut props = vec![("health", play.health), ("songPosition", self.position), ("songScore", play.score as f64), ("songMisses", play.misses as f64), ("combo", play.combo as f64), ("songHits", hits as f64), ("songSpeed", self.speed as f64),
-            ("songLength", self.length()), ("ratingPercent", accuracy.unwrap_or(0.0)), ("playbackRate", self.settings.playback_rate), ("healthGain", play.health_gain), ("healthLoss", play.health_loss),
+            ("songLength", self.length()), ("ratingPercent", percent), ("playbackRate", self.music_pitch.unwrap_or(self.settings.playback_rate)), ("healthGain", play.health_gain), ("healthLoss", play.health_loss),
             ("cpuControlled", play.botplay as u8 as f64), ("practiceMode", self.settings.practice as u8 as f64), ("instakillOnMiss", play.instakill as u8 as f64),
             ("startingSong", !self.started as u8 as f64), ("endingSong", self.end_asked as u8 as f64)];
         props.extend(LOOKS.iter().map(|name| (*name, self.looks.get(name).copied().unwrap_or(1.0) as f64)));
-        let mut texts = vec![("ratingName", accuracy.map_or("?", funkin_core::play::rating_name).to_owned()), ("ratingFC", play.full_combo().to_owned()), ("SONG.song", self.entry.title.clone()), ("curStage", play.chart.stage.clone())];
+        let mut texts = vec![("ratingName", name), ("ratingFC", fc), ("SONG.song", self.entry.title.clone()), ("curStage", play.chart.stage.clone())];
         props.extend([("SONG.speed", play.chart.speed), ("SONG.bpm", play.chart.bpm)]);
         if let Some(scene) = &self.scene {
             for name in CHARACTER_TEXTS.into_iter().flatten() {
@@ -1329,17 +1425,25 @@ impl Playing {
                 lua::Request::Call { name, args } => self.lua.call_json(&name, &args),
                 lua::Request::SetOn { name, value } => self.lua.set_json(&name, &value),
                 lua::Request::Score { field, value, add } => {
-                    let play = &mut self.play;
-                    match field {
-                        "score" => play.score = if add { play.score + value as i64 } else { value as i64 },
-                        "misses" => play.misses = if add { play.misses + value as u32 } else { value as u32 },
-                        // hits are counted as sick ones: what the others count stays
-                        _ => {
-                            let others: u32 = play.ratings[1..].iter().sum();
-                            play.ratings[0] = if add { play.ratings[0] + value as u32 } else { (value as u32).saturating_sub(others) };
-                        }
+                    let shown = self.rating();
+                    self.set_score(field, value, add);
+                    self.recalculate_rating(shown);
+                }
+                lua::Request::Rating { percent, name, fc } => {
+                    let set = &mut self.rating_set;
+                    (set.0, set.1, set.2) = (percent.or(set.0), name.or(set.1.take()), fc.or(set.2.take()));
+                }
+                lua::Request::Presence(presence) => {
+                    if self.settings.discord_rpc {
+                        discord::show(Some(presence));
                     }
                 }
+                lua::Request::LoadSong { name, difficulty } => {
+                    let title = if name.is_empty() { self.entry.title.clone() } else { name };
+                    let difficulty = usize::try_from(difficulty).ok().and_then(|at| self.difficulties.get(at).cloned()).unwrap_or_else(|| self.entry.difficulty.clone());
+                    return Some(Flow::LoadSong(title, difficulty));
+                }
+                lua::Request::EndSong => return Some(Flow::Finished),
                 lua::Request::Note { index, field, value } => {
                     let flag = value.as_bool().unwrap_or(false);
                     let Some(note) = self.play.chart.notes.get_mut(index) else { continue };
@@ -1396,7 +1500,6 @@ impl Playing {
                 },
                 lua::Request::Dialogue { .. } => {}
                 lua::Request::StartCountdown => (self.countdown_asked, self.countdown_held) = (false, false),
-                lua::Request::EndSong => return Some(Flow::Finished),
                 lua::Request::RestartSong => return Some(Flow::Restart),
                 lua::Request::ExitSong => return Some(Flow::Quit),
             }
@@ -1708,10 +1811,10 @@ impl Playing {
         }
 
         // "Sick! (95.12%) - FC", as the Haxe engine puts it
-        let rating = self.play.accuracy().map_or("?".to_owned(), |a| {
-            let (name, combo) = (funkin_core::play::rating_name(a), self.play.full_combo());
-            format!("{} ({}%) - {}", phrase(&format!("rating_{name}"), name), (a * 10000.0).floor() / 100.0, phrase(combo, combo))
-        });
+        let rating = match self.rating() {
+            (a, name, combo, true) => format!("{} ({}%) - {}", phrase(&format!("rating_{name}"), &name), (a * 10000.0).floor() / 100.0, phrase(&combo, &combo)),
+            (_, name, ..) => phrase(&format!("rating_{name}"), &name).to_string(),
+        };
         if hud && piece("scoreTxt") {
             // the score swells a little on every hit and settles within a fifth of a second
             let swell = if settings.score_zoom { 1.0 + 0.075 * (1.0 - (position - self.last_hit) / 200.0).clamp(0.0, 1.0) } else { 1.0 };
@@ -1948,6 +2051,8 @@ enum Flow {
     Restart,
     /// The same song at another difficulty.
     Difficulty(String),
+    /// Another song (by its name) at a difficulty, as a script's loadSong opens it: a week goes on as it was.
+    LoadSong(String, String),
     /// The options, and then back to the paused song.
     Options,
     /// The chart editor, with the song's chart.
@@ -2402,6 +2507,18 @@ fn main() {
                         Some(entry) => Playing::open(&base, entry, &songs, &settings, 0.0, false, false, None).map_or_else(Screen::Failed, |p| Screen::Playing(Box::new(p))),
                         None => Screen::Playing(playing),
                     },
+                    Flow::LoadSong(title, difficulty) => {
+                        let path = funkin_core::content::song_path(&title);
+                        let same = |other: &&SongEntry| funkin_core::content::song_path(&other.title) == path && other.difficulty == difficulty;
+                        // (of the song's own mod first)
+                        match songs.iter().filter(same).find(|other| other.source == playing.entry.source).or_else(|| songs.iter().find(same)) {
+                            Some(entry) => Playing::open(&base, entry, &songs, &settings, 0.0, story.is_some(), false, None).map_or_else(Screen::Failed, |p| Screen::Playing(Box::new(p))),
+                            None => {
+                                eprintln!("loadSong: {title} ({difficulty}) not found");
+                                Screen::Playing(playing)
+                            }
+                        }
+                    }
                     Flow::Options => {
                         // (the note colours start on the notes of the stage's kind)
                         let menu = options::OptionsMenu::pixel(playing.pixel());

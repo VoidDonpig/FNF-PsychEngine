@@ -26,6 +26,31 @@ function getCharacterX(name) return getProperty(who(name) .. '.x') end
 function getCharacterY(name) return getProperty(who(name) .. '.y') end
 function setCharacterX(name, value) setProperty(who(name) .. '.x', value) end
 function setCharacterY(name, value) setProperty(who(name) .. '.y', value) end
+-- where something is on the screen through a camera: the game's camera scrolls it by its scroll factor, the others not
+local function screenPosition(name, camera, axis)
+    local at = getProperty(name .. '.' .. axis)
+    if type(at) ~= 'number' then return 0 end
+    camera = tostring(camera or 'game'):lower()
+    if camera == 'hud' or camera == 'camhud' or camera == 'other' or camera == 'camother' then return at end
+    local factor = getProperty(name .. '.scrollFactor.' .. axis)
+    if type(factor) ~= 'number' then factor = 1 end
+    return at - (getProperty('camGame.scroll.' .. axis) or 0) * factor
+end
+function getScreenPositionX(name, camera) return screenPosition(name, camera, 'x') end
+function getScreenPositionY(name, camera) return screenPosition(name, camera, 'y') end
+-- HScript is Haxe code against the Haxe engine's classes: it cannot run here, and each of its functions says so once
+do
+    for _, name in ipairs({'runHaxeCode', 'runHaxeFunction', 'addHScript', 'removeHScript', 'addHaxeLibrary', 'callOnHScript', 'setOnHScript'}) do
+        local told = false
+        _G[name] = function()
+            if not told then
+                told = true
+                debugPrint(name .. ': HScript is not supported here')
+            end
+            return nil
+        end
+    end
+end
 function getMidpointX(name) return getProperty(name .. '.midpoint.x') end
 function getMidpointY(name) return getProperty(name .. '.midpoint.y') end
 function getGraphicMidpointX(name) return getProperty(name .. '.graphicMidpoint.x') or getMidpointX(name) end
@@ -94,6 +119,12 @@ pub enum Request {
     Dialogue { path: PathBuf, music: Option<String> },
     /// The countdown asked for again (onStartCountdown is called again first), as startCountdown() does.
     StartCountdown,
+    /// setRatingPercent, setRatingName, setRatingFC: what the rating shows until it is worked out again.
+    Rating { percent: Option<f64>, name: Option<String>, fc: Option<String> },
+    /// changeDiscordPresence: what Discord shows, until the game changes it again.
+    Presence(crate::discord::Presence),
+    /// loadSong: another song (by its name, "" for this one) at a difficulty (by its number, -1 for this one).
+    LoadSong { name: String, difficulty: i64 },
     EndSong,
     RestartSong,
     ExitSong,
@@ -150,6 +181,11 @@ pub struct Shared {
     pub language: String,
     /// The scripts running, by their names (isRunning, getRunningScripts).
     running: Vec<String>,
+    /// The globals scripts start with, and the names of those the game sets as it goes (addLuaScript's script gets both).
+    pub globals: Vec<(String, serde_json::Value)>,
+    told: Vec<String>,
+    /// The pictures' pixels, read back from their files when a script asks for one (getPixelColor).
+    pixels: HashMap<PathBuf, Option<Image>>,
     /// The tagged sounds playing ("" the song's music), as the play screen last told: volume, place in ms, pitch.
     pub sounds: HashMap<String, (f32, f64, f64)>,
     /// The achievements there are (the game's and the mods') and a copy of the save, which the achievement functions
@@ -171,11 +207,22 @@ struct Script {
     name: String,
     lua: Lua,
     closed: Rc<RefCell<bool>>,
+    /// Started by another script (addLuaScript), which called its onCreate then.
+    added: bool,
+}
+
+/// The scripts running; what their functions hold of it (addLuaScript, callScript) does not keep them alive.
+type List = Rc<RefCell<Vec<Rc<Script>>>>;
+type WeakList = std::rc::Weak<RefCell<Vec<Rc<Script>>>>;
+
+/// Two names of the same script file.
+fn same_file(one: &str, other: &str) -> bool {
+    one == other || matches!((std::fs::canonicalize(one), std::fs::canonicalize(other)), (Ok(one), Ok(other)) if one == other)
 }
 
 /// The scripts of a song.
 pub struct Scripts {
-    scripts: Vec<Script>,
+    scripts: List,
     pub shared: Rc<RefCell<Shared>>,
 }
 
@@ -318,6 +365,8 @@ struct Animation {
     fps: f64,
     looped: bool,
     offset: [f64; 2],
+    /// The sheet its frames are on, when that is not the sprite's first (loadMultipleFrames).
+    texture: Option<Texture2D>,
 }
 
 /// What a text of a script says, and how (Flixel's FlxText, as makeLuaText sets it up).
@@ -398,11 +447,14 @@ struct Sprite {
     add: bool,
     /// The mod's shader it is drawn through (setSpriteShader).
     shader: Option<Shader>,
+    /// The file of its picture (getPixelColor reads it), and the sheets after the first of loadMultipleFrames.
+    file: Option<PathBuf>,
+    more: Vec<Rc<Sheet>>,
 }
 
 impl Sprite {
     fn new(art: Option<Art>, x: f64, y: f64) -> Sprite {
-        Sprite { text: None, art, solid: None, x, y, scale: [1.0; 2], scroll: [1.0; 2], offset: [0.0; 2], alpha: 1.0, visible: true, angle: 0.0, flip_x: false, color: 0xFFFFFF, camera: Cam::Game, added: false, front: false, animations: HashMap::new(), playing: None, add: false, shader: None }
+        Sprite { text: None, art, solid: None, x, y, scale: [1.0; 2], scroll: [1.0; 2], offset: [0.0; 2], alpha: 1.0, visible: true, angle: 0.0, flip_x: false, color: 0xFFFFFF, camera: Cam::Game, added: false, front: false, animations: HashMap::new(), playing: None, add: false, shader: None, file: None, more: Vec::new() }
     }
 
     /// The frame shown now: of the animation playing, else the first of the sheet, else the whole picture.
@@ -531,7 +583,9 @@ impl Sprite {
         match (&self.solid, self.frame(), &self.art) {
             (Some((_, rgb)), _, _) => draw_rectangle(corner.x, corner.y, size.x, size.y, Color { a: self.alpha as f32, ..Color::from_hex(*rgb & 0xFFFFFF) }),
             (_, Some((frame, moved)), Some(art)) => {
+                let other = self.playing.as_ref().and_then(|(name, _)| self.animations.get(name)?.texture.as_ref());
                 let texture = match art {
+                    _ if other.is_some() => other.unwrap(),
                     Art::Sheet(sheet) => &sheet.texture,
                     Art::Picture(picture) => picture,
                 };
@@ -715,6 +769,19 @@ impl Shared {
         safe.then(|| inside.join(relative))
     }
 
+    /// The file of a picture of `images/`.
+    fn art_file(&self, image: &str) -> Option<PathBuf> {
+        self.paths.as_ref()?.find(&format!("images/{image}.png"))
+    }
+
+    /// A script's file as the Haxe engine finds it: in the mods' folders (or the game's), else as the path given; ".lua"
+    /// added when missing.
+    fn find_script(&self, file: &str) -> Option<String> {
+        let file = if file.ends_with(".lua") { file.to_owned() } else { format!("{file}.lua") };
+        let found = self.paths.as_ref().and_then(|paths| paths.find(&file)).or_else(|| Path::new(&file).is_file().then(|| PathBuf::from(&file)));
+        found.map(|path| path.to_string_lossy().replace('\\', "/"))
+    }
+
     fn sprite(&mut self, tag: &str) -> Option<&mut Sprite> {
         self.sprites.iter_mut().find(|(name, _)| name == tag).map(|(_, sprite)| sprite)
     }
@@ -722,26 +789,27 @@ impl Shared {
 
 impl Scripts {
     pub fn none() -> Scripts {
-        Scripts { scripts: Vec::new(), shared: Rc::new(RefCell::new(Shared::default())) }
+        Scripts { scripts: Default::default(), shared: Rc::new(RefCell::new(Shared::default())) }
     }
 
     /// Starts the scripts in `files`, each with the globals in `globals`. One that cannot be read or run is left out
     /// (and said so), as the Haxe engine leaves it out.
     pub fn start(files: &[PathBuf], globals: &[(&str, serde_json::Value)], shared: Shared) -> Scripts {
-        let mut scripts = Scripts { scripts: Vec::new(), shared: Rc::new(RefCell::new(shared)) };
+        let scripts = Scripts { scripts: Default::default(), shared: Rc::new(RefCell::new(shared)) };
+        scripts.shared.borrow_mut().globals = globals.iter().map(|(key, value)| (key.to_string(), value.clone())).collect();
         for file in files {
             // (listed first, as the Haxe engine lists a script before it runs)
             scripts.shared.borrow_mut().running.push(file.to_string_lossy().replace('\\', "/"));
-            match scripts.open(file, globals) {
-                Ok(script) => scripts.scripts.push(script),
+            match Scripts::open(&scripts.shared, &Rc::downgrade(&scripts.scripts), file, globals, false) {
+                Ok(script) => scripts.scripts.borrow_mut().push(Rc::new(script)),
                 Err(error) => eprintln!("Lua {}: {error}", file.display()),
             }
         }
-        scripts.shared.borrow_mut().running = scripts.scripts.iter().map(|script| script.name.clone()).collect();
+        scripts.shared.borrow_mut().running = scripts.scripts.borrow().iter().filter(|script| !*script.closed.borrow()).map(|script| script.name.clone()).collect();
         scripts
     }
 
-    fn open(&self, file: &Path, globals: &[(&str, serde_json::Value)]) -> mlua::Result<Script> {
+    fn open(shared: &Rc<RefCell<Shared>>, list: &WeakList, file: &Path, globals: &[(&str, serde_json::Value)], added: bool) -> mlua::Result<Script> {
         let code = std::fs::read_to_string(file).map_err(mlua::Error::external)?;
         let lua = Lua::new();
         let closed = Rc::new(RefCell::new(false));
@@ -756,16 +824,15 @@ impl Scripts {
         for (key, value) in globals {
             g.set(*key, from_json(&lua, value)?)?;
         }
-        self.register(&lua, &closed, &name)?;
+        Scripts::register(shared, list, &lua, &closed, &name)?;
         lua.load(PRELUDE).set_name("prelude").exec()?;
         lua.load(&code).set_name(name.as_str()).exec()?;
-        Ok(Script { name, lua, closed })
+        Ok(Script { name, lua, closed, added })
     }
 
     /// The functions a script can call. Each queues what it asks for, or reads what the game last told.
-    fn register(&self, lua: &Lua, closed: &Rc<RefCell<bool>>, name: &str) -> mlua::Result<()> {
+    fn register(shared: &Rc<RefCell<Shared>>, list: &WeakList, lua: &Lua, closed: &Rc<RefCell<bool>>, name: &str) -> mlua::Result<()> {
         let g = lua.globals();
-        let shared = &self.shared;
         macro_rules! function {
             ($name:expr, |$lua:ident, $shared:ident, $args:ident : $ty:ty| $body:expr) => {{
                 let $shared = shared.clone();
@@ -1193,6 +1260,101 @@ impl Scripts {
         }
         function!("isRunning", |_lua, shared, args: String| Ok(shared.borrow().running.iter().any(|running| running.ends_with(&args) || running.ends_with(&format!("{args}.lua")))));
         function!("getRunningScripts", |_lua, shared, _args: ()| Ok(shared.borrow().running.clone()));
+        // another script started now, with the globals the others have, and its onCreate called (as Haxe's new FunkinLua)
+        let scripts = list.clone();
+        function!("addLuaScript", |lua, shared, args: (String, Option<bool>)| {
+            let found = shared.borrow().find_script(&args.0);
+            let Some(file) = found else {
+                eprintln!("addLuaScript: Script doesn't exist!");
+                return Ok(());
+            };
+            if !args.1.unwrap_or(false) && shared.borrow().running.iter().any(|running| same_file(running, &file)) {
+                eprintln!("addLuaScript: The script \"{file}\" is already running!");
+                return Ok(());
+            }
+            let Some(list) = scripts.upgrade() else { return Ok(()) };
+            let (mut globals, told) = { let shared = shared.borrow(); (shared.globals.clone(), shared.told.clone()) };
+            // (what the game set as it went, as the calling script has it now)
+            globals.extend(told.into_iter().filter_map(|key| Some((key.clone(), to_json(&lua.globals().get::<Value>(key.as_str()).ok()?)))));
+            let globals: Vec<(&str, serde_json::Value)> = globals.iter().map(|(key, value)| (key.as_str(), value.clone())).collect();
+            shared.borrow_mut().running.push(file.clone());
+            match Scripts::open(&shared, &scripts, Path::new(&file), &globals, true) {
+                Ok(script) => {
+                    let script = Rc::new(script);
+                    list.borrow_mut().push(script.clone());
+                    if let Ok(Some(function)) = script.lua.globals().get::<Option<Function>>("onCreate") {
+                        if let Err(error) = function.call::<Value>(()) {
+                            eprintln!("Lua {file} (onCreate): {error}");
+                        }
+                    }
+                }
+                Err(error) => {
+                    eprintln!("Lua {file}: {error}");
+                    shared.borrow_mut().running.retain(|running| *running != file);
+                }
+            }
+            Ok(())
+        });
+        let scripts = list.clone();
+        function!("removeLuaScript", |_lua, shared, args: String| {
+            let found = shared.borrow().find_script(&args);
+            let list = scripts.upgrade().map(|list| list.borrow().clone()).unwrap_or_default();
+            let mut any = false;
+            for script in list.iter().filter(|script| found.as_ref().is_some_and(|file| same_file(&script.name, file))) {
+                *script.closed.borrow_mut() = true;
+                shared.borrow_mut().running.retain(|running| *running != script.name);
+                any = true;
+            }
+            if !any {
+                eprintln!("removeLuaScript: Script {args} isn't running!");
+            }
+            Ok(any)
+        });
+        // a function of another script called, and what it answered (Function_Continue for nothing)
+        let scripts = list.clone();
+        function!("callScript", |lua, shared, args: (String, String, Option<Vec<Value>>)| {
+            let found = shared.borrow().find_script(&args.0);
+            let list = scripts.upgrade().map(|list| list.borrow().clone()).unwrap_or_default();
+            let Some(script) = list.iter().find(|script| found.as_ref().is_some_and(|file| same_file(&script.name, file))) else { return Ok(Value::Nil) };
+            let function = script.lua.globals().get::<Option<Function>>(args.1.as_str()).ok().flatten();
+            let Some(function) = function.filter(|_| !*script.closed.borrow()) else { return Ok(Value::String(lua.create_string(CONTINUE)?)) };
+            let values: Vec<Value> = args.2.unwrap_or_default().iter().map(|value| from_json(&script.lua, &to_json(value))).collect::<mlua::Result<_>>()?;
+            match function.call::<Value>(MultiValue::from_iter(values)) {
+                Ok(Value::Nil) => Ok(Value::String(lua.create_string(CONTINUE)?)),
+                Ok(answer) => from_json(lua, &to_json(&answer)),
+                Err(error) => {
+                    eprintln!("Lua {} ({}): {error}", script.name, args.1);
+                    Ok(Value::String(lua.create_string(CONTINUE)?))
+                }
+            }
+        });
+        // what the rating shows (and its globals) until it is worked out again
+        function!("setRatingPercent", |lua, shared, args: f64| {
+            lua.globals().set("rating", args)?;
+            shared.borrow_mut().requests.push(Request::Rating { percent: Some(args), name: None, fc: None });
+            Ok(())
+        });
+        function!("setRatingName", |lua, shared, args: String| {
+            lua.globals().set("ratingName", args.as_str())?;
+            shared.borrow_mut().requests.push(Request::Rating { percent: None, name: Some(args), fc: None });
+            Ok(())
+        });
+        function!("setRatingFC", |lua, shared, args: String| {
+            lua.globals().set("ratingFC", args.as_str())?;
+            shared.borrow_mut().requests.push(Request::Rating { percent: None, name: None, fc: Some(args) });
+            Ok(())
+        });
+        // as Haxe's DiscordClient.changePresence: the end is given in ms after the start (or, without a start, after 1970)
+        request!("changeDiscordPresence", |args: (Option<String>, Option<String>, Option<String>, Option<bool>, Option<f64>, Option<String>)| {
+            let now = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map_or(0.0, |since| since.as_millis() as f64);
+            let start = if args.3.unwrap_or(false) { now } else { 0.0 };
+            let end = args.4.filter(|end| *end > 0.0).map(|end| ((start + end) / 1000.0) as u64);
+            // shortcut: the large picture (args.5, the "icon" by default) is the game's own; discord::Presence has no field for it
+            Request::Presence(crate::discord::Presence { details: args.0.unwrap_or_else(|| "In the Menus".to_owned()), state: args.1.filter(|state| !state.is_empty()), small_image: args.2.filter(|key| !key.is_empty()), start: (start > 0.0).then_some((start / 1000.0) as u64), end })
+        });
+        // shortcut: the game's Discord application is fixed (discord.rs has no way to change it): this does nothing
+        function!("changeDiscordClientID", |_lua, _shared, _args: Option<String>| Ok(()));
+        request!("loadSong", |args: (Option<String>, Option<i64>)| Request::LoadSong { name: args.0.unwrap_or_default(), difficulty: args.1.unwrap_or(-1) });
         g.set("mouseReleased", lua.create_function(|_, _args: Option<String>| Ok(is_mouse_released()))?)?;
         g.set("gamepadAnalogX", lua.create_function(|_, args: (Option<u32>, Option<bool>)| Ok(crate::pad::stick(args.1.unwrap_or(true), true)))?)?;
         g.set("gamepadAnalogY", lua.create_function(|_, args: (Option<u32>, Option<bool>)| Ok(crate::pad::stick(args.1.unwrap_or(true), false)))?)?;
@@ -1314,8 +1476,10 @@ impl Scripts {
 
         // sprites: made, given pictures and animations, added in front of the characters or behind them, and moved about
         let make = |shared: &mut Shared, tag: String, image: Option<String>, x: Option<f64>, y: Option<f64>, animated: bool| {
-            let art = image.filter(|image| !image.is_empty()).and_then(|image| shared.art(&image, animated));
-            let sprite = Sprite::new(art, x.unwrap_or(0.0), y.unwrap_or(0.0));
+            let image = image.filter(|image| !image.is_empty());
+            let art = image.as_ref().and_then(|image| shared.art(image, animated));
+            let mut sprite = Sprite::new(art, x.unwrap_or(0.0), y.unwrap_or(0.0));
+            sprite.file = image.and_then(|image| shared.art_file(&image));
             shared.sprites.retain(|(name, _)| *name != tag);
             shared.sprites.push((tag, sprite));
         };
@@ -1337,6 +1501,7 @@ impl Scripts {
         function!("loadGraphic", |_lua, shared, args: (String, String, Option<f64>, Option<f64>)| {
             let mut shared = shared.borrow_mut();
             let art = shared.art(&args.1, false);
+            let file = shared.art_file(&args.1);
             let (across, down) = (args.2.unwrap_or(0.0) as f32, args.3.unwrap_or(0.0) as f32);
             let art = match art {
                 Some(Art::Picture(picture)) if across > 0.0 || down > 0.0 => {
@@ -1351,7 +1516,8 @@ impl Scripts {
                 art => art,
             };
             if let Some(sprite) = shared.sprite(&args.0) {
-                (sprite.art, sprite.solid, sprite.playing) = (art, None, None);
+                (sprite.art, sprite.solid, sprite.playing, sprite.file) = (art, None, None, file);
+                sprite.more.clear();
                 sprite.animations.clear();
             }
             Ok(())
@@ -1359,11 +1525,49 @@ impl Scripts {
         function!("loadFrames", |_lua, shared, args: (String, String, Option<String>)| {
             let mut shared = shared.borrow_mut();
             let art = shared.art(&args.1, true);
+            let file = shared.art_file(&args.1);
             if let Some(sprite) = shared.sprite(&args.0) {
-                (sprite.art, sprite.solid, sprite.playing) = (art, None, None);
+                (sprite.art, sprite.solid, sprite.playing, sprite.file) = (art, None, None, file);
+                sprite.more.clear();
                 sprite.animations.clear();
             }
             Ok(())
+        });
+        // several sheets for one sprite: its animations take their frames from the first sheet that has them
+        function!("loadMultipleFrames", |_lua, shared, args: (String, Vec<String>)| {
+            let mut shared = shared.borrow_mut();
+            let mut sheets: Vec<Rc<Sheet>> = args.1.iter().filter_map(|image| match shared.art(image, true) {
+                Some(Art::Sheet(sheet)) => Some(sheet),
+                _ => None,
+            }).collect();
+            let file = args.1.first().and_then(|image| shared.art_file(image));
+            if let (Some(sprite), false) = (shared.sprite(&args.0), sheets.is_empty()) {
+                let first = sheets.remove(0);
+                (sprite.art, sprite.solid, sprite.playing, sprite.file, sprite.more) = (Some(Art::Sheet(first)), None, None, file, sheets);
+                sprite.animations.clear();
+            }
+            Ok(())
+        });
+        // a pixel of a sprite's picture, as 0xAARRGGBB (a whole number of 32 bits, as Haxe's FlxColor); black without a sprite
+        function!("getPixelColor", |_lua, shared, args: (String, i64, i64)| {
+            const BLACK: i64 = 0xFF000000u32 as i32 as i64;
+            let mut shared = shared.borrow_mut();
+            let Some(sprite) = shared.sprite(&args.0) else { return Ok(BLACK) };
+            let argb = |a: u8, r: u8, g: u8, b: u8| u32::from_be_bytes([a, r, g, b]) as i32 as i64;
+            let inside = |width: f64, height: f64| (0.0..width).contains(&(args.1 as f64)) && (0.0..height).contains(&(args.2 as f64));
+            if let Some((size, rgb)) = sprite.solid {
+                return Ok(if inside(size[0], size[1]) { (0xFF000000 | (rgb & 0xFFFFFF)) as i32 as i64 } else { 0 });
+            }
+            // shortcut: a text's pixels are not read; it answers as an object without pixels
+            let Some(file) = sprite.file.clone() else { return Ok(BLACK) };
+            let image = shared.pixels.entry(file.clone()).or_insert_with(|| std::fs::read(&file).ok().and_then(|bytes| Image::from_file_with_format(&bytes, None).ok()));
+            Ok(match image {
+                Some(image) if inside(image.width as f64, image.height as f64) => {
+                    let at = (args.2 as usize * image.width as usize + args.1 as usize) * 4;
+                    argb(image.bytes[at + 3], image.bytes[at], image.bytes[at + 1], image.bytes[at + 2])
+                }
+                _ => 0,
+            })
         });
         function!("setBlendMode", |_lua, shared, args: (String, Option<String>)| {
             if let Some(sprite) = shared.borrow_mut().sprite(&args.0) {
@@ -1397,12 +1601,20 @@ impl Scripts {
         let animate = |shared: &mut Shared, tag: &str, name: String, prefix: Option<&str>, numbers: Vec<u32>, fps: f64, looped: bool| {
             let Some(sprite) = shared.sprite(tag) else { return };
             let Some(Art::Sheet(sheet)) = &sprite.art else { return };
-            let frames = match prefix {
+            let mut frames = match prefix {
                 Some(prefix) => sheet.animation(prefix, &numbers),
                 None => numbers.iter().filter_map(|&number| sheet.frames.get(number as usize).map(|(_, frame)| *frame)).collect(),
             };
+            // (of loadMultipleFrames' sheets, the first that has frames of that name)
+            // shortcut: an animation is of one sheet; Haxe's may take frames from several
+            let mut texture = None;
+            if let (true, Some(prefix)) = (frames.is_empty(), prefix) {
+                if let Some((sheet, found)) = sprite.more.iter().map(|sheet| (sheet, sheet.animation(prefix, &numbers))).find(|(_, found)| !found.is_empty()) {
+                    (frames, texture) = (found, Some(sheet.texture.clone()));
+                }
+            }
             let first = sprite.animations.is_empty();
-            sprite.animations.insert(name.clone(), Animation { frames, fps, looped, offset: [0.0; 2] });
+            sprite.animations.insert(name.clone(), Animation { frames, fps, looped, offset: [0.0; 2], texture });
             // the first one added plays at once, as Psych's do
             if first {
                 sprite.playing = Some((name, 0.0));
@@ -1617,7 +1829,9 @@ impl Scripts {
     /// callOnLuas), Function_Stop winning over the others. A script whose call fails is said so and goes on.
     pub fn call(&mut self, name: &str, args: impl mlua::IntoLuaMulti + Clone) -> Option<String> {
         let mut answer = None;
-        for script in self.scripts.iter().filter(|script| !*script.closed.borrow()) {
+        let scripts = self.scripts.borrow().clone();
+        // (a script another started had its onCreate then)
+        for script in scripts.iter().filter(|script| !*script.closed.borrow() && !(script.added && name == "onCreate")) {
             let Ok(Some(function)) = script.lua.globals().get::<Option<Function>>(name) else { continue };
             match function.call::<Value>(args.clone()) {
                 Ok(Value::String(text)) => {
@@ -1630,14 +1844,15 @@ impl Scripts {
                 Err(error) => eprintln!("Lua {} ({name}): {error}", script.name),
             }
         }
-        self.scripts.retain(|script| !*script.closed.borrow());
+        self.scripts.borrow_mut().retain(|script| !*script.closed.borrow());
         answer
     }
 
     /// Calls `name` in every script that has it; the number the last of them answered with, if any did.
     pub fn call_number(&mut self, name: &str, args: impl mlua::IntoLuaMulti + Clone) -> Option<f64> {
         let mut answer = None;
-        for script in self.scripts.iter().filter(|script| !*script.closed.borrow()) {
+        let scripts = self.scripts.borrow().clone();
+        for script in scripts.iter().filter(|script| !*script.closed.borrow()) {
             let Ok(Some(function)) = script.lua.globals().get::<Option<Function>>(name) else { continue };
             match function.call::<Value>(args.clone()) {
                 Ok(Value::Integer(whole)) => answer = Some(whole as f64),
@@ -1662,7 +1877,8 @@ impl Scripts {
 
     /// Calls `name` in every script with values given as JSON (callOnLuas).
     pub fn call_json(&mut self, name: &str, args: &[serde_json::Value]) {
-        for script in self.scripts.iter().filter(|script| !*script.closed.borrow()) {
+        let scripts = self.scripts.borrow().clone();
+        for script in scripts.iter().filter(|script| !*script.closed.borrow()) {
             let Ok(Some(function)) = script.lua.globals().get::<Option<Function>>(name) else { continue };
             let values: mlua::Result<Vec<Value>> = args.iter().map(|value| from_json(&script.lua, value)).collect();
             if let Err(error) = values.and_then(|values| function.call::<Value>(mlua::MultiValue::from_iter(values))) {
@@ -1673,7 +1889,8 @@ impl Scripts {
 
     /// Sets a global given as JSON in every script (setOnLuas).
     pub fn set_json(&self, name: &str, value: &serde_json::Value) {
-        for script in &self.scripts {
+        self.told(name);
+        for script in self.scripts.borrow().iter() {
             if let Ok(value) = from_json(&script.lua, value) {
                 let _ = script.lua.globals().set(name, value);
             }
@@ -1682,7 +1899,8 @@ impl Scripts {
 
     /// Sets a global in every script.
     pub fn set(&self, name: &str, value: impl mlua::IntoLua + Clone) {
-        for script in &self.scripts {
+        self.told(name);
+        for script in self.scripts.borrow().iter() {
             let _ = script.lua.globals().set(name, value.clone());
         }
     }
@@ -1771,7 +1989,15 @@ impl Scripts {
     }
 
     pub fn is_empty(&self) -> bool {
-        self.scripts.is_empty()
+        self.scripts.borrow().is_empty()
+    }
+
+    /// A global the game set, which a script started later gets too.
+    fn told(&self, name: &str) {
+        let mut shared = self.shared.borrow_mut();
+        if !shared.told.iter().any(|told| told == name) {
+            shared.told.push(name.to_owned());
+        }
     }
 }
 
@@ -1877,5 +2103,48 @@ mod tests {
         assert!(!scripts.is_empty());
         scripts.call("onUpdate", 0.016);
         assert!(scripts.is_empty());
+    }
+
+    #[test]
+    fn hscript_functions_say_once_they_cannot_run() {
+        let mut scripts = run("local said = {}; function debugPrint(line) said[#said + 1] = line end; a = runHaxeCode('x'); runHaxeCode('y'); addHScript('z')
+            function result() return tostring(a) .. '|' .. table.concat(said, '|') end");
+        assert_eq!(scripts.call("result", ()).as_deref(), Some("nil|runHaxeCode: HScript is not supported here|addHScript: HScript is not supported here"));
+    }
+
+    #[test]
+    fn a_script_starts_another_calls_it_and_stops_it() {
+        let other = std::env::temp_dir().join(format!("funkin-lua-other-{}.lua", std::process::id()));
+        std::fs::write(&other, "function onCreate() created = songName end\nfunction double(x) return x * 2 end\nfunction tell() return created end").unwrap();
+        let path = other.to_string_lossy().trim_end_matches(".lua").to_owned();
+        let mut scripts = run(&format!(r#"
+            addLuaScript('{path}'); addLuaScript('{path}')
+            local answer, made, count, running = callScript('{path}', 'double', {{21}}), callScript('{path}', 'tell'), #getRunningScripts(), isRunning('{path}')
+            local removed, again = removeLuaScript('{path}'), removeLuaScript('{path}')
+            function result() return table.concat({{answer, made, count, tostring(running), tostring(removed), tostring(again), tostring(isRunning('{path}'))}}, ',') end
+        "#));
+        // (the one started by another had its onCreate when it started, not again; as Haxe's, a script removed is found
+        // again by removeLuaScript until the scripts are next called)
+        scripts.call("onCreate", ());
+        assert_eq!(scripts.call("result", ()).as_deref(), Some("42,test,2,true,true,true,false"));
+        let _ = std::fs::remove_file(other);
+    }
+
+    #[test]
+    fn screen_positions_and_pixels_of_sprites() {
+        let mut scripts = run(r#"
+            makeLuaSprite('a', '', 100, 50); setProperty('a.scrollFactor.x', 0.5)
+            makeLuaSprite('b'); makeGraphic('b', 4, 4, 'FF0000')
+            function result() return table.concat({getScreenPositionX('a'), getScreenPositionX('a', 'hud'), getScreenPositionY('a'), getPixelColor('b', 1, 1), getPixelColor('b', 9, 1), getPixelColor('nothing', 0, 0)}, ',') end
+        "#);
+        scripts.shared.borrow_mut().props.extend([("camGame.scroll.x".to_owned(), serde_json::json!(40.0)), ("camGame.scroll.y".to_owned(), serde_json::json!(10.0))]);
+        assert_eq!(scripts.call("result", ()).as_deref(), Some("80.0,100.0,40.0,-65536,0,-16777216"));
+    }
+
+    #[test]
+    fn a_script_sets_the_rating_shown() {
+        let scripts = run("setRatingName('Great'); setRatingPercent(0.5); seen = ratingName");
+        let requests = scripts.requests();
+        assert_eq!(requests, [Request::Rating { percent: None, name: Some("Great".to_owned()), fc: None }, Request::Rating { percent: Some(0.5), name: None, fc: None }]);
     }
 }
