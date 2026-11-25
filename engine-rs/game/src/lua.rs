@@ -647,6 +647,14 @@ impl Sprite {
         if let Some(text) = &self.text {
             return text.size();
         }
+        if let Some(atlas) = &self.atlas {
+            // its bounds: of the symbol playing, else of the main timeline's first frame
+            let size = match self.playing.as_ref().and_then(|(name, time)| Some((self.symbols.get(name)?, *time))) {
+                Some((symbol, time)) => atlas.size_of_symbol(&symbol.name, symbol_frame(&symbol.numbers, atlas.rig.symbol_length(&symbol.name), symbol.fps, symbol.looped, time)),
+                None => atlas.size(0),
+            };
+            return [size.x as f64, size.y as f64];
+        }
         match (self.solid, self.frame()) {
             (Some((size, _)), _) => size,
             (_, Some((frame, _))) => [frame.size.x as f64, frame.size.y as f64],
@@ -739,7 +747,8 @@ impl Sprite {
         if !self.visible || self.alpha <= 0.0 {
             return;
         }
-        let size = self.size();
+        // (an atlas turns and scales about its origin, not its middle)
+        let size = if self.atlas.is_some() { [0.0; 2] } else { self.size() };
         let (size, scale) = (vec2(size[0] as f32, size[1] as f32), vec2(self.scale[0] as f32, self.scale[1] as f32));
         // a scroll factor under 1 keeps it further back: the camera moves it less
         let corner = vec2((self.x - self.offset[0]) as f32, (self.y - self.offset[1]) as f32) + scroll * (Vec2::ONE - vec2(self.scroll[0] as f32, self.scroll[1] as f32));
@@ -2333,7 +2342,6 @@ impl Scripts {
         });
 
         // Adobe Animate atlas sprites: drawn from a folder of images/ with an Animation.json and its spritemaps
-        // shortcut: an atlas sprite has no size here (width and height read 0)
         let atlas = |shared: &Shared, folder: &str| -> Option<Rc<crate::animate::Atlas>> {
             let file = shared.paths.as_ref()?.find(&format!("images/{folder}/Animation.json"));
             match file.ok_or(format!("images/{folder}/Animation.json: not found")).and_then(|file| crate::animate::Atlas::load(file.parent().unwrap_or(Path::new(".")))) {
@@ -2353,13 +2361,38 @@ impl Scripts {
             shared.sprites.push((tag, sprite));
             Ok(())
         });
-        // shortcut: an atlas is read from its folder's Animation.json and spritemaps; other file names given are not used
+        // loadAnimateAtlas(tag, folderOrImage, spritemapJson, animationJson), as Paths.loadAnimateAtlas reads: the json files given are
+        // taken from where they are named; the picture is the first images/<folder>/spritemap[1-9].png, else images/<folder>.png
         function!("loadAnimateAtlas", |_lua, shared, args: (String, String, Option<String>, Option<String>)| {
             let mut shared = shared.borrow_mut();
-            if shared.has(&args.0) {
-                let found = atlas(&shared, &args.1);
-                shared.sprite(&args.0).iter_mut().for_each(|sprite| sprite.atlas = found.clone());
+            if !shared.has(&args.0) {
+                return Ok(());
             }
+            let found = if args.2.is_none() && args.3.is_none() {
+                atlas(&shared, &args.1)
+            } else {
+                let paths = shared.paths.clone();
+                let find = |relative: &str| paths.as_ref().and_then(|paths| paths.find(relative));
+                // (a file a script names is taken as it is written, else looked for among the game's folders)
+                let given = |name: &Option<String>| name.as_ref().map(|name| if Path::new(name).is_file() { PathBuf::from(name) } else { find(name).unwrap_or_else(|| PathBuf::from(name)) });
+                let folder = args.1.trim_end_matches('/');
+                let dir = ["Animation.json", "spritemap.json", "spritemap1.json"].iter().find_map(|name| find(&format!("images/{folder}/{name}"))).and_then(|file| file.parent().map(Path::to_path_buf)).or_else(|| find(&format!("images/{folder}")).filter(|dir| dir.is_dir()));
+                let picture = (0..10).map(|i| if i == 0 { String::new() } else { i.to_string() }).find_map(|st| find(&format!("images/{folder}/spritemap{st}.png"))).or_else(|| find(&format!("images/{folder}.png")));
+                let sprite = given(&args.2);
+                let result = match (&sprite, picture) {
+                    (Some(json), Some(image)) => crate::animate::Atlas::load_with(dir.as_deref().unwrap_or(Path::new(".")), Some((json, &image)), given(&args.3).as_deref()),
+                    (Some(json), None) => Err(format!("{}: no picture for it", json.display())),
+                    (None, _) => dir.as_deref().ok_or(format!("images/{folder}: not found")).and_then(|dir| crate::animate::Atlas::load_with(dir, None, given(&args.3).as_deref())),
+                };
+                match result {
+                    Ok(atlas) => Some(Rc::new(atlas)),
+                    Err(error) => {
+                        eprintln!("Lua: {error}");
+                        None
+                    }
+                }
+            };
+            shared.sprite(&args.0).iter_mut().for_each(|sprite| sprite.atlas = found.clone());
             Ok(())
         });
         let by_symbol = |shared: &mut Shared, tag: &str, name: String, symbol: &str, numbers: Vec<usize>, more: (Option<f64>, Option<bool>, Option<f64>, Option<f64>)| -> bool {

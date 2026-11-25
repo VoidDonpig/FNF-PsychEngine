@@ -3,7 +3,7 @@
 use crate::gfx::*;
 use serde_json::Value;
 use std::collections::HashMap;
-use std::path::Path;
+use std::path::{Path, PathBuf};
 
 /// How a symbol placed on a timeline plays while its key frame lasts.
 #[derive(Clone, Copy, Debug, PartialEq)]
@@ -169,6 +169,18 @@ fn turned_back(width: f32) -> Affine2 {
     Affine2::from_cols(vec2(0.0, -1.0), vec2(1.0, 0.0), vec2(0.0, width))
 }
 
+/// The size of the box around pieces, each placed by its matrix and `size` big.
+fn box_of(pieces: impl Iterator<Item = (Affine2, Vec2)>) -> Vec2 {
+    let (mut low, mut high) = (Vec2::splat(f32::MAX), Vec2::splat(f32::MIN));
+    for (placed, size) in pieces {
+        for corner in [vec2(0.0, 0.0), vec2(size.x, 0.0), vec2(0.0, size.y), size] {
+            let at = placed.transform_point2(corner);
+            (low, high) = (low.min(at), high.max(at));
+        }
+    }
+    if low.x > high.x { Vec2::ZERO } else { high - low }
+}
+
 /// A rig with its picture.
 pub struct Atlas {
     pub rig: Rig,
@@ -181,18 +193,26 @@ impl Atlas {
     /// Loads the atlas in folder `dir`: its timelines, and its pieces from `spritemap.json`, or `spritemap1.json`,
     /// `spritemap2.json` and on, as flxanimate looks for them.
     pub fn load(dir: &Path) -> Result<Atlas, String> {
-        let read = |name: &str| std::fs::read(dir.join(name)).map_err(|e| format!("{}: {e}", dir.join(name).display()));
-        let rig = Rig::parse(&String::from_utf8_lossy(&read("Animation.json")?)).ok_or(format!("{}: no animation in it", dir.join("Animation.json").display()))?;
-        let maps: Vec<String> = if dir.join("spritemap.json").is_file() {
-            vec!["spritemap".to_owned()]
-        } else {
-            (1..).map(|n| format!("spritemap{n}")).take_while(|name| dir.join(format!("{name}.json")).is_file()).collect()
+        Self::load_with(dir, None, None)
+    }
+
+    /// As `load`, but with the file names a script gave (Paths.loadAnimateAtlas): `spritemap` is a spritemap's json and the
+    /// picture it is of, `animation` the timelines' json; what is not given is looked for in `dir`.
+    pub fn load_with(dir: &Path, spritemap: Option<(&Path, &Path)>, animation: Option<&Path>) -> Result<Atlas, String> {
+        let read_file = |file: &Path| std::fs::read(file).map_err(|e| format!("{}: {e}", file.display()));
+        let animation = animation.map_or_else(|| dir.join("Animation.json"), Path::to_path_buf);
+        let rig = Rig::parse(&String::from_utf8_lossy(&read_file(&animation)?)).ok_or(format!("{}: no animation in it", animation.display()))?;
+        // each spritemap: its json and its picture
+        let maps: Vec<(PathBuf, Option<PathBuf>)> = match spritemap {
+            Some((json, image)) => vec![(json.to_path_buf(), Some(image.to_path_buf()))],
+            None if dir.join("spritemap.json").is_file() => vec![(dir.join("spritemap.json"), None)],
+            None => (1..).map(|n| dir.join(format!("spritemap{n}.json"))).take_while(|file| file.is_file()).map(|file| (file, None)).collect(),
         };
         let (mut textures, mut sprites) = (Vec::new(), HashMap::new());
-        for name in &maps {
-            let map: Value = serde_json::from_str(String::from_utf8_lossy(&read(&format!("{name}.json"))?).trim_start_matches('\u{feff}')).map_err(|e| format!("{}: {e}", dir.join(name).display()))?;
-            let image = map["meta"]["image"].as_str().map_or(format!("{name}.png"), str::to_owned);
-            let texture = crate::atlas::picture(&dir.join(&image)).ok_or(format!("{}: not found", dir.join(&image).display()))?;
+        for (file, picture) in &maps {
+            let map: Value = serde_json::from_str(String::from_utf8_lossy(&read_file(file)?).trim_start_matches('\u{feff}')).map_err(|e| format!("{}: {e}", file.display()))?;
+            let image = picture.clone().unwrap_or_else(|| dir.join(map["meta"]["image"].as_str().map_or(file.with_extension("png").file_name().map_or_else(String::new, |name| name.to_string_lossy().into_owned()), str::to_owned)));
+            let texture = crate::atlas::picture(&image).ok_or(format!("{}: not found", image.display()))?;
             for sprite in map["ATLAS"]["SPRITES"].as_array().into_iter().flatten() {
                 let sprite = &sprite["SPRITE"];
                 let number = |key: &str| sprite[key].as_f64().map(|n| n as f32);
@@ -219,6 +239,24 @@ impl Atlas {
 
     pub fn draw_symbol_as(&self, symbol: &str, frame: usize, at: Vec2, scale: f32, flip_x: bool, color: Color) {
         self.put(self.rig.pieces_of(symbol, frame), at, scale, flip_x, color);
+    }
+
+    /// How big a frame of the main timeline is: the box around its pieces, as flxanimate's bounds give it (width and height of the sprite).
+    pub fn size(&self, frame: usize) -> Vec2 {
+        self.extent(self.rig.pieces(frame.min(self.rig.length().saturating_sub(1))))
+    }
+
+    /// The same for a frame of one symbol played on its own.
+    pub fn size_of_symbol(&self, symbol: &str, frame: usize) -> Vec2 {
+        self.extent(self.rig.pieces_of(symbol, frame))
+    }
+
+    fn extent(&self, pieces: Vec<(&str, Affine2)>) -> Vec2 {
+        // (a piece lies as stored, `w` by `h`, once it is turned back upright)
+        box_of(pieces.into_iter().filter_map(|(name, placed)| {
+            let &(_, source, turned) = self.sprites.get(name)?;
+            Some((placed * if turned { turned_back(source.w) } else { Affine2::IDENTITY }, vec2(source.w, source.h)))
+        }))
     }
 
     fn put(&self, pieces: Vec<(&str, Affine2)>, at: Vec2, scale: f32, flip_x: bool, color: Color) {
@@ -275,6 +313,15 @@ mod tests {
         assert_eq!(at(rig.pieces_of("arm", 0)), [("0000".to_owned(), vec2(1.0, 2.0), 1.0)]);
         assert_eq!((at(rig.pieces_of("arm", 9)), rig.pieces_of("leg", 0).len()), (vec![("0001".to_owned(), vec2(3.0, 4.0), 1.0)], 0));
         assert_eq!(at(rig.pieces(2))[1].0, "0000", "the loop comes round");
+    }
+
+    #[test]
+    fn the_box_around_pieces_is_their_bounds() {
+        let moved = |x: f32, y: f32| Affine2::from_translation(vec2(x, y));
+        assert_eq!(box_of([(moved(10.0, 0.0), vec2(20.0, 10.0)), (moved(-5.0, 4.0), vec2(10.0, 10.0))].into_iter()), vec2(35.0, 14.0));
+        // turned a quarter, 20 by 10 stands 10 by 20
+        assert_eq!(box_of([(turned_back(20.0), vec2(20.0, 10.0))].into_iter()), vec2(10.0, 20.0));
+        assert_eq!(box_of(std::iter::empty()), Vec2::ZERO);
     }
 
     #[test]
