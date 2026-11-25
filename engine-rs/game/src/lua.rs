@@ -95,6 +95,7 @@ do
         ['FlxG.random.float'] = function(a) return getRandomFloat(a[1], a[2]) end,
         ['FlxG.random.bool'] = function(a) return getRandomBool(a[1]) end,
         ['FlxG.resetState'] = function() restartSong() end,
+        ['FlxG.cameras.add'] = function() end,
         ['FlxG.sound.play'] = function(a) playSound(a[1], a[2] or 1) end,
         ['FlxG.openURL'] = function(a) debugPrint('openURL: ' .. tostring(a[1]) .. ' is not opened here') end,
         ['CoolUtil.browserLoad'] = function(a) debugPrint('browserLoad: ' .. tostring(a[1]) .. ' is not opened here') end,
@@ -307,6 +308,8 @@ pub struct Shared {
     substate_name: Option<String>,
     /// The groups scripts made (createInstance), by name.
     groups: HashMap<String, Group>,
+    /// The cameras scripts made (createInstance FlxCamera), by tag: all drawn as the camera over everything.
+    cameras: Vec<String>,
     /// The lines of what is not known here already printed (each is printed once).
     unknown: std::collections::HashSet<String>,
 }
@@ -2115,11 +2118,14 @@ impl Scripts {
             Ok(())
         });
         function!("setObjectCamera", |_lua, shared, args: (String, Option<String>)| {
-            if let Some(sprite) = shared.borrow_mut().sprite(&args.0) {
+            let mut shared = shared.borrow_mut();
+            let made = shared.cameras.iter().any(|tag| Some(tag.as_str()) == args.1.as_deref());
+            if let Some(sprite) = shared.sprite(&args.0) {
                 sprite.camera_set = true;
                 sprite.camera = match args.1.unwrap_or_default().to_lowercase().as_str() {
                     "hud" | "camhud" => Cam::Hud,
                     "other" | "camother" => Cam::Other,
+                    _ if made => Cam::Other,
                     _ => Cam::Game,
                 };
             }
@@ -2441,8 +2447,9 @@ impl Scripts {
         });
 
         // instances: of the classes scripts build, one of the scripts' sprites, texts or groups
-        // shortcut: the classes built here are Flixel's sprite, text and group ones and the engine's sprites; the Haxe
-        // engine builds any of its classes
+        // shortcut: the classes built here are Flixel's sprite, text, group and camera ones and the engine's sprites and health
+        // icons; a made camera is drawn as camOther is (one over the HUD), all of them together. Character, FlxBackdrop and
+        // FlxBar are not built (not known here)
         function!("createInstance", |lua, shared, args: (String, String, Option<Vec<Value>>)| {
             let tag = args.0.trim().replace('.', "");
             let given = args.2.unwrap_or_default();
@@ -2473,6 +2480,26 @@ impl Scripts {
                     let mut sprite = Sprite::new(None, number(0, 0.0), number(1, 0.0));
                     sprite.text = Some(Text { words: word(3).unwrap_or_default(), size: number(4, 8.0), width: number(2, 0.0), font: None, font_name: String::new(), align: 0.0, border: (0.0, 0) });
                     (None, sprite)
+                }
+                "FlxCamera" => {
+                    shared.cameras.push(tag);
+                    return Ok(Some(true));
+                }
+                // (the icon's file by the name, two frames side by side; scripts put it on the HUD)
+                "HealthIcon" => {
+                    let name = word(0).unwrap_or_else(|| "face".to_owned());
+                    let file = [format!("icons/icon-{name}"), format!("icons/{name}")].into_iter().find(|file| shared.art_file(file).is_some()).unwrap_or_else(|| "icons/icon-face".to_owned());
+                    let mut sprite = Sprite::new(None, 0.0, 0.0);
+                    sprite.camera = Cam::Hud;
+                    sprite.flip_x = matches!(given.get(1), Some(Value::Boolean(true)));
+                    (sprite.art, sprite.file) = (shared.art(&file, false), shared.art_file(&file));
+                    if let Some(Art::Picture(picture)) = sprite.art.clone() {
+                        let cell = vec2(picture.width() / 2.0, picture.height());
+                        let frames = (0..2).map(|index| (index.to_string(), Frame { source: Rect::new(index as f32 * cell.x, 0.0, cell.x, cell.y), offset: Vec2::ZERO, size: cell, rotated: false })).collect();
+                        sprite.art = Some(Art::Sheet(Rc::new(Sheet { texture: picture, frames })));
+                    }
+                    shared.sprites.push((tag, sprite));
+                    return Ok(Some(true));
                 }
                 "FlxTypedGroup" | "FlxGroup" | "FlxSpriteGroup" | "FlxTypedSpriteGroup" => {
                     shared.groups.insert(tag, Group::default());
@@ -3151,5 +3178,22 @@ mod tests {
         scripts.call("onCreate", ());
         assert_eq!(scripts.requests(), [Request::Sound { name: "scrollMenu".to_owned(), volume: 0.5, tag: None, looped: false }]);
         assert_eq!(scripts.call("result", ()).as_deref(), Some("3,5.0,1.27,1.26,0,-2,nil,2.5,3,7"));
+    }
+
+    #[test]
+    fn made_cameras_and_health_icons_are_instances() {
+        use serde_json::json;
+        let mut scripts = run(r#"
+            function onCreate()
+                createInstance('cam', 'flixel.FlxCamera'); callMethodFromClass('flixel.FlxG', 'cameras.add', {instanceArg('cam'), false})
+                createInstance('icon', 'objects.HealthIcon', {'bf', true}); addInstance('icon', true)
+                createInstance('box', 'flixel.FlxSprite', {1, 2}); addInstance('box'); setObjectCamera('box', 'cam')
+                setVar('seen', {getProperty('icon.flipX'), getProperty('icon.x')})
+            end
+        "#);
+        scripts.call("onCreate", ());
+        assert_eq!(scripts.shared.borrow().vars["seen"], json!([true, 0.0]));
+        let mut shared = scripts.shared.borrow_mut();
+        assert_eq!((shared.sprite("box").map(|sprite| sprite.camera), shared.sprite("icon").map(|sprite| sprite.camera)), (Some(Cam::Other), Some(Cam::Hud)));
     }
 }
