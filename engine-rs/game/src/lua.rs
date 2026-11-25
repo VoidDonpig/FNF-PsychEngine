@@ -234,6 +234,8 @@ pub struct Shared {
     shaders: HashMap<String, Option<Shader>>,
     pub shaders_on: bool,
     pub character_shaders: [Option<Shader>; 3],
+    /// Who stood in each of those places when last looked (a shader goes with the character it was put on).
+    pub character_names: [String; 3],
     /// And those of the stage file's objects, by their names (the names the stage has, as the play screen told).
     pub object_shaders: HashMap<String, Shader>,
     pub object_names: Vec<String>,
@@ -1360,9 +1362,8 @@ impl Scripts {
             Ok(())
         });
         // mods' shaders (`shaders/<name>.frag`), on the scripts' sprites and the three characters
-        // shortcut: on the game's own pictures other than the characters and the stage file's objects (the HUD's, the
-        // stages the game draws in code) they are not taken. A character's shader
-        // stays on its place when the character changes (the Haxe engine's goes with the old one), and a sprite that
+        // shortcut: on the game's own pictures other than the characters, the stage file's objects and the HUD's bars,
+        // icons and texts (the notes, the ratings, the stages the game draws in code) they are not taken. A sprite that
         // is a plain rectangle (makeGraphic) is one dot to its shader (openfl_TextureSize 1 by 1).
         function!("initLuaShader", |_lua, shared, args: (String, Option<Value>)| {
             let mut shared = shared.borrow_mut();

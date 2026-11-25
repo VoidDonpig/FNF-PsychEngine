@@ -281,7 +281,7 @@ fn lane_x(settings: &Settings, player: bool, lane: usize) -> f32 {
 
 /// The HUD's pieces a script may put a mod's shader on, by the Haxe engine's names.
 // (a piece with a shader is drawn into a picture of its own first, as large as what was drawn, and that picture is shaded)
-const HUD_PIECES: [&str; 6] = ["timeBar", "healthBar", "iconP1", "iconP2", "scoreTxt", "botplayTxt"];
+const HUD_PIECES: [&str; 7] = ["timeBar", "timeTxt", "healthBar", "iconP1", "iconP2", "scoreTxt", "botplayTxt"];
 
 /// The texts scripts may read of the three characters, by the Haxe engine's names.
 const CHARACTER_TEXTS: [[&str; 4]; 3] = [
@@ -1416,6 +1416,14 @@ impl Playing {
         }
         let mut shared = self.lua.shared.borrow_mut();
         if let Some(scene) = &mut self.scene {
+            // a character changed (Change Character): the shader stays with the old one, as in the Haxe engine
+            for (slot, who) in ["dad", "boyfriend", "gf"].into_iter().enumerate() {
+                let now = scene.text_property(&format!("{who}.curCharacter")).unwrap_or_default();
+                let before = std::mem::replace(&mut shared.character_names[slot], now.clone());
+                if !before.is_empty() && before != now {
+                    shared.character_shaders[slot] = None;
+                }
+            }
             scene.shaders = shared.character_shaders.clone();
             scene.shade_objects(&shared.object_shaders);
         }
@@ -1899,7 +1907,9 @@ impl Playing {
                 }
                 draw_rectangle(WIDTH / 2.0 - 200.0, time_y, 400.0 * (played / length) as f32, 19.0, seen(left.unwrap_or(WHITE)));
             }
-            if shown > 0.0 {
+            // (the time's text is an object of its own in the Haxe engine, `timeTxt`)
+            shade_piece(None);
+            if shown > 0.0 && piece("timeTxt") {
                 skin.centered(&words[settings.time_bar], time_y + 17.0, 22, seen(WHITE));
             }
         }
