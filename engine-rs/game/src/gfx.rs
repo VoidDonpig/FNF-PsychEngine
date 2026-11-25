@@ -271,7 +271,7 @@ impl Texture2D {
             if band.len() >= 8 << 20 || y + 1 == height {
                 let rows = (band.len() / row.len()) as u32;
                 // (a picture too large for the card became a dot: nothing goes in it)
-                if texture.0.width == width {
+                if (texture.0.width, texture.0.height) == (width, height) {
                     with(|context| context.write(&texture.0.texture, 0, y + 1 - rows, width, rows, &band));
                 }
                 band.clear();
