@@ -586,6 +586,8 @@ struct Sprite {
     added: bool,
     front: bool,
     /// Not in front: how many of the characters (gf, dad, boyfriend) it lies after, so 0 is behind them all.
+    /// A script chose its camera (setObjectCamera); else in a substate it is seen through the top one.
+    camera_set: bool,
     between: u8,
     /// Put in the notes' (1) or the strums' (0) group with the place it was asked for (-1: the end): drawn among them on the HUD.
     among: Option<(u8, i64)>,
@@ -626,7 +628,7 @@ fn symbol_frame(numbers: &[usize], length: usize, fps: f64, looped: bool, time: 
 
 impl Sprite {
     fn new(art: Option<Art>, x: f64, y: f64) -> Sprite {
-        Sprite { text: None, art, solid: None, x, y, scale: [1.0; 2], scroll: [1.0; 2], offset: [0.0; 2], alpha: 1.0, visible: true, angle: 0.0, flip_x: false, color: 0xFFFFFF, camera: Cam::Game, added: false, front: false, between: 0, among: None, animations: HashMap::new(), playing: None, add: false, shader: None, file: None, more: Vec::new(), atlas: None, symbols: HashMap::new() }
+        Sprite { text: None, art, solid: None, x, y, scale: [1.0; 2], scroll: [1.0; 2], offset: [0.0; 2], alpha: 1.0, visible: true, angle: 0.0, flip_x: false, color: 0xFFFFFF, camera: Cam::Game, added: false, front: false, camera_set: false, between: 0, among: None, animations: HashMap::new(), playing: None, add: false, shader: None, file: None, more: Vec::new(), atlas: None, symbols: HashMap::new() }
     }
 
     /// The frame shown now: of the animation playing, else the first of the sheet, else the whole picture.
@@ -1634,7 +1636,7 @@ impl Scripts {
             Request::Presence(crate::discord::Presence { large_image: args.5, details: args.0.unwrap_or_else(|| "In the Menus".to_owned()), state: args.1.filter(|state| !state.is_empty()), small_image: args.2.filter(|key| !key.is_empty()), start: (start > 0.0).then_some((start / 1000.0) as u64), end })
         });
         // (none: the game's own application, as Discord.hx)
-        // shortcut: the application a script chose stays when the song is left (the Haxe engine puts its own back in places)
+        // (the game puts its own back when the song is left: main.rs, where the Haxe engine's resetClientID is)
         request!("changeDiscordClientID", |args: Option<String>| Request::DiscordClient(args.unwrap_or_default()));
         request!("loadSong", |args: (Option<String>, Option<i64>)| Request::LoadSong { name: args.0.unwrap_or_default(), difficulty: args.1.unwrap_or(-1) });
         g.set("mouseReleased", lua.create_function(|_, _args: Option<String>| Ok(is_mouse_released()))?)?;
@@ -1956,6 +1958,7 @@ impl Scripts {
         });
         function!("setObjectCamera", |_lua, shared, args: (String, Option<String>)| {
             if let Some(sprite) = shared.borrow_mut().sprite(&args.0) {
+                sprite.camera_set = true;
                 sprite.camera = match args.1.unwrap_or_default().to_lowercase().as_str() {
                     "hud" | "camhud" => Cam::Hud,
                     "other" | "camother" => Cam::Other,
@@ -2574,7 +2577,7 @@ impl Scripts {
 
     /// Draws the scripts' sprites seen through `camera`; for the game's, those in `layer`: 0 behind all the characters, 1 and 2 after the first and the second one, 3 in front of them.
     /// `scroll`: where that camera looks from (its corner), zero for the HUD's.
-    /// Those of a group the scripts added are drawn as the group was added; those in the custom substate, by `draw_substate`.
+    /// Those of a group the scripts added are drawn as the group was added; those in the custom substate come last, in front, through the camera they were given (the top one unless a script chose).
     pub fn draw(&self, camera: Cam, layer: usize, scroll: Vec2) {
         let shared = self.shared.borrow();
         let within = |tag: &String| shared.substate.as_ref().is_some_and(|substate| substate.members.contains(tag));
@@ -2585,6 +2588,14 @@ impl Scripts {
         for (_, sprite) in shared.sprites.iter().filter(|(tag, sprite)| !within(tag) && sprite.camera == camera && sprite.among.is_none() && shown(tag, sprite).is_some_and(|its| camera != Cam::Game || its == layer)) {
             sprite.draw(scroll);
         }
+        // the custom substate's sprites, in its order, over everything of that camera
+        if let (Some(substate), true) = (&shared.substate, camera != Cam::Game || layer == 3) {
+            for tag in &substate.members {
+                if let Some((_, sprite)) = shared.sprites.iter().find(|(name, _)| name == tag).filter(|(_, sprite)| if sprite.camera_set { sprite.camera } else { Cam::Other } == camera) {
+                    sprite.draw(scroll);
+                }
+            }
+        }
     }
 
     /// Draws the sprites put in the notes' (`group` 1) or the strums' (0) group that lie before member number `at`; with `last`, those
@@ -2593,18 +2604,6 @@ impl Scripts {
         let shared = self.shared.borrow();
         for (_, sprite) in shared.sprites.iter().filter(|(_, sprite)| sprite.added && sprite.among.is_some_and(|(of, place)| of == group && (place == at as i64 || (last && (place < 0 || place > at as i64))))) {
             sprite.draw(Vec2::ZERO);
-        }
-    }
-
-    /// Draws the sprites put in the custom substate, in their order, over everything.
-    /// shortcut: they are seen through the top camera, whatever camera they were given
-    pub fn draw_substate(&self) {
-        let shared = self.shared.borrow();
-        let Some(substate) = &shared.substate else { return };
-        for tag in &substate.members {
-            if let Some((_, sprite)) = shared.sprites.iter().find(|(name, _)| name == tag) {
-                sprite.draw(Vec2::ZERO);
-            }
         }
     }
 

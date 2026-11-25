@@ -2000,7 +2000,6 @@ impl Playing {
         fade(1.0);
         on_camera[2].iter().for_each(|_| layer_begin());
         self.lua.draw(lua::Cam::Other, 0, Vec2::ZERO);
-        self.lua.draw_substate();
         flash(lua::Cam::Other);
         on_camera[2].iter().for_each(layer_end);
         if let Some(video) = &self.video {
@@ -2596,6 +2595,11 @@ fn main() {
                     playing.preview.iter().for_each(|at| editor.back_at(*at));
                     Screen::Editor(Box::new(editor))
                 });
+                // the engine's own Discord application comes back where the Haxe engine puts it (resetClientID): leaving for the
+                // editors or the menu, not on a restart, another song or the options
+                if matches!(flow, Flow::Editor | Flow::CharacterEditor | Flow::Quit) {
+                    discord::set_client("");
+                }
                 match flow {
                     Flow::Continue => Screen::Playing(playing),
                     Flow::Editor => editor(&playing),
@@ -2604,7 +2608,10 @@ fn main() {
                         Screen::CharacterEditor(Box::new(editor), Some((playing.entry.clone(), playing.charting.clone())))
                     }
                     // a play-test goes back to the editor at its end, as the Haxe engine's charting mode
-                    Flow::Finished if playing.charting.is_some() => editor(&playing),
+                    Flow::Finished if playing.charting.is_some() => {
+                        discord::set_client("");
+                        editor(&playing)
+                    }
                     Flow::Finished if playing.bows_out(&coming()) => Screen::Playing(playing),
                     Flow::Finished => {
                         let (play, entry) = (&playing.play, &playing.entry);
@@ -2633,6 +2640,7 @@ fn main() {
                                 Playing::open(&base, next, &songs, &settings, 0.0, true, false, None).map_or_else(Screen::Failed, |p| Screen::Playing(Box::new(p)))
                             }
                             Some((week, _, score, _)) => {
+                                discord::set_client("");
                                 if playing.settings.keeps_scores() {
                                     save.record_week(&weeks[week].file, &entry.difficulty, score + play.score);
                                 }
@@ -2641,6 +2649,7 @@ fn main() {
                             }
                             // straight back to freeplay, as in the Haxe engine
                             None => {
+                                discord::set_client("");
                                 save.save(&base);
                                 Screen::Menu(Page::Freeplay)
                             }
