@@ -296,6 +296,50 @@ pub struct Scripts {
     pub shared: Rc<RefCell<Shared>>,
 }
 
+/// What getPropertyFromClass answers: the Haxe engine's classes scripts read, by class (its package left off) and field.
+/// shortcut: these classes only (ClientPrefs.data, PlayState and its instance, Conductor, FlxG's size, time, sound, camera,
+/// mouse and keys, GameOverSubstate, Lib's window, FlxTransitionableState); the rest are said not to be known. The mouse's
+/// right button reads as held (not just pressed), and the camera's x, y and angle are always 0.
+fn class_read(shared: &Shared, class: &str, field: &str) -> Option<serde_json::Value> {
+    use serde_json::json;
+    if (class, field) == ("CustomSubstate", "name") {
+        return Some(json!(shared.substate_name.as_deref().unwrap_or("unnamed")));
+    }
+    let music = shared.sounds.get("");
+    let live = match (class, field) {
+        ("PlayState", field) => field.strip_prefix("instance."),
+        ("Conductor", "songPosition") | ("FlxG", "sound.music.time") => Some("songPosition"),
+        ("FlxG", "sound.music.length") => Some("songLength"),
+        ("FlxG", "camera.zoom") => Some("camGame.zoom"),
+        _ => None,
+    };
+    if let Some(found) = live.and_then(|name| shared.props.get(name)) {
+        return Some(found.clone());
+    }
+    match (class, field) {
+        ("FlxG", "sound.music.volume") => return Some(json!(music.map_or(1.0, |music| music.0))),
+        ("FlxG", "sound.music.pitch") => return Some(json!(music.map_or(1.0, |music| music.2))),
+        ("FlxG", "sound.music.playing") => return Some(json!(music.is_some())),
+        ("FlxG", "mouse.x" | "mouse.screenX") => return Some(json!(mouse_position(vec2(1280.0, 720.0)).x)),
+        ("FlxG", "mouse.y" | "mouse.screenY") => return Some(json!(mouse_position(vec2(1280.0, 720.0)).y)),
+        ("FlxG", "mouse.justPressed") => return Some(json!(is_mouse_pressed())),
+        ("FlxG", "mouse.pressed") => return Some(json!(is_mouse_down())),
+        ("FlxG", "mouse.justReleased") => return Some(json!(is_mouse_released())),
+        ("FlxG", "mouse.justPressedRight" | "mouse.pressedRight") => return Some(json!(is_mouse_right_down())),
+        ("FlxG", "mouse.wheel") => return Some(json!(mouse_wheel())),
+        _ => {}
+    }
+    if class == "FlxG" {
+        // FlxG.keys.justPressed.SPACE: any key by Flixel's name (an unknown name is never down)
+        for (prefix, state) in [("keys.justPressed.", is_key_pressed as fn(KeyCode) -> bool), ("keys.pressed.", is_key_down), ("keys.justReleased.", is_key_released)] {
+            if let Some(key) = field.strip_prefix(prefix) {
+                return Some(json!(crate::controls::key_named(key).is_some_and(state)));
+            }
+        }
+    }
+    shared.class_props.get(&format!("{class}.{field}")).cloned()
+}
+
 /// Which of the three characters a name of the Haxe engine's means: 0 the opponent, 1 the player, 2 the girlfriend.
 fn character_slot(name: &str) -> Option<usize> {
     ["dad", "boyfriend", "gf", "dadGroup", "boyfriendGroup", "gfGroup"].iter().position(|known| *known == name).map(|at| at % 3)
@@ -1321,36 +1365,37 @@ impl Scripts {
             let of_sprite = args.split_once('.').and_then(|(tag, field)| shared.sprite(tag)?.get(field));
             from_json(lua, &of_sprite.or_else(|| shared.props.get(&args).cloned()).unwrap_or_default())
         });
-        // shortcut: the classes of the Haxe engine scripts read from are the few here: the options (ClientPrefs.data), the
-        // song and the play screen (PlayState, its `instance` being what getProperty reads), the Conductor, FlxG's size,
-        // music and camera; setPropertyFromClass reaches the play screen and the game over's names
+        // the classes of the Haxe engine scripts read and write (class_read lists them); any other says it is not known here
         function!("getPropertyFromClass", |lua, shared, args: (String, String)| {
             let shared = shared.borrow();
             let class = args.0.rsplit('.').next().unwrap_or("");
-            if (class, args.1.as_str()) == ("CustomSubstate", "name") {
-                return from_json(lua, &serde_json::json!(shared.substate_name.as_deref().unwrap_or("unnamed")));
-            }
-            let live = match (class, args.1.as_str()) {
-                ("PlayState", field) => field.strip_prefix("instance."),
-                ("Conductor", "songPosition") | ("FlxG", "sound.music.time") => Some("songPosition"),
-                ("FlxG", "sound.music.length") => Some("songLength"),
-                ("FlxG", "camera.zoom") => Some("camGame.zoom"),
-                _ => None,
-            };
-            let found = live.and_then(|name| shared.props.get(name)).or_else(|| shared.class_props.get(&format!("{class}.{}", args.1)));
+            let found = class_read(&shared, class, &args.1);
             if found.is_none() {
                 eprintln!("Lua: getPropertyFromClass {}.{} is not known here", args.0, args.1);
             }
-            from_json(lua, &found.cloned().unwrap_or_default())
+            from_json(lua, &found.unwrap_or_default())
         });
         function!("setPropertyFromClass", |_lua, shared, args: (String, String, Value)| {
             let class = args.0.rsplit('.').next().unwrap_or("").to_owned();
+            let value = to_json(&args.2);
+            let mut shared = shared.borrow_mut();
             let name = match (class.as_str(), args.1.strip_prefix("instance.")) {
                 ("PlayState", Some(field)) => field.to_owned(),
                 ("FlxG", _) if args.1 == "camera.zoom" => "camGame.zoom".to_owned(),
+                // the song's music (FlxG.sound.music): what the sound functions do to the tag ""
+                ("FlxG", _) if matches!(args.1.as_str(), "sound.music.volume" | "sound.music.time" | "sound.music.pitch") => {
+                    let number = value.as_f64().unwrap_or(0.0);
+                    let op = match args.1.as_str() { "sound.music.volume" => SoundOp::Volume(number as f32), "sound.music.time" => SoundOp::Time(number), _ => SoundOp::Pitch(number) };
+                    shared.requests.push(Request::SoundOp { tag: String::new(), op });
+                    return Ok(args.2);
+                }
                 _ => format!("{class}.{}", args.1),
             };
-            shared.borrow_mut().requests.push(Request::SetProperty { name, value: to_json(&args.2) });
+            // what a script wrote is what it reads back next; the game acts on the names it knows (main.rs set_property)
+            if shared.class_props.contains_key(&name) {
+                shared.class_props.insert(name.clone(), value.clone());
+            }
+            shared.requests.push(Request::SetProperty { name, value });
             Ok(args.2)
         });
         g.set("getTranslationPhrase", lua.create_function(|_, args: (String, Option<String>, Option<Vec<Value>>)| {
@@ -2543,6 +2588,7 @@ impl Scripts {
     /// Runs the timers on by `dt` seconds, calling onTimerCompleted(tag, loops done, loops left) for each that rings.
     pub fn tick(&mut self, dt: f64) {
         let mut rung = Vec::new();
+        self.shared.borrow_mut().class_props.insert("FlxG.elapsed".to_owned(), serde_json::json!(dt));
         // (a custom substate holding the game holds the timers and tweens that ran when it opened)
         let held = self.shared.borrow().substate.as_ref().map_or((Vec::new(), Vec::new()), |substate| (substate.held_timers.clone(), substate.held_tweens.clone()));
         {
@@ -2963,5 +3009,36 @@ mod tests {
         let scripts = run("setRatingName('Great'); setRatingPercent(0.5); seen = ratingName");
         let requests = scripts.requests();
         assert_eq!(requests, [Request::Rating { percent: None, name: Some("Great".to_owned()), fc: None }, Request::Rating { percent: Some(0.5), name: None, fc: None }]);
+    }
+
+    #[test]
+    fn classes_are_read_and_written_as_the_haxe_engine_names_them() {
+        use serde_json::json;
+        let mut scripts = run(r#"
+            function onCreate()
+                setPropertyFromClass('backend.ClientPrefs', 'data.downScroll', true)
+                setPropertyFromClass('flixel.FlxG', 'sound.music.volume', 0.25)
+                setPropertyFromClass('flixel.FlxG', 'camera.zoom', 1.5)
+                setPropertyFromClass('lime.app.Application', 'nothing', 1)
+                setVar('seen', {getPropertyFromClass('backend.ClientPrefs', 'data.downScroll'), getPropertyFromClass('states.PlayState', 'SONG.bpm'),
+                    getPropertyFromClass('backend.Conductor', 'songPosition'), getPropertyFromClass('flixel.FlxG', 'keys.pressed.NOSUCHKEY'),
+                    getPropertyFromClass('flixel.FlxG', 'width'), getPropertyFromClass('flixel.FlxG', 'sound.music.volume'),
+                    getPropertyFromClass('substates.GameOverSubstate', 'characterName'), getPropertyFromClass('flixel.FlxG', 'nothing')})
+            end
+        "#);
+        {
+            let mut shared = scripts.shared.borrow_mut();
+            shared.class_props.extend([("ClientPrefs.data.downScroll", json!(false)), ("PlayState.SONG.bpm", json!(150)), ("FlxG.width", json!(1280)), ("GameOverSubstate.characterName", json!("bf-dead"))].map(|(name, value)| (name.to_owned(), value)));
+            shared.props.insert("songPosition".to_owned(), json!(1234.5));
+            shared.sounds.insert(String::new(), (0.5, 0.0, 1.0));
+        }
+        scripts.call("onCreate", ());
+        assert_eq!(scripts.shared.borrow().vars["seen"], json!([true, 150, 1234.5, false, 1280, 0.5, "bf-dead"]));
+        assert_eq!(scripts.requests(), [
+            Request::SetProperty { name: "ClientPrefs.data.downScroll".to_owned(), value: json!(true) },
+            Request::SoundOp { tag: String::new(), op: SoundOp::Volume(0.25) },
+            Request::SetProperty { name: "camGame.zoom".to_owned(), value: json!(1.5) },
+            Request::SetProperty { name: "Application.nothing".to_owned(), value: json!(1) },
+        ]);
     }
 }

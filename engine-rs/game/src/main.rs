@@ -1254,7 +1254,27 @@ impl Playing {
             self.play.chart.game_over[at] = text.to_owned();
             return;
         }
+        // the player's options as a script sets them (ClientPrefs.data.<name>), and the window's mode
+        if let (Some(field), Some(on)) = (name.strip_prefix("ClientPrefs.data."), number) {
+            let flag = on != 0.0;
+            match field {
+                "downScroll" => self.settings.downscroll = flag,
+                "middleScroll" => self.settings.middlescroll = flag,
+                "ghostTapping" => self.settings.ghost_tapping = flag,
+                "noteOffset" => self.settings.offset_ms = on,
+                "flashing" => self.settings.flashing = flag,
+                "lowQuality" => self.settings.low_quality = flag,
+                "shaders" => self.settings.shaders = flag,
+                "hideHud" => self.settings.hide_hud = flag,
+                "camZooms" => self.settings.cam_zooms = flag,
+                _ => eprintln!("Lua: setting ClientPrefs.data.{field} is kept for scripts to read, the game does not act on it"),
+            }
+            return;
+        }
         match (name, number) {
+            ("FlxG.fullscreen" | "Lib.application.window.fullscreen", Some(on)) => self.settings.fullscreen = on != 0.0,
+            // kept for the scripts to read back (Shared.class_props), the game acts on none of them
+            ("Lib.application.window.title" | "FlxG.sound.volume" | "FlxG.sound.muted" | "FlxG.timeScale" | "FlxG.autoPause" | "GameOverSubstate.deathDelay" | "FlxTransitionableState.skipNextTransIn" | "FlxTransitionableState.skipNextTransOut", _) => {}
             ("health", Some(health)) => self.play.health = health.clamp(0.0, 2.0),
             ("songSpeed", Some(speed)) => self.speed = speed as f32,
             ("songScore", Some(score)) => self.play.score = score as i64,
@@ -2141,6 +2161,17 @@ fn start_scripts(base: &Path, paths: &Paths, entry: &SongEntry, chart: &Chart, s
         ("PlayState.SONG.player1", json!(chart.player)), ("PlayState.SONG.player2", json!(chart.opponent)), ("PlayState.SONG.gfVersion", json!(chart.gf)),
         ("Conductor.bpm", json!(bpm)), ("Conductor.crochet", json!(crochet)), ("Conductor.stepCrochet", json!(crochet / 4.0)),
         ("FlxG.width", json!(WIDTH)), ("FlxG.height", json!(HEIGHT)),
+        ("ClientPrefs.data.autoPause", json!(settings.auto_pause)), ("ClientPrefs.data.pauseMusic", json!(settings::PAUSE_MUSIC[settings.pause_music.min(3)])), ("ClientPrefs.data.checkForUpdates", json!(settings.check_for_updates)),
+        ("ClientPrefs.data.showMsOffset", json!(settings.show_ms)), ("ClientPrefs.data.displayLagCorrection", json!(settings.display_lag_correction)), ("ClientPrefs.data.discordRPC", json!(settings.discord_rpc)),
+        ("ClientPrefs.data.exclusiveFullscreen", json!(settings.exclusive_fullscreen)), ("ClientPrefs.data.comboOffset", json!(settings.combo_offset)), ("ClientPrefs.data.graphicsAPI", json!(settings::GRAPHICS_APIS[settings.graphics_api.min(2)])),
+        ("PlayState.needsVoices", json!(entry.voices_player.is_some() || entry.voices_opponent.is_some())), ("PlayState.storyWeek", json!(entry.week)), ("PlayState.storyDifficulty", json!(0)), ("PlayState.deathCounter", json!(0)),
+        ("PlayState.seenCutscene", json!(seen)), ("PlayState.campaignScore", json!(0)), ("PlayState.campaignMisses", json!(0)),
+        ("Conductor.offset", json!(0)), ("FlxG.elapsed", json!(0)), ("FlxG.timeScale", json!(1)), ("FlxG.sound.volume", json!(settings.volume)), ("FlxG.sound.muted", json!(false)),
+        ("FlxG.camera.angle", json!(0)), ("FlxG.camera.x", json!(0)), ("FlxG.camera.y", json!(0)), ("FlxG.fullscreen", json!(settings.fullscreen)), ("FlxG.autoPause", json!(settings.auto_pause)),
+        ("FlxG.mouse.visible", json!(true)), ("Lib.application.window.title", json!("Friday Night Funkin': Psych Engine")), ("Lib.application.window.fullscreen", json!(settings.fullscreen)),
+        ("GameOverSubstate.characterName", json!(chart.game_over[0])), ("GameOverSubstate.deathSoundName", json!(chart.game_over[1])), ("GameOverSubstate.loopSoundName", json!(chart.game_over[2])),
+        ("GameOverSubstate.endSoundName", json!(chart.game_over[3])), ("GameOverSubstate.deathDelay", json!(0)),
+        ("FlxTransitionableState.skipNextTransIn", json!(false)), ("FlxTransitionableState.skipNextTransOut", json!(false)),
     ].into_iter().map(|(name, value)| (name.to_owned(), value)).collect();
     shared.shaders_on = settings.shaders;
     (shared.note_keys, shared.save_dir, shared.song, shared.language) = (settings.keys, base.join("funkin-rs-lua-saves"), song, settings.language.clone());
