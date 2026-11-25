@@ -272,6 +272,11 @@ fn lane_x(settings: &Settings, player: bool, lane: usize) -> f32 {
     left + LANE_WIDTH * lane as f32 + LANE_WIDTH / 2.0
 }
 
+/// The HUD's pieces a script may put a mod's shader on, by the Haxe engine's names.
+// shortcut: the bars and texts are drawn as rectangles and letters here, not as pictures of their own: to a shader each
+// rectangle is one white dot (openfl_TextureSize 1 by 1) and each letter a piece of the font's sheet
+const HUD_PIECES: [&str; 6] = ["timeBar", "healthBar", "iconP1", "iconP2", "scoreTxt", "botplayTxt"];
+
 /// The texts scripts may read of the three characters, by the Haxe engine's names.
 const CHARACTER_TEXTS: [[&str; 4]; 3] = [
     ["boyfriend.curCharacter", "boyfriend.animation.curAnim.name", "boyfriend.animation.name", "boyfriend.idleSuffix"],
@@ -501,8 +506,10 @@ impl Playing {
         let video = opening.and_then(|name| paths.video(name)).and_then(|path| video::Video::open(&path, true, true, false, false).map_err(|error| eprintln!("{error}")).ok());
         let end_video = closing.and_then(|name| paths.video(name));
         lua.shared.borrow_mut().class_props.insert("PlayState.isPixelStage".to_owned(), serde_json::json!(scene.as_ref().is_some_and(|scene| scene.pixel)));
-        // (the names scripts may give the stage file's objects shaders by)
-        lua.shared.borrow_mut().object_names = scene.as_ref().map_or(Vec::new(), |scene| scene.object_names());
+        // (the names scripts may give shaders by: the stage file's objects, the HUD's pieces)
+        let mut names = scene.as_ref().map_or(Vec::new(), |scene| scene.object_names());
+        names.extend(HUD_PIECES.iter().map(|name| name.to_string()));
+        lua.shared.borrow_mut().object_names = names;
         Ok(Playing { charting, preview: None, video, end_video, speech: None, countdown_asked: false, countdown_held: false, entry: entry.clone(), play, song, player_voice, own_skin: None, music_fade: None, lua, looks: Default::default(), renamed: Default::default(), note_art: HashMap::new(), strums: strums(settings), flash: None, sounds: HashMap::new(), fades: Vec::new(), music_volume: 1.0, bar_colors: Default::default(), lua_step: i64::MIN, lua_section: usize::MAX, lua_created: false, rating_set: Default::default(), music_held: false, music_pitch: None, end_asked: false, end_held: false, base: base.to_path_buf(), staged, bowing: false, tune: false, paused_at: 0.0, pause_scroll: 0.0, deaths: 0, scene, waited: 0.0, clock: Default::default(), ticked: std::time::Instant::now(), started: false, paused: None, choosing: None, skip_time: 0.0, skip_held: 0.0, difficulties, story, taunt_until: None, start_at, position: -lead_in, settings: settings.clone(), held_keys: Vec::new(), flash_until: [[f64::MIN; 4]; 2], judgement: None, last_hit: f64::MIN, lanes_used: [false; 4], idled: false, idle_for: 0.0, sang_for: 0.0,
             paths, cutscene, lead_in, counted: i64::MIN, popups: Vec::new(), splashes: Vec::new(), dead: None, next_event: 0, speed, speed_change: None }.with(settings))
     }
@@ -1648,8 +1655,11 @@ impl Playing {
         let shown = |piece: &str| look(&format!("{piece}.visible")) != 0.0;
         // (a hidden HUD is drawn faded out, so that the pause menu and the talk over it still show)
         let (hud_alpha, game_shown) = (if shown("camHUD") { look("camHUD.alpha") } else { 0.0 }, shown("camGame"));
+        // (each piece of the HUD drawn through the mod's shader a script gave it, by its name, until the next piece)
+        let hud_shaders: HashMap<String, gfx::Shader> = HUD_PIECES.iter().filter_map(|name| Some((name.to_string(), self.lua.shared.borrow().object_shaders.get(*name)?.clone()))).collect();
         let piece = |name: &str| {
             fade(hud_alpha * look(&format!("{name}.alpha")));
+            shade(hud_shaders.get(name));
             shown(name)
         };
         // the mods' shaders scripts put on the cameras: all a camera shows is a layer seen through its shader
@@ -1845,6 +1855,7 @@ impl Playing {
             }
         }
 
+        shade(None);
         // health: the player's share grows from the right
         let (bar_x, bar_y, bar_w) = (WIDTH / 2.0 - 300.0, HEIGHT * if settings.downscroll { 0.11 } else { 0.89 }, 600.0);
         // judgements sit left of the player's lanes
@@ -1859,6 +1870,7 @@ impl Playing {
             draw_rectangle(bar_x, bar_y, middle - bar_x, 18.0, faded(left.or(singers[0].map(|c| c.color)).unwrap_or(Color::from_hex(0xFF0000))));
             draw_rectangle(middle, bar_y, bar_w * player_share, 18.0, faded(right.or(singers[1].map(|c| c.color)).unwrap_or(Color::from_hex(0x66FF33))));
         }
+        shade(None);
         // the two singers' icons meet where the bar's colours meet; the losing one shows its second picture
         let icon_size = 150.0 * self.scene.as_ref().map_or(1.0, |scene| scene.icon_scale);
         for (side, singer) in singers.iter().enumerate() {
@@ -1895,6 +1907,7 @@ impl Playing {
                 draw_text_ex(&line, x + shift, bar_y + 52.0 + shift, TextParams { font: skin.font.as_ref(), font_size: 20, font_scale: swell as f32, color, ..Default::default() });
             }
         }
+        shade(None);
         if let Some((text, color, at)) = &self.judgement {
             let age = (position - at) as f32;
             if age < 700.0 {
@@ -1905,6 +1918,7 @@ impl Playing {
         if self.play.botplay && piece("botplayTxt") {
             skin.centered(&phrase("Botplay", "Botplay").to_uppercase(), if settings.downscroll { HEIGHT - 190.0 } else { 190.0 }, 32, WHITE);
         }
+        shade(None);
         fade(hud_alpha);
         // what scripts printed (debugPrint), newest at the top, each fading out after six seconds, as the Haxe engine shows it
         let now = get_time();

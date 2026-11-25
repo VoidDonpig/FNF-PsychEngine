@@ -212,7 +212,8 @@ Done:
   `flixel_texture2D`, `texture2D`; ported ones with globals given values outside functions, `texture` and `mainImage`
   renamed by `#define` or a `mainImage` called by `main`; ones without the header that declare the varying and
   `bitmap` themselves; lists of uniforms and matrices; a vertex part, `<name>.vert`, with `#pragma body` and varyings
-  of its own) on the scripts' sprites, the three characters, the stage file's objects by their names and, by the names
+  of its own) on the scripts' sprites, the three characters, the stage file's objects by their names, the HUD's pieces (timeBar, healthBar, iconP1,
+  iconP2, scoreTxt, botplayTxt) and, by the names
   "camGame", "camHUD" and "camOther", on all a camera shows (the weekend's rain under it): initLuaShader,
   setSpriteShader, removeSpriteShader, the getShader/setShader functions (Float, Int, Bool and their arrays for vectors)
   and setShaderSampler2D; a shader that cannot be read is said so on screen and left out; the Shaders switch turns
@@ -336,7 +337,8 @@ Not there yet:
 
 - **Menus**: the GPU Caching switch (nothing to switch here); update check.
 - **Scripts**: classes built or called by reflection beyond those listed (createInstance, callMethodFromClass), and
-  what getProperty/setProperty and the class functions do not reach yet. Shaders on the HUD's own pieces and on what the game's stages draw in code; a vertex shader gets its corners already
+  what getProperty/setProperty and the class functions do not reach yet. Shaders on what the game's stages draw in code (their files have no objects to name); to a shader the
+  HUD's bars and texts are rectangles and letters, not pictures of their own; a vertex shader gets its corners already
   placed on screen (`openfl_Matrix` changes nothing); a camera takes its shader by setSpriteShader with its name (the Haxe engine's scripts use HScript's setFilters for
   that); `gl_FragCoord` counts from the top of the window. HScript is Haxe code run against the Haxe
   engine's own classes, so mods that use it cannot run here as they are.
