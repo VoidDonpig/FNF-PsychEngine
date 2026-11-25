@@ -2500,7 +2500,6 @@ impl Scripts {
     pub fn tick(&mut self, dt: f64) {
         let mut rung = Vec::new();
         // (a custom substate holding the game holds the timers and tweens that ran when it opened)
-        // shortcut: the scripts' sprites all go on playing their animations under it
         let held = self.shared.borrow().substate.as_ref().map_or((Vec::new(), Vec::new()), |substate| (substate.held_timers.clone(), substate.held_tweens.clone()));
         {
             let mut shared = self.shared.borrow_mut();
@@ -2525,8 +2524,10 @@ impl Scripts {
         let mut finished = Vec::new();
         {
             let mut shared = self.shared.borrow_mut();
-            for (_, sprite) in &mut shared.sprites {
-                if let Some((_, time)) = &mut sprite.playing {
+            // (with the state held, only the sprites of the substate itself, which updates them, go on playing)
+            let held_state = shared.substate.as_ref().filter(|substate| substate.pause).map(|substate| substate.members.clone());
+            for (tag, sprite) in &mut shared.sprites {
+                if let (Some((_, time)), true) = (&mut sprite.playing, held_state.as_ref().is_none_or(|members| members.contains(tag))) {
                     *time += dt;
                 }
             }
@@ -2813,6 +2814,22 @@ mod tests {
         let sources = |found: Vec<(Frame, char)>| found.iter().map(|(frame, sheet)| (frame.source.x, *sheet)).collect::<Vec<_>>();
         assert_eq!(sources(frames_named(&frames, "walk", &[])), [(0.0, 'a'), (1.0, 'b'), (2.0, 'a')]);
         assert_eq!(sources(frames_named(&frames, "walk", &[2, 1])), [(2.0, 'a'), (1.0, 'b')]);
+    }
+
+    #[test]
+    fn sprites_under_a_substate_that_holds_the_game_stop_animating() {
+        let mut scripts = run("makeLuaSprite('under', nil, 0, 0); makeLuaSprite('over', nil, 0, 0)
+            function onCustomSubstateCreate() insertToCustomSubstate('over') end");
+        for tag in ["under", "over"] {
+            scripts.shared.borrow_mut().sprite(tag).unwrap().playing = Some(("a".to_owned(), 0.0));
+        }
+        scripts.open_substate("x", true);
+        scripts.tick(0.5);
+        let time = |scripts: &Scripts, tag: &str| scripts.shared.borrow().sprites.iter().find(|(name, _)| name == tag).and_then(|(_, sprite)| sprite.playing.clone()).map(|(_, time)| time);
+        assert_eq!((time(&scripts, "under"), time(&scripts, "over")), (Some(0.0), Some(0.5)));
+        scripts.close_substate();
+        scripts.tick(0.5);
+        assert_eq!(time(&scripts, "under"), Some(0.5));
     }
 
     #[test]
