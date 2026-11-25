@@ -667,6 +667,8 @@ impl Shared {
         let file = self.paths.as_ref().and_then(|paths| paths.find(&format!("shaders/{name}.frag")));
         let read = file.ok_or_else(|| "its .frag file was not found".to_owned()).and_then(|file| std::fs::read_to_string(file).map_err(|error| error.to_string())).and_then(|text| Shader::load(&text));
         if let Err(error) = &read {
+            // (on one line: the graphics card's side answers in several)
+            let error = error.split_whitespace().collect::<Vec<_>>().join(" ");
             eprintln!("Lua: shader {name}: {error}");
             self.printed.push((format!("Shader {name}: {error}"), crate::gfx::get_time()));
         }
@@ -1003,7 +1005,9 @@ impl Scripts {
         });
         // mods' shaders (`shaders/<name>.frag`), on the scripts' sprites and the three characters
         // shortcut: on the cameras (which the Haxe engine's scripts reach through HScript only), on the game's own
-        // pictures other than the characters, and vertex shaders (`.vert`) they are not taken
+        // pictures other than the characters, and vertex shaders (`.vert`) they are not taken. A character's shader
+        // stays on its place when the character changes (the Haxe engine's goes with the old one), and a sprite that
+        // is a plain rectangle (makeGraphic) is one dot to its shader (openfl_TextureSize 1 by 1).
         function!("initLuaShader", |_lua, shared, args: (String, Option<Value>)| {
             let mut shared = shared.borrow_mut();
             Ok(shared.shaders_on && shared.shader(&args.0).is_some())

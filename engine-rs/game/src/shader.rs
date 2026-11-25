@@ -51,7 +51,9 @@ const TYPES: [&str; 12] = ["float", "int", "bool", "vec2", "vec3", "vec4", "ivec
 /// bindings), the header's names defined, and the values it gives its globals outside any function (which only some
 /// drivers take) given at the start of `main` instead.
 // shortcut: arrays of uniforms, `varying`s of its own and vertex shaders are not taken; such a shader is refused with
-// the reason
+// the reason. `gl_FragCoord` counts from the top of the window here (from the bottom in OpenGL), and a picture read
+// with plain `texture(...)` (not `texture2D`, `flixel_texture2D` or the usual `#define texture flixel_texture2D`)
+// comes without its colours multiplied by its opacity.
 pub fn rewrite(source: &str) -> Result<(String, Vec<(String, Vec<f64>)>), String> {
     let source = without_comments(source);
     let (mut block, mut pictures, mut flags, mut defaults) = (String::new(), Vec::new(), Vec::new(), Vec::new());
@@ -62,16 +64,24 @@ pub fn rewrite(source: &str) -> Result<(String, Vec<(String, Vec<f64>)>), String
         let trimmed = rest.trim_start();
         let lead = &rest[..rest.len() - trimmed.len()];
         if trimmed.starts_with('#') {
-            let line = trimmed.lines().next().unwrap_or("");
+            // (to the end of its line, or of the last line it goes on to with a `\`)
+            let mut length = 0;
+            for line in trimmed.split_inclusive('\n') {
+                length += line.len();
+                if !line.trim_end().ends_with('\\') {
+                    break;
+                }
+            }
+            let line = trimmed[..length].trim_end();
             let words: Vec<&str> = line[1..].split_whitespace().collect();
             match words.as_slice() {
                 ["version", ..] | ["pragma", "header", ..] | ["extension", ..] => {}
                 // (the boilerplate of ported shaders: `#define mainImage main`)
                 ["define", name, "main"] => {
                     entry = (*name).to_owned();
-                    body.push_str(&format!("{lead}{line}\n"));
+                    body.push_str(&format!("{lead}{line}"));
                 }
-                _ => body.push_str(&format!("{lead}{line}\n")),
+                _ => body.push_str(&format!("{lead}{line}")),
             }
             rest = &trimmed[line.len()..];
             continue;
@@ -114,9 +124,16 @@ pub fn rewrite(source: &str) -> Result<(String, Vec<(String, Vec<f64>)>), String
                     }
                 }
             }
-            // a global given a value outside any function: declared here, given its value as `main` begins
-            [kind, name, "=", ..] if depth == 0 && statement.ends_with(';') && TYPES.contains(kind) => {
-                let value = statement[statement.find('=').unwrap_or(0) + 1..].trim_end_matches(';').trim();
+            // what the header declares, said again by a shader without `#pragma header`
+            ["varying", .., name] if depth == 0 && statement.ends_with(';') => {
+                if !matches!(*name, "openfl_TextureCoordv" | "openfl_Alphav" | "openfl_ColorMultiplierv" | "openfl_ColorOffsetv") {
+                    return Err(format!("a varying of the shader's own is not taken here: {name}"));
+                }
+            }
+            // a global given a value outside any function (one name, not a constant): declared here, given its value as
+            // `main` begins
+            [kind, ..] if depth == 0 && statement.ends_with(';') && TYPES.contains(kind) && global_with_value(statement).is_some() => {
+                let (name, value) = global_with_value(statement).unwrap_or_default();
                 body.push_str(&format!("{lead}{kind} {name};"));
                 hoisted.push_str(&format!(" {name} = {value};"));
             }
@@ -136,6 +153,9 @@ pub fn rewrite(source: &str) -> Result<(String, Vec<(String, Vec<f64>)>), String
             depth = depth.saturating_sub(1);
         }
     }
+    if !hoisted.is_empty() && !body.contains('\u{1}') {
+        return Err(format!("globals are given values outside any function, and there is no `void {entry}()` to give them in"));
+    }
     let body = body.replace('\u{1}', &hoisted);
     let mut text = String::from("#version 450\nlayout(location = 0) in vec2 openfl_TextureCoordv;\nlayout(location = 1) in vec4 funkin_color;\nlayout(location = 0) out vec4 funkin_FragColor;\n");
     text.push_str("layout(set = 0, binding = 0) uniform texture2D funkin_bitmap_t;\nlayout(set = 0, binding = 1) uniform sampler funkin_bitmap_s;\n");
@@ -154,6 +174,15 @@ pub fn rewrite(source: &str) -> Result<(String, Vec<(String, Vec<f64>)>), String
     text.push('\n');
     defaults.extend(pictures.into_iter().map(|name| (format!("\u{1}{name}"), Vec::new())));
     Ok((text, defaults))
+}
+
+/// The name and the value of a statement `<type> <name> = <value>;` that declares one global; none for another shape.
+fn global_with_value(statement: &str) -> Option<(&str, &str)> {
+    let declared = statement.trim_end_matches(';').split_once(char::is_whitespace)?.1;
+    let (name, value) = declared.split_once('=')?;
+    let name = name.trim();
+    let plain = !name.is_empty() && name.chars().all(|letter| letter.is_ascii_alphanumeric() || letter == '_');
+    (plain && split_outside_brackets(value).len() == 1).then_some((name, value.trim()))
 }
 
 /// The parts of a list between its commas, those inside brackets not counted (`a = vec2(1.0, 2.0), b`).
@@ -199,8 +228,9 @@ fn without_comments(source: &str) -> String {
 /// has that is not taken here, or where it is wrong.
 pub fn translate(source: &str) -> Result<Translated, String> {
     let (text, mut defaults) = rewrite(source)?;
-    let mut frontend = naga::front::glsl::Frontend::default();
-    let module = frontend.parse(&naga::front::glsl::Options::from(naga::ShaderStage::Fragment), &text).map_err(|errors| {
+    // (a mod's file must not end the game: should the reader give up on one, that is an error like any other)
+    let parsed = std::panic::catch_unwind(|| naga::front::glsl::Frontend::default().parse(&naga::front::glsl::Options::from(naga::ShaderStage::Fragment), &text));
+    let module = parsed.map_err(|_| "the shader could not be read".to_owned())?.map_err(|errors| {
         // with the line of the rewritten text each error is at, and that line
         errors.errors.iter().map(|error| {
             let line = error.meta.location(&text).line_number as usize;
@@ -291,6 +321,17 @@ mod tests {
         let mut bytes = vec![0; plain.size];
         write(&mut bytes, &plain.slots[1], &[0.75, 9.0]);
         assert_eq!((plain.slots[1].name.as_str(), super::read(&bytes, &plain.slots[1])), ("amount", vec![0.75]));
+        // other shapes mods come in: no spaces, a line going on, no header, the function of a ported one called by main
+        for shape in [
+            "#pragma header\nvec2 uv=openfl_TextureCoordv.xy;\nvoid main() { gl_FragColor = flixel_texture2D(bitmap, uv); }",
+            "#pragma header\n#define LONG(a, b) \\\n    ((a) + \\\n     (b))\nprecision highp float;\nuniform float a, b;\nvoid main() { for (int i = 0; i < 4; i++) { gl_FragColor += flixel_texture2D(bitmap, openfl_TextureCoordv) * LONG(a, b); } }",
+            "varying vec2 openfl_TextureCoordv;\nuniform sampler2D bitmap;\nuniform vec2 openfl_TextureSize;\nvoid main() { float x = 1; gl_FragColor = texture2D(bitmap, openfl_TextureCoordv) * x; }",
+            "#pragma header\nuniform float iTime;\nvoid mainImage(out vec4 fragColor, in vec2 fragCoord) { fragColor = flixel_texture2D(bitmap, fragCoord / openfl_TextureSize) * iTime; }\nvoid main() { mainImage(gl_FragColor, openfl_TextureCoordv * openfl_TextureSize); }",
+        ] {
+            translate(shape).unwrap_or_else(|error| panic!("{error}\n{shape}"));
+        }
+        assert!(translate("#pragma header\nvec2 uv = openfl_TextureCoordv;\nvoid other() {}").is_err_and(|error| error.contains("no `void main()`")));
+        assert!(translate("varying vec2 mine;\nvoid main() {}").is_err_and(|error| error.contains("varying")));
         // what is not taken, or wrong, is said
         assert!(translate("uniform float list[4];\nvoid main() {}").is_err_and(|error| error.contains("arrays")));
         assert!(translate("#pragma header\nvoid main() { gl_FragColor = nothing; }").is_err_and(|error| error.contains("nothing")));
