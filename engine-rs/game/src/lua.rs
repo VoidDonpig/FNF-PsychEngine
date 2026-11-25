@@ -161,7 +161,7 @@ function __instanceMethod(path, a)
     if method == 'setGraphicSize' then setGraphicSize(object, a[1] or 0, a[2]) return true end
     if method == 'kill' then setProperty(object .. '.alive', false) return true end
     if method == 'revive' then setProperty(object .. '.alive', true) return true end
-    if method == 'createFilledBar' then __barColors(object, a[1], a[2]) return true end
+    if method == 'createFilledBar' then __barColors(object, a[1], a[2], a[3], a[4]) return true end
     if method == 'setRange' then __barRange(object, a[1], a[2]) return true end
     if method == 'destroy' then removeLuaSprite(object, true) return true end
     return false
@@ -748,7 +748,23 @@ struct Bar {
     direction: u8,
     fill: u32,
     empty: Option<u32>,
+    /// The border colour createFilledBar's showBorder asks for: one pixel round both the empty and the filled bitmap.
+    border: Option<u32>,
     size: [f64; 2],
+}
+
+/// What FlxBar's bitmap of `w` by `h` shows through `clip` (x, y, width, height; the part the fill leaves showing): the border's
+/// four one-pixel sides when asked (flagged true), then the middle; each cut to the clip, those outside it left out.
+fn bar_pieces(w: f32, h: f32, clip: [f32; 4], border: bool) -> Vec<(bool, [f32; 4])> {
+    let mut pieces = vec![];
+    let parts = if border { vec![(true, [0.0, 0.0, w, 1.0]), (true, [0.0, h - 1.0, w, 1.0]), (true, [0.0, 1.0, 1.0, h - 2.0]), (true, [w - 1.0, 1.0, 1.0, h - 2.0]), (false, [1.0, 1.0, w - 2.0, h - 2.0])] } else { vec![(false, [0.0, 0.0, w, h])] };
+    for (is_border, [x, y, pw, ph]) in parts {
+        let (x0, y0, x1, y1) = (x.max(clip[0]), y.max(clip[1]), (x + pw).min(clip[0] + clip[2]), (y + ph).min(clip[1] + clip[3]));
+        if x1 > x0 && y1 > y0 {
+            pieces.push((is_border, [x0, y0, x1 - x0, y1 - y0]));
+        }
+    }
+    pieces
 }
 
 /// A camera a script made: how it is seen over the screen.
@@ -975,16 +991,22 @@ impl Sprite {
         if let Some(bar) = &self.bar {
             let fraction = ((bar.value - bar.min) / (bar.max - bar.min).max(f64::EPSILON)).clamp(0.0, 1.0) as f32;
             let (w, h) = (size.x, size.y);
+            let alpha = self.alpha as f32;
+            let paint = |clip: [f32; 4], inner: Color| {
+                for (is_border, [x, y, pw, ph]) in bar_pieces(w, h, clip, bar.border.is_some()) {
+                    draw_rectangle(corner.x + x, corner.y + y, pw, ph, if is_border { Color { a: alpha, ..Color::from_hex(bar.border.unwrap_or(0)) } } else { inner });
+                }
+            };
             if let Some(empty) = bar.empty {
-                draw_rectangle(corner.x, corner.y, w, h, Color { a: self.alpha as f32, ..Color::from_hex(empty) });
+                paint([0.0, 0.0, w, h], Color { a: alpha, ..Color::from_hex(empty) });
             }
-            let fill = Color { a: self.alpha as f32, ..Color::from_hex(bar.fill) };
-            match bar.direction {
-                1 => draw_rectangle(corner.x + w * (1.0 - fraction), corner.y, w * fraction, h, fill),
-                2 => draw_rectangle(corner.x, corner.y, w, h * fraction, fill),
-                3 => draw_rectangle(corner.x, corner.y + h * (1.0 - fraction), w, h * fraction, fill),
-                _ => draw_rectangle(corner.x, corner.y, w * fraction, h, fill),
-            }
+            let fill = Color { a: alpha, ..Color::from_hex(bar.fill) };
+            paint(match bar.direction {
+                1 => [w * (1.0 - fraction), 0.0, w * fraction, h],
+                2 => [0.0, 0.0, w, h * fraction],
+                3 => [0.0, h * (1.0 - fraction), w, h * fraction],
+                _ => [0.0, 0.0, w * fraction, h],
+            }, fill);
             pop_model_matrix();
             blend_add(false);
             return;
@@ -1813,9 +1835,11 @@ impl Scripts {
             g.set(name, lua.create_function(move |_, args: (Value, String)| Ok(crate::pad::named(&args.1).is_some_and(state)))?)?;
         }
         // (only web addresses are opened, by the credits menu's link opener)
-        function!("__barColors", |_lua, shared, args: (String, Value, Value)| {
+        function!("__barColors", |_lua, shared, args: (String, Value, Value, Option<bool>, Option<Value>)| {
             if let Some(bar) = shared.borrow_mut().sprite(&args.0).and_then(|sprite| sprite.bar.as_mut()) {
                 (bar.empty, bar.fill) = (Some(color_of(&args.1)), color_of(&args.2));
+                // (FlxBar's own default for the border colour is white)
+                bar.border = args.3.unwrap_or(false).then(|| args.4.as_ref().map_or(0xFFFFFF, color_of));
             }
             Ok(())
         });
@@ -2681,7 +2705,7 @@ impl Scripts {
                     };
                     let size = [number(3, 100.0), number(4, 10.0)];
                     let mut sprite = Sprite::new(None, number(0, 0.0), number(1, 0.0));
-                    sprite.bar = Some(Bar { parent, field: word(6).unwrap_or_default(), min: number(7, 0.0), max: number(8, 100.0), value: number(7, 0.0), direction, fill: 0xFF0000, empty: None, size });
+                    sprite.bar = Some(Bar { parent, field: word(6).unwrap_or_default(), min: number(7, 0.0), max: number(8, 100.0), value: number(7, 0.0), direction, fill: 0xFF0000, empty: None, border: None, size });
                     (None, sprite)
                 }
                 // (the icon's file by the name, two frames side by side; scripts put it on the HUD)
@@ -3483,6 +3507,12 @@ mod tests {
         let back = shared.sprite("back").unwrap();
         assert_eq!((back.tile, back.gap, back.x), ([true, false], [4.0, 6.0], 30.0));
         let bar = shared.sprite("bar").unwrap().bar.clone().unwrap();
-        assert_eq!((bar.value, bar.direction, bar.fill, bar.empty), (1.5, 1, 0x00FF00, Some(0)));
+        assert_eq!((bar.value, bar.direction, bar.fill, bar.empty, bar.border), (1.5, 1, 0x00FF00, Some(0), None));
+        // createFilledBar(empty, fill, true, border): one pixel of the border colour round the bitmap, cut by the clip
+        drop(shared);
+        scripts.shared.borrow_mut().sprite("bar").unwrap().bar.as_mut().unwrap().border = Some(0xFF00FF);
+        assert_eq!(bar_pieces(10.0, 6.0, [0.0, 0.0, 10.0, 6.0], false), [(false, [0.0, 0.0, 10.0, 6.0])]);
+        let half = bar_pieces(10.0, 6.0, [0.0, 0.0, 5.0, 6.0], true);
+        assert_eq!(half, [(true, [0.0, 0.0, 5.0, 1.0]), (true, [0.0, 5.0, 5.0, 1.0]), (true, [0.0, 1.0, 1.0, 4.0]), (false, [1.0, 1.0, 4.0, 4.0])]);
     }
 }
