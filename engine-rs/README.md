@@ -99,9 +99,13 @@ Done:
   mods menu: switch mods on and off (one or all), move them up, down or to the top, kept in
   `modsList.txt` as the Haxe engine keeps it; a mod whose `pack.json` asks for a restart sends the game
   back to its title screen. Mods switched off bring no weeks; mods that run globally lend their files to every song.
+  The update check: the first line of this fork's `gitVersion.txt` (its main branch) is fetched with the system's curl
+  and compared with the game's version; when they differ, reaching the main menu shows the Haxe engine's outdated
+  screen (Enter opens the fork's releases page, Escape goes on). It is off with the Check for Updates option and in runs
+  started with `--play`, `--story` or `--options`.
 - **Achievements**: the Haxe engine's list and rules (a week on Hard without a miss, a rating of 100% or
   under 20%, no idling, two keys only, ten seconds of singing, Friday night, the lowest graphics), a
-  notice when one is unlocked, and the achievements menu (R locks one again). Mods' own (`data/achievements.json`:
+  notice when one is unlocked, and the achievements menu (R locks one again). Mods' own (`data/achievements.json`, comments and trailing commas allowed as TJSON allows them:
   `save`, `name`, `description`, `hidden`, `maxScore`, `maxDecimals`) are listed after the game's, with their pictures
   from the mod's `images/achievements/<save>.png`; Lua counts them up and unlocks them (getAchievementScore,
   setAchievementScore, addAchievementScore, unlockAchievement, isAchievementUnlocked, achievementExists).
@@ -111,9 +115,10 @@ Done:
   tapping, reset button (R), hitsound volume, rating offset, the sick/good/bad hit windows, safe frames,
   note offset; visuals: note splash opacity, hide HUD, time bar (left, elapsed, song name, off),
   flashing lights, camera zooms, score text growing on a hit, health bar opacity, FPS counter, pause
-  music, combo stacking, hit timing in ms, where the rating and the combo count pop up; graphics: low
-  quality (the stage details the Haxe engine leaves out are left out), anti-aliasing, frame rate,
-  fullscreen; note colours:
+  music, check for updates, combo stacking, hit timing in ms, where the rating and the combo count pop up; graphics: low
+  quality (the stage details the Haxe engine leaves out are left out), anti-aliasing, GPU caching (on by default here, off in
+  the Haxe engine; off keeps every picture's pixels in main memory too, and Toaster Gamer wants it off), frame rate,
+  fullscreen; a held number runs at the pace its Haxe option declares; note colours:
   body, shine and outline of each lane, for pixel stages too (turn the hue, or type a colour code).
 - **Gameplay changers** (an options page, also Ctrl in story mode and freeplay): scroll type and speed,
   playback rate (the pitch follows), health gain and loss, instakill on miss, practice mode, botplay.
@@ -127,8 +132,9 @@ Done:
   fork's Display Lag Correction (presses judged against the picture on screen, the time frames take to be shown
   taken off).
 
-- **Since**: rating names and full-combo grades in the score line; the pause menu's Change Difficulty and
-  Options; "Sustains as One Note" (on: a hold is one note, lost whole as one miss; off: every piece gives health or is a miss of its own); arrows dropping in at the start;
+- **Since**: rating names and full-combo grades in the score line; the pause menu's Change Difficulty (in story mode too: the rest of
+  the week follows it) and Options; holds that turn with their strum's direction; a script's note texture with the
+  chosen note skin's ending, as skinPostfix adds it; "Sustains as One Note" (on: a hold is one note, lost whole as one miss; off: every piece gives health or is a miss of its own); arrows dropping in at the start;
   a chart's `offset`; a character's own voice file (`vocals_file`); menu and volume keys that can be bound;
   volume keys and display; auto pause; the flashing lights warning at first start; Alt+Enter; memory in the FPS
   counter; note skins and note splash skins; stages of mods built from the `objects` of their stage file; the
@@ -193,9 +199,14 @@ Done:
   ratingName, ratingFC, playbackRate, cpuControlled, practiceMode, instakillOnMiss, healthGain, healthLoss, combo,
   songMisses, camZooming, gfSpeed, `camGame.scroll`, startingSong, endingSong) and of the characters (curCharacter, the
   animation playing and whether it is over, flipX, idleSuffix), what is true or false told as such;
-  getPropertyFromClass/setPropertyFromClass for the options (`ClientPrefs.data`), the song and the play screen
-  (PlayState, its `instance`), the Conductor, FlxG's size, music and camera zoom, and the game over's character and
-  sounds (GameOverSubstate); getObjectOrder/setObjectOrder among the scripts' sprites and around the characters;
+  getPropertyFromClass/setPropertyFromClass for the options (`ClientPrefs.data`, the gameplay ones writable), the song
+  and the play screen (PlayState: SONG, story mode, deaths, its `instance`), the Conductor, FlxG (size, time, music,
+  volume, camera, mouse, the keys' `justPressed`/`pressed`/`justReleased`, fullscreen), the game over's character,
+  sounds and delay (GameOverSubstate), the window's title (`openfl.Lib`) and FlxTransitionableState's skips;
+  callMethod on the characters, sprites, cameras and the play screen by their path (playAnim with reversed and a start
+  frame, dance, shake, flash, fade, setPosition, screenCenter, updateHitbox, setGraphicSize, kill, revive, KillNotes,
+  endSong, triggerEvent and the like); getObjectOrder/setObjectOrder among the scripts' sprites, between the
+  characters, and among the notes and the strums (addToGroup; removeFromGroup takes notes and strums out of play);
   getTranslationPhrase, getFileTranslation; setCameraScroll, addCameraScroll, getCameraScrollX/Y. Scripts start,
   call and stop other scripts (addLuaScript, callScript, removeLuaScript), set what the rating shows
   (setRatingPercent/Name/FC, until the next note judged; onRecalculateRating may keep it), ask where things are on
@@ -203,10 +214,11 @@ Done:
   several sheets (loadMultipleFrames), change the Discord presence, open another song (loadSong), and pause, resume,
   wind and retune the song's own music, the notes following it. Custom substates (openCustomSubstate,
   closeCustomSubstate, insertToCustomSubstate, the onCustomSubstate* callbacks; one opened with pauseGame holds the
-  song and the play screen still); sprites, texts and groups built with createInstance/addInstance and groups filled
-  with addToGroup/removeFromGroup; Adobe Animate atlas sprites (makeFlxAnimateSprite, loadAnimateAtlas,
-  addAnimationBySymbol, addAnimationBySymbolIndices); callMethodFromClass for FlxG's camera shake, flash and fade and
-  its random numbers; Discord's large picture and changeDiscordClientID; on pixel stages a note's own texture from
+  song and the play screen still, its sprites drawn through the cameras they were given); sprites, texts, groups,
+  cameras of their own (over camOther: zoom, alpha, angle, place), health icons, characters, FlxBackdrops and FlxBars
+  built with createInstance/addInstance and groups filled with addToGroup/removeFromGroup; Adobe Animate atlas sprites (makeFlxAnimateSprite, loadAnimateAtlas,
+  addAnimationBySymbol, addAnimationBySymbolIndices); callMethodFromClass for FlxG's camera shake, flash and fade, its random numbers and
+  sound.play, openURL (and CoolUtil.browserLoad), FlxMath, CoolUtil, Std and Math; Discord's large picture and changeDiscordClientID; on pixel stages a note's own texture from
   `images/pixelUI/<texture>.png` and `<texture>ENDS.png`. The HScript functions say, once, that HScript is not
   supported here. Mods' shaders
   (`shaders/<name>.frag`, written for OpenFL: `#pragma header`, `bitmap`, `openfl_TextureCoordv`, `openfl_TextureSize`,
@@ -214,11 +226,14 @@ Done:
   renamed by `#define` or a `mainImage` called by `main`; ones without the header that declare the varying and
   `bitmap` themselves; lists of uniforms and matrices; a vertex part, `<name>.vert`, with `#pragma body` and varyings
   of its own) on the scripts' sprites, the three characters, the stage file's objects by their names, the HUD's pieces (timeBar, healthBar, iconP1,
-  iconP2, scoreTxt, botplayTxt) and, by the names
+  iconP2, scoreTxt, timeTxt, botplayTxt: each shaded as a picture of its own, then by its camera's shader), the strums,
+  notes, splashes, rating and combo pictures by the names Haxe scripts reach them by, and, by the names
   "camGame", "camHUD" and "camOther", on all a camera shows (the weekend's rain under it): initLuaShader,
   setSpriteShader, removeSpriteShader, the getShader/setShader functions (Float, Int, Bool and their arrays for vectors)
-  and setShaderSampler2D; a shader that cannot be read is said so on screen and left out; the Shaders switch turns
-  them off. Videos: weekend 1's in story mode (before Darnell, after 2hot
+  and setShaderSampler2D; `gl_FragCoord` counts from the bottom as in OpenGL, a vertex part gets `openfl_Position` in
+  the world's pixels and a real `openfl_Matrix`, a sprite that adds its light is added through its shader too, and a
+  character's shader goes with it when Change Character replaces it; a shader that cannot be read is said so on screen
+  and left out; the Shaders switch turns them off. Videos: weekend 1's in story mode (before Darnell, after 2hot
   and Blazin), and Lua's startVideo (as a cutscene the countdown or the end waits for, or over the song; with playOnLoad false
   it waits, black, for callMethod('videoCutscene.play'));
   mp4 files with H.264 pictures and AAC sound, decoded by OpenH264 (built in) and symphonia; holding Accept for
@@ -277,7 +292,8 @@ Done:
   both ways (Psych to V-Slice..., V-Slice to Psych...), as the Haxe editor's VSlice.hx does, into a folder chosen,
   asking before a file is written over. Update (Legacy)... makes an older chart file a Psych 1.0 one in place (the
   one before kept as `.bak`). F12 (or File > Preview) plays the chart's notes from where the editor is, one beat to
-  come in, without the stage, the scripts or the countdown; Escape or F12 goes back to the editor there.
+  come in, without the stage, the scripts or the countdown, over the darkened menu picture with the Haxe preview's
+  hits, misses, time, section, beat and step lines; Escape or F12 goes back to the editor there.
 - **Character editor**: 8 (Debug Key #2) during a song opens it on the song's opponent (Escape goes back to the song),
   and the editors' list has it too (on bf, in the mod folder chosen). As the Haxe editor: the character on week 1's
   stage beside the silhouettes of where the opponent and the player stand, the cross where the camera looks at it;
@@ -321,7 +337,7 @@ Done:
   J/K/L/I move the view,
   E/Q zoom, R back to the stage's zoom, F12 hides the boxes, F1 the help; saved over its file or under a new name (the
   one before kept as `.bak`). The game's own stages draw theirs in code, so only their characters show, as in the Haxe
-  editor. An object's image can be typed or picked from a Browse list of the PNGs under the mod folder's and the
+  editor. An object's image can be typed or picked from a Browse list (with a filter box) of the PNGs under the mod folder's and the
   game's `images/` folders (subfolders included, shown as the name the file stores), or with File through the
   system's file dialog (a PNG under one of those folders).
 - **Note splash editor**: from the editors' list: a splash skin's file (`images/noteSplashes/`) edited, its animations
@@ -336,9 +352,7 @@ Done:
 
 Not there yet:
 
-- **Menus**: the GPU Caching switch (nothing to switch here); update check.
-- **Scripts**: classes built or called by reflection beyond those listed (createInstance, callMethodFromClass), and
-  what getProperty/setProperty and the class functions do not reach yet. To a shader the HUD's bars and texts are rectangles and letters, not pictures of their own; a vertex shader gets its corners already
-  placed on screen (`openfl_Matrix` changes nothing); a camera takes its shader by setSpriteShader with its name (the Haxe engine's scripts use HScript's setFilters for
-  that); `gl_FragCoord` counts from the top of the window. HScript is Haxe code run against the Haxe
-  engine's own classes, so mods that use it cannot run here as they are.
+- **Scripts**: reflection reaches the classes and methods listed above, not any class of the Haxe engine (others say
+  once that they are not known here). A camera takes its shader by setSpriteShader with its name (the Haxe engine's
+  scripts use HScript's setFilters for that). HScript is Haxe code run against the Haxe engine's own classes, so mods
+  that use it cannot run here as they are.
