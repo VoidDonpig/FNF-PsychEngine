@@ -314,11 +314,13 @@ struct Strum {
     angle: f32,
     direction: f32,
     visible: bool,
+    /// Taken out of the strums' group by a script: not drawn.
+    removed: bool,
 }
 
 /// Where the game puts the strums of each side (the opponent's, then the player's).
 fn strums(settings: &Settings) -> [[Strum; 4]; 2] {
-    [false, true].map(|player| std::array::from_fn(|lane| Strum { x: lane_x(settings, player, lane) - LANE_WIDTH / 2.0, y: strum_y(settings) - LANE_WIDTH / 2.0, alpha: 1.0, angle: 0.0, direction: 90.0, visible: true }))
+    [false, true].map(|player| std::array::from_fn(|lane| Strum { x: lane_x(settings, player, lane) - LANE_WIDTH / 2.0, y: strum_y(settings) - LANE_WIDTH / 2.0, alpha: 1.0, angle: 0.0, direction: 90.0, visible: true, removed: false }))
 }
 
 fn strum_y(settings: &Settings) -> f32 {
@@ -1228,6 +1230,7 @@ impl Playing {
                     "angle" => strum.angle = number,
                     "direction" => strum.direction = number,
                     "visible" => strum.visible = number != 0.0,
+                    "removed" => strum.removed = number != 0.0,
                     _ => eprintln!("Lua: {field} of a strum is not known here"),
                 }
             }
@@ -1518,6 +1521,8 @@ impl Playing {
                     };
                     match field.as_str() {
                         "ignoreNote" => self.play.ignored[index] = flag,
+                        // out of the notes' group: nobody hits it (it is the opponent's, which nobody plays but the song) and it passes unnoticed
+                        "removed" if flag => (self.play.ignored[index], note.player) = (true, false),
                         "hitCausesMiss" if flag => kind_to(NoteKind::Hurt),
                         "noAnimation" if flag => kind_to(NoteKind::NoAnimation),
                         "gfNote" if flag => kind_to(NoteKind::GfSing),
@@ -1746,10 +1751,12 @@ impl Playing {
             draw();
             pop_model_matrix();
         };
-        for side in (0..2).filter(|&side| shown(side == 1)) {
+        for side in 0..2 {
             for lane in 0..4 {
+                // what scripts put among the strums lies before the one it was asked to
+                self.lua.draw_among(0, side * 4 + lane, false);
                 let strum = &self.strums[side][lane];
-                if !strum.visible {
+                if !shown(side == 1) || !strum.visible || strum.removed {
                     continue;
                 }
                 let hit = position < self.flash_until[side][lane];
@@ -1769,6 +1776,7 @@ impl Playing {
             }
         }
 
+        self.lua.draw_among(0, 8, true);
         let visible_until = position + (HEIGHT / (PIXELS_PER_MS * speed)) as f64 + 200.0;
         let on_screen = |y: f32| y > -LANE_WIDTH && y < HEIGHT + LANE_WIDTH;
         let notes = self.play.chart.notes.iter().zip(&self.play.state).enumerate().take_while(|(_, (note, _))| note.time < visible_until).filter(|(_, (note, _))| shown(note.player));
@@ -1776,10 +1784,16 @@ impl Playing {
         // what scripts set on notes: whether they show, and how faint
         let looks = self.lua.shared.borrow();
         let look = |index: usize, field: &str| looks.notes.get(index).and_then(|note| note.fields.get(field)).cloned();
+        // (what scripts put among the notes lies before the one it was asked to, counting those in play now)
+        let mut placed = 0;
         for pass in 0..2 {
             for (index, (note, &state)) in notes.clone() {
                 if look(index, "visible").is_some_and(|visible| visible == false) {
                     continue;
+                }
+                if pass == 1 {
+                    self.lua.draw_among(1, placed, false);
+                    placed += 1;
                 }
                 // a note comes along its strum's direction, as the Haxe engine moves it (straight down the y at 90)
                 let strum = &self.strums[note.player as usize][note.lane];
@@ -1844,6 +1858,7 @@ impl Playing {
             }
         }
 
+        self.lua.draw_among(1, placed, true);
         // a burst on the strum for every "sick" hit
         if let Some(sheet) = &skin.splashes {
             for &(lane, at) in &self.splashes {

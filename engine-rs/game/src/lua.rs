@@ -507,6 +507,8 @@ struct Sprite {
     front: bool,
     /// Not in front: how many of the characters (gf, dad, boyfriend) it lies after, so 0 is behind them all.
     between: u8,
+    /// Put in the notes' (1) or the strums' (0) group with the place it was asked for (-1: the end): drawn among them on the HUD.
+    among: Option<(u8, i64)>,
     animations: HashMap<String, Animation>,
     /// The animation playing and how long it has played.
     playing: Option<(String, f64)>,
@@ -544,7 +546,7 @@ fn symbol_frame(numbers: &[usize], length: usize, fps: f64, looped: bool, time: 
 
 impl Sprite {
     fn new(art: Option<Art>, x: f64, y: f64) -> Sprite {
-        Sprite { text: None, art, solid: None, x, y, scale: [1.0; 2], scroll: [1.0; 2], offset: [0.0; 2], alpha: 1.0, visible: true, angle: 0.0, flip_x: false, color: 0xFFFFFF, camera: Cam::Game, added: false, front: false, between: 0, animations: HashMap::new(), playing: None, add: false, shader: None, file: None, more: Vec::new(), atlas: None, symbols: HashMap::new() }
+        Sprite { text: None, art, solid: None, x, y, scale: [1.0; 2], scroll: [1.0; 2], offset: [0.0; 2], alpha: 1.0, visible: true, angle: 0.0, flip_x: false, color: 0xFFFFFF, camera: Cam::Game, added: false, front: false, between: 0, among: None, animations: HashMap::new(), playing: None, add: false, shader: None, file: None, more: Vec::new(), atlas: None, symbols: HashMap::new() }
     }
 
     /// The frame shown now: of the animation playing, else the first of the sheet, else the whole picture.
@@ -1626,7 +1628,7 @@ impl Scripts {
         let note = |shared: &Shared, group: &str, index: usize| -> Option<usize> {
             match group {
                 "unspawnNotes" => Some(index).filter(|index| *index < shared.notes.len()),
-                "notes" => Some(shared.notes_window.0 + index).filter(|_| index < shared.notes_window.1),
+                "notes" => (shared.notes_window.0..shared.notes_window.0 + shared.notes_window.1).filter(|at| shared.notes[*at].fields.get("removed").is_none()).nth(index),
                 _ => None,
             }
         };
@@ -2073,9 +2075,15 @@ impl Scripts {
                     group.members.insert(place(&group.members, args.2), args.1);
                 }
             } else if GAME_GROUPS.contains(&args.0.as_str()) {
-                // shortcut: a sprite put in the notes' or the strums' group is drawn on the HUD over them, not among them
-                if let Some(sprite) = shared.sprite(&args.1) {
-                    (sprite.added, sprite.camera) = (true, Cam::Hud);
+                // the strums' and the notes' groups draw their members in turn; the other two (playerStrums, opponentStrums) and
+                // the array (unspawnNotes) are not drawn by the Haxe engine's state, so a sprite put there stays unseen
+                let among = match args.0.as_str() {
+                    "strumLineNotes" => Some((0, args.2.unwrap_or(-1))),
+                    "notes" => Some((1, args.2.unwrap_or(-1))),
+                    _ => None,
+                };
+                if let Some(sprite) = shared.sprite(&args.1).filter(|_| among.is_some()) {
+                    (sprite.added, sprite.camera, sprite.among) = (true, Cam::Hud, among);
                 }
             } else {
                 trace(lua, &mut shared, format!("addToGroup: Group/Array {} is not valid!", args.0), false);
@@ -2103,17 +2111,20 @@ impl Scripts {
             } else if GAME_GROUPS.contains(&args.0.as_str()) {
                 match tag {
                     Some(tag) if destroy => shared.sprites.retain(|(name, _)| *name != tag),
-                    Some(tag) => shared.sprite(&tag).iter_mut().for_each(|sprite| sprite.added = false),
-                    // shortcut: a note taken out of its group is hidden and let pass (ignoreNote), a strum hidden
+                    Some(tag) => shared.sprite(&tag).iter_mut().for_each(|sprite| (sprite.added, sprite.among) = (false, None)),
+                    // a note taken out of the notes' group (or the array it spawns from) is out of play: it is not drawn, hit or
+                    // missed any more; a strum out of strumLineNotes is not drawn (its notes still come along it), one taken out
+                    // of its side's group too when destroyed. (The numbers of the strums after it stay, not shifting as the
+                    // Haxe engine's members do.)
                     None => {
                         let index = usize::try_from(index).unwrap_or(usize::MAX);
                         if let Some(at) = note(shared, &args.0, index) {
-                            for (field, value) in [("visible", false), ("ignoreNote", true)] {
+                            for (field, value) in [("visible", false), ("removed", true)] {
                                 shared.notes[at].fields.insert(field.to_owned(), serde_json::json!(value));
                                 shared.requests.push(Request::Note { index: at, field: field.to_owned(), value: serde_json::json!(value) });
                             }
-                        } else if let Some(at) = strum(&args.0, index) {
-                            shared.requests.push(Request::SetProperty { name: format!("strum{at}.visible"), value: serde_json::json!(false) });
+                        } else if let Some(at) = strum(&args.0, index).filter(|_| destroy || args.0 == "strumLineNotes") {
+                            shared.requests.push(Request::SetProperty { name: format!("strum{at}.removed"), value: serde_json::json!(true) });
                         }
                     }
                 }
@@ -2414,8 +2425,17 @@ impl Scripts {
             Some(group) => Some(if group.front { 3 } else { 0 }),
             None => sprite.added.then_some(if sprite.front { 3 } else { sprite.between.min(2) as usize }),
         };
-        for (_, sprite) in shared.sprites.iter().filter(|(tag, sprite)| !within(tag) && sprite.camera == camera && shown(tag, sprite).is_some_and(|its| camera != Cam::Game || its == layer)) {
+        for (_, sprite) in shared.sprites.iter().filter(|(tag, sprite)| !within(tag) && sprite.camera == camera && sprite.among.is_none() && shown(tag, sprite).is_some_and(|its| camera != Cam::Game || its == layer)) {
             sprite.draw(scroll);
+        }
+    }
+
+    /// Draws the sprites put in the notes' (`group` 1) or the strums' (0) group that lie before member number `at`; with `last`, those
+    /// asked to go to the end (or past it) too.
+    pub fn draw_among(&self, group: u8, at: usize, last: bool) {
+        let shared = self.shared.borrow();
+        for (_, sprite) in shared.sprites.iter().filter(|(_, sprite)| sprite.added && sprite.among.is_some_and(|(of, place)| of == group && (place == at as i64 || (last && (place < 0 || place > at as i64))))) {
+            sprite.draw(Vec2::ZERO);
         }
     }
 
@@ -2591,6 +2611,18 @@ mod tests {
         scripts.call("onBeatHit", ());
         assert_eq!(scripts.requests(), [Request::SetProperty { name: "camGame.zoom".to_owned(), value: serde_json::json!(2.5) }]);
         assert_eq!(scripts.shared.borrow().vars["list"], serde_json::json!([1, 2, "test"]));
+    }
+
+    #[test]
+    fn sprites_in_the_notes_and_strums_groups_and_their_removal() {
+        let scripts = run("makeLuaSprite('a', nil, 0, 0); makeLuaSprite('b', nil, 0, 0); makeLuaSprite('c', nil, 0, 0)
+            addToGroup('strumLineNotes', 'a', 2); addToGroup('notes', 'b'); addToGroup('playerStrums', 'c')
+            removeFromGroup('strumLineNotes', 3); removeFromGroup('playerStrums', 1, nil, false); removeFromGroup('playerStrums', 2)");
+        let among = |scripts: &Scripts, tag: &str| scripts.shared.borrow().sprites.iter().find(|(name, _)| name == tag).map(|(_, sprite)| (sprite.among, sprite.added)).unwrap();
+        assert_eq!([among(&scripts, "a"), among(&scripts, "b"), among(&scripts, "c")], [(Some((0, 2)), true), (Some((1, -1)), true), (None, false)]);
+        // only a strum out of the strums' group, or one destroyed, is hidden
+        let names: Vec<String> = scripts.requests().into_iter().filter_map(|request| match request { Request::SetProperty { name, .. } => Some(name), _ => None }).collect();
+        assert_eq!(names, ["strum3.removed", "strum6.removed"]);
     }
 
     #[test]
