@@ -4,8 +4,8 @@
 //! play-testing the chart as it is (Enter) and saving it over its file, the old one kept beside it as `.bak`. Events
 //! are put down in their column; the box at the right has the Haxe editor's Charting, Events, Note, Section and Song
 //! tabs.
-// shortcut: the File/Edit/View menus and the Data tab are not here, characters and stages are typed
-// rather than chosen from lists, and Escape leaves (the Haxe editor's File > Exit).
+// shortcut: the Haxe editor's File/Edit/View menus are not here: what they hold is on keys and on the tabs. Add the
+// menus when asked.
 use crate::gfx::*;
 use crate::{audio, ui::Ui, Skin, HEIGHT, NOTE_NAMES, WIDTH};
 use funkin_core::content::{Paths, SongEntry};

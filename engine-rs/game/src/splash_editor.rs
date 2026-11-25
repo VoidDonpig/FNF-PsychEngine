@@ -1,7 +1,6 @@
 //! The note splash editor (states/editors/NoteSplashEditorState.hx): a splash skin's file
 //! (`images/noteSplashes/<name>.json`) edited, its animations played over four strums; offsets moved with the arrow keys
 //! (Shift: ten times), Ctrl+C/V/R copy, paste and reset them; saved over its file, the one before kept as `.bak`.
-// shortcut: the Shader tab (the colours a splash's RGB shader replaces), Template and Convert TXT are not here.
 use crate::atlas::Sheet;
 use crate::gfx::*;
 use crate::ui::Ui;

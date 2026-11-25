@@ -286,6 +286,5 @@ Not there yet:
   beyond the camera, health, score, the characters' place and the scripts' sprites); custom events and note types run by scripts. HScript is Haxe code run against the Haxe
   engine's own classes, so mods that use it cannot run here as they are. Custom shaders.
 - **Editors**: the chart editor's File/Edit/View menus, the vortex editor's strums lighting up, pasted notes following the mouse before they are put down;
-  the system clipboard off Windows (the game keeps its own there); the
-  the stage editor's image file picker.
+  the system clipboard off Windows (the game keeps its own there); the stage editor's image file picker.
 - **Other**: gamepads on Linux and macOS (gilrs needs libudev there).

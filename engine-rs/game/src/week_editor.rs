@@ -1,6 +1,5 @@
 //! The week editor (states/editors/WeekEditorState.hx and its freeplay page): a week's file edited in the Haxe
 //! editor's box while the story menu shows it as it is; saved over its file, the one before kept as `.bak`.
-// shortcut: the freeplay page's own view (the song list in its colours) is not drawn; the story menu's view stays.
 use crate::gfx::*;
 use crate::ui::Ui;
 use crate::{Skin, HEIGHT, WIDTH};
