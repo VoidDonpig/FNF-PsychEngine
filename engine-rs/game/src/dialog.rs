@@ -251,7 +251,7 @@ mod tests {
         assert!(run.args.contains(&joined("--filename=", folder.join(""))));
         assert!(run.args.contains(&OsString::from("--file-filter=*.json | *.json")));
         let run = kdialog(&save);
-        assert_eq!(run.args, ["--title", HOSTILE, "--getsavefilename", &format!("/songs/it's $(here)/{HOSTILE}")].map(OsString::from));
+        assert_eq!(run.args, [OsString::from("--title"), HOSTILE.into(), "--getsavefilename".into(), folder.join(HOSTILE).into()]);
         let run = kdialog(&open);
         assert_eq!(run.args, ["--title", HOSTILE, "--getopenfilename", "/songs/it's $(here)", "*.json"].map(OsString::from));
     }
