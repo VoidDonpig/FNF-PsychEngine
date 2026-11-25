@@ -36,7 +36,9 @@ pub struct Translated {
 /// What OpenFL and Flixel put where a shader says `#pragma header`, as this engine has it: the sprite's picture
 /// (`bitmap`), its size, the place in it, and the sprite's colour and opacity. Pictures come out as OpenFL's do, their
 /// colours already multiplied by their opacity, and so does what the shader answers.
-const HEADER: &str = "#define bitmap sampler2D(funkin_bitmap_t, funkin_bitmap_s)
+const HEADER: &str = "vec4 funkin_flipped(vec4 c) { return vec4(c.x, funkin_target.y - c.y, c.z, c.w); }
+#define gl_FragCoord funkin_flipped(gl_FragCoord)
+#define bitmap sampler2D(funkin_bitmap_t, funkin_bitmap_s)
 #define gl_FragColor funkin_FragColor
 #define openfl_Alphav funkin_color.a
 #define openfl_ColorMultiplierv funkin_color
@@ -55,8 +57,7 @@ const TYPES: [&str; 12] = ["float", "int", "bool", "vec2", "vec3", "vec4", "ivec
 /// Takes apart one part of a shader written for OpenFL (its fragment shader, or `vertex`): its uniforms, pictures and
 /// varyings set aside, and the values it gives its globals outside any function (which only some drivers take) given
 /// at the start of `main` instead.
-// shortcut: `gl_FragCoord` counts from the top of the window here (from the bottom in OpenGL), and a picture read
-// with plain `texture(...)` (not `texture2D`, `flixel_texture2D` or the usual `#define texture flixel_texture2D`)
+// shortcut: a picture read with plain `texture(...)` (not `texture2D`, `flixel_texture2D` or the usual `#define texture flixel_texture2D`)
 // comes without its colours multiplied by its opacity.
 fn gather(source: &str, vertex: bool) -> Result<Gathered, String> {
     let source = without_comments(source);
@@ -117,7 +118,7 @@ fn gather(source: &str, vertex: bool) -> Result<Gathered, String> {
                     };
                     match *kind {
                         // (the header's own are there already)
-                        _ if matches!(name, "bitmap" | "openfl_TextureSize" | "hasTransform" | "hasColorTransform" | "openfl_HasColorTransform") => {}
+                        _ if matches!(name, "bitmap" | "openfl_TextureSize" | "funkin_target" | "hasTransform" | "hasColorTransform" | "openfl_HasColorTransform") => {}
                         _ if vertex && matches!(name, "openfl_Matrix") => {}
                         "sampler2D" if length.is_empty() && !vertex => pictures.push(name.to_owned()),
                         "bool" if length.is_empty() => {
@@ -235,7 +236,7 @@ fn text_of(vertex: bool, block: &[(String, String)], varyings: &[(String, String
         text.push_str(&format!("layout(set = 1, binding = {}) uniform texture2D funkin_t_{name};\nlayout(set = 1, binding = {}) uniform sampler funkin_s_{name};\n", 1 + 2 * at, 2 + 2 * at));
     }
     let members: String = block.iter().map(|(_, line)| line.as_str()).collect();
-    text.push_str(&format!("layout(set = 1, binding = 0) uniform Funkin {{\n    vec2 openfl_TextureSize;\n{members}}};\n"));
+    text.push_str(&format!("layout(set = 1, binding = 0) uniform Funkin {{\n    vec2 openfl_TextureSize;\n    vec2 funkin_target;\n{members}}};\n"));
     for name in &part.pictures {
         text.push_str(&format!("#define {name} sampler2D(funkin_t_{name}, funkin_s_{name})\n"));
     }
@@ -427,14 +428,14 @@ mod tests {
             }";
         let read = translate(ported).unwrap_or_else(|error| panic!("{error}"));
         let slot = |name: &str| read.slots.iter().find(|slot| slot.name == name).map(|slot| (slot.kind, slot.offset));
-        assert_eq!((slot("openfl_TextureSize"), slot("iTime"), slot("tint"), slot("on")), (Some((Kind::Float(2), 0)), Some((Kind::Float(1), 8)), Some((Kind::Float(3), 16)), Some((Kind::Bool, 28))));
-        assert_eq!((slot("gone"), read.size, read.pictures.as_slice()), (None, 32, &["noise".to_owned()][..]));
+        assert_eq!((slot("openfl_TextureSize"), slot("iTime"), slot("tint"), slot("on")), (Some((Kind::Float(2), 0)), Some((Kind::Float(1), 16)), Some((Kind::Float(3), 32)), Some((Kind::Bool, 44))));
+        assert_eq!((slot("gone"), read.size, read.pictures.as_slice()), (None, 48, &["noise".to_owned()][..]));
         assert_eq!(read.defaults, [("tint".to_owned(), vec![1.0, 0.5, 0.25])]);
         // the plain shape, and numbers put in and taken out again
         let plain = translate("#pragma header\nuniform float amount;\nvoid main() { gl_FragColor = flixel_texture2D(bitmap, openfl_TextureCoordv) * amount; }").unwrap();
         let mut bytes = vec![0; plain.size];
-        write(&mut bytes, &plain.slots[1], &[0.75, 9.0]);
-        assert_eq!((plain.slots[1].name.as_str(), super::read(&bytes, &plain.slots[1])), ("amount", vec![0.75]));
+        write(&mut bytes, &plain.slots[2], &[0.75, 9.0]);
+        assert_eq!((plain.slots[2].name.as_str(), super::read(&bytes, &plain.slots[2])), ("amount", vec![0.75]));
         // other shapes mods come in: no spaces, a line going on, no header, the function of a ported one called by main
         for shape in [
             "#pragma header\nvec2 uv=openfl_TextureCoordv.xy;\nvoid main() { gl_FragColor = flixel_texture2D(bitmap, uv); }",
@@ -445,6 +446,10 @@ mod tests {
             translate(shape).unwrap_or_else(|error| panic!("{error}\n{shape}"));
         }
         assert!(translate("#pragma header\nvec2 uv = openfl_TextureCoordv;\nvoid other() {}").is_err_and(|error| error.contains("no `void main()`")));
+        // gl_FragCoord counts from the bottom of the target, as in OpenGL: the translation flips y with the target's height
+        let coord = translate("#pragma header\nvoid main() { gl_FragColor = vec4(gl_FragCoord.x / 100.0, gl_FragCoord.y / 100.0, 0.0, 1.0); }").unwrap_or_else(|error| panic!("{error}"));
+        assert!(text_of(false, &[], &[], &gather("#pragma header\nvoid main() { gl_FragColor = vec4(gl_FragCoord.y); }", false).unwrap()).contains("funkin_target.y - c.y"));
+        assert!(coord.slots.iter().any(|slot| slot.name == "funkin_target" && slot.offset == 8));
         // lists and matrices: every element in its own place
         let lists = translate("#pragma header\n#define COUNT 3\nuniform float amounts[COUNT];\nuniform vec2 points[2];\nuniform mat2 turn;\nuniform mat3 warp;\nvoid main() { gl_FragColor = flixel_texture2D(bitmap, turn * openfl_TextureCoordv + points[1]) * amounts[2] * warp[2][2]; }").unwrap_or_else(|error| panic!("{error}"));
         let slot = |name: &str| lists.slots.iter().find(|slot| slot.name == name).cloned().unwrap();

@@ -1060,6 +1060,11 @@ impl Context {
         }
         // the mods' shaders used this frame are given their uniforms and pictures
         for shader in self.calls.iter().filter_map(|call| call.shader.as_ref()) {
+            // (gl_FragCoord counts from the bottom of the target, which is as high as the window)
+            let height = [self.config.height as f64];
+            if shader.get("funkin_target").is_some_and(|target| target.get(1) != height.first()) {
+                shader.set("funkin_target", &[self.config.width as f64, height[0]]);
+            }
             if shader.0.stale.replace(false) {
                 self.queue.write_buffer(&shader.0.buffer, 0, &shader.0.bytes.borrow());
             }
