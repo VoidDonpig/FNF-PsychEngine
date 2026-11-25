@@ -337,8 +337,7 @@ Not there yet:
 
 - **Menus**: the GPU Caching switch (nothing to switch here); update check.
 - **Scripts**: classes built or called by reflection beyond those listed (createInstance, callMethodFromClass), and
-  what getProperty/setProperty and the class functions do not reach yet. Shaders on what the game's stages draw in code (their files have no objects to name); to a shader the
-  HUD's bars and texts are rectangles and letters, not pictures of their own; a vertex shader gets its corners already
+  what getProperty/setProperty and the class functions do not reach yet. To a shader the HUD's bars and texts are rectangles and letters, not pictures of their own; a vertex shader gets its corners already
   placed on screen (`openfl_Matrix` changes nothing); a camera takes its shader by setSpriteShader with its name (the Haxe engine's scripts use HScript's setFilters for
   that); `gl_FragCoord` counts from the top of the window. HScript is Haxe code run against the Haxe
   engine's own classes, so mods that use it cannot run here as they are.
