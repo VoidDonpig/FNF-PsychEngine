@@ -10,12 +10,15 @@ pub enum Kind {
     Bool,
 }
 
-/// A uniform scripts may set: its name, kind and place in the uniforms' bytes.
+/// A uniform scripts may set: its name, kind and place in the uniforms' bytes. A list (`float name[4]`) or a matrix
+/// (a list of its columns) has `count` of that kind, each `stride` bytes after the last.
 #[derive(Clone, Debug, PartialEq)]
 pub struct Slot {
     pub name: String,
     pub kind: Kind,
     pub offset: usize,
+    pub count: usize,
+    pub stride: usize,
 }
 
 /// A shader read: ready for the graphics card, with its uniforms, how many bytes they take, the pictures it asks for
@@ -39,8 +42,8 @@ const HEADER: &str = "#define bitmap sampler2D(funkin_bitmap_t, funkin_bitmap_s)
 #define openfl_HasColorTransform false
 #define hasTransform true
 #define hasColorTransform false
-vec4 funkin_pre(vec4 c) { return vec4(c.rgb * c.a, c.a); }
-vec4 funkin_tinted(vec4 c) { return vec4(c.rgb * funkin_color.rgb, 1.0) * (c.a * funkin_color.a); }
+vec4 funkin_pre(vec4 c) { return vec4(c.rgb * mix(c.a, 1.0, funkin_ready), c.a); }
+vec4 funkin_tinted(vec4 c) { return vec4(c.rgb * funkin_color.rgb * mix(c.a, 1.0, funkin_ready), c.a) * funkin_color.a; }
 #define texture2D(funkin_t, funkin_c) funkin_pre(textureLod(funkin_t, funkin_c, 0.0))
 #define flixel_texture2D(funkin_t, funkin_c) funkin_tinted(textureLod(funkin_t, funkin_c, 0.0))
 ";
@@ -50,13 +53,12 @@ const TYPES: [&str; 12] = ["float", "int", "bool", "vec2", "vec3", "vec4", "ivec
 /// Rewrites a fragment shader written for OpenFL: its uniforms gathered into one block (and its pictures given
 /// bindings), the header's names defined, and the values it gives its globals outside any function (which only some
 /// drivers take) given at the start of `main` instead.
-// shortcut: arrays of uniforms, `varying`s of its own and vertex shaders are not taken; such a shader is refused with
-// the reason. `gl_FragCoord` counts from the top of the window here (from the bottom in OpenGL), and a picture read
+// shortcut: `varying`s of its own and vertex shaders are not taken; such a shader is refused with the reason. `gl_FragCoord` counts from the top of the window here (from the bottom in OpenGL), and a picture read
 // with plain `texture(...)` (not `texture2D`, `flixel_texture2D` or the usual `#define texture flixel_texture2D`)
 // comes without its colours multiplied by its opacity.
 pub fn rewrite(source: &str) -> Result<(String, Vec<(String, Vec<f64>)>), String> {
     let source = without_comments(source);
-    let (mut block, mut pictures, mut flags, mut defaults) = (String::new(), Vec::new(), Vec::new(), Vec::new());
+    let (mut block, mut pictures, mut flags, mut small, mut defaults) = (String::new(), Vec::new(), Vec::new(), Vec::new(), Vec::new());
     let (mut body, mut hoisted, mut depth, mut entry) = (String::new(), String::new(), 0usize, "main".to_owned());
     // statement by statement: up to each `;`, `{` or `}` outside brackets, and each line that starts with `#`
     let mut rest = source.as_str();
@@ -99,18 +101,30 @@ pub fn rewrite(source: &str) -> Result<(String, Vec<(String, Vec<f64>)>), String
                 let Some((kind, names)) = declared.split_first() else { return Err(format!("a uniform without a type: {statement}")) };
                 for declared in split_outside_brackets(&names.join(" ")) {
                     let (name, value) = declared.split_once('=').map_or((declared.trim(), None), |(name, value)| (name.trim(), Some(value.trim())));
-                    if name.contains('[') {
-                        return Err(format!("arrays of uniforms are not taken here: {name}"));
-                    }
+                    // a list: so many of them, as a number or as a `#define` of the file gives it
+                    let (name, length) = match name.split_once('[') {
+                        Some((name, length)) => {
+                            let length = length.trim_end_matches(']').trim();
+                            let defined = source.lines().find_map(|line| line.trim().strip_prefix("#define")?.trim().strip_prefix(length)?.trim().parse::<usize>().ok());
+                            let Some(length) = length.parse::<usize>().ok().or(defined) else { return Err(format!("how long the list {name} is cannot be told: {length}")) };
+                            (name.trim(), format!("[{length}]"))
+                        }
+                        None => (name, String::new()),
+                    };
                     match *kind {
                         // (the header's own are there already)
                         _ if matches!(name, "bitmap" | "openfl_TextureSize" | "hasTransform" | "hasColorTransform" | "openfl_HasColorTransform") => {}
-                        "sampler2D" => pictures.push(name.to_owned()),
-                        "bool" => {
+                        "sampler2D" if length.is_empty() => pictures.push(name.to_owned()),
+                        "bool" if length.is_empty() => {
                             block.push_str(&format!("    int funkin_b_{name};\n"));
                             flags.push(name.to_owned());
                         }
-                        kind if TYPES.contains(&kind) => block.push_str(&format!("    {kind} {name};\n")),
+                        // (a matrix of two by two has no place of its own among the uniforms: its four numbers do)
+                        "mat2" if length.is_empty() => {
+                            block.push_str(&format!("    vec4 funkin_m_{name};\n"));
+                            small.push(name.to_owned());
+                        }
+                        kind if TYPES.contains(&kind) && !matches!(kind, "bool" | "mat2") => block.push_str(&format!("    {kind} {name}{length};\n")),
                         kind => return Err(format!("a uniform of a kind not taken here: {kind} {name}")),
                     }
                     // the value the file gives it: true or false, or the numbers in it
@@ -157,7 +171,7 @@ pub fn rewrite(source: &str) -> Result<(String, Vec<(String, Vec<f64>)>), String
         return Err(format!("globals are given values outside any function, and there is no `void {entry}()` to give them in"));
     }
     let body = body.replace('\u{1}', &hoisted);
-    let mut text = String::from("#version 450\nlayout(location = 0) in vec2 openfl_TextureCoordv;\nlayout(location = 1) in vec4 funkin_color;\nlayout(location = 0) out vec4 funkin_FragColor;\n");
+    let mut text = String::from("#version 450\nlayout(location = 0) in vec2 openfl_TextureCoordv;\nlayout(location = 1) in vec4 funkin_color;\nlayout(location = 5) in float funkin_ready;\nlayout(location = 0) out vec4 funkin_FragColor;\n");
     text.push_str("layout(set = 0, binding = 0) uniform texture2D funkin_bitmap_t;\nlayout(set = 0, binding = 1) uniform sampler funkin_bitmap_s;\n");
     for (at, name) in pictures.iter().enumerate() {
         text.push_str(&format!("layout(set = 1, binding = {}) uniform texture2D funkin_t_{name};\nlayout(set = 1, binding = {}) uniform sampler funkin_s_{name};\n", 1 + 2 * at, 2 + 2 * at));
@@ -168,6 +182,9 @@ pub fn rewrite(source: &str) -> Result<(String, Vec<(String, Vec<f64>)>), String
     }
     for name in &flags {
         text.push_str(&format!("#define {name} (funkin_b_{name} != 0)\n"));
+    }
+    for name in &small {
+        text.push_str(&format!("#define {name} mat2(funkin_m_{name}.xy, funkin_m_{name}.zw)\n"));
     }
     text.push_str(HEADER);
     text.push_str(&body);
@@ -241,34 +258,47 @@ pub fn translate(source: &str) -> Result<Translated, String> {
     let Some(naga::TypeInner::Struct { members, span }) = block else { return Err("the shader's uniforms were not found".to_owned()) };
     let slots = members.iter().filter_map(|member| {
         let name = member.name.clone()?;
-        let kind = match module.types[member.ty].inner {
-            naga::TypeInner::Scalar(scalar) if scalar.kind == naga::ScalarKind::Float => Kind::Float(1),
-            naga::TypeInner::Scalar(_) if name.starts_with("funkin_b_") => Kind::Bool,
-            naga::TypeInner::Scalar(_) => Kind::Int(1),
-            naga::TypeInner::Vector { size, scalar } if scalar.kind == naga::ScalarKind::Float => Kind::Float(size as usize),
-            naga::TypeInner::Vector { size, .. } => Kind::Int(size as usize),
-            naga::TypeInner::Matrix { columns, rows, .. } if columns as usize == 2 && rows as usize == 2 => Kind::Float(4),
-            // shortcut: larger matrices have their columns padded; scripts cannot set them yet
-            _ => return None,
+        let plain = |inner: &naga::TypeInner| match *inner {
+            naga::TypeInner::Scalar(scalar) if scalar.kind == naga::ScalarKind::Float => Some(Kind::Float(1)),
+            naga::TypeInner::Scalar(_) if name.starts_with("funkin_b_") => Some(Kind::Bool),
+            naga::TypeInner::Scalar(_) => Some(Kind::Int(1)),
+            naga::TypeInner::Vector { size, scalar } if scalar.kind == naga::ScalarKind::Float => Some(Kind::Float(size as usize)),
+            naga::TypeInner::Vector { size, .. } => Some(Kind::Int(size as usize)),
+            _ => None,
         };
-        Some(Slot { name: name.trim_start_matches("funkin_b_").to_owned(), kind, offset: member.offset as usize })
+        let (kind, count, stride) = match module.types[member.ty].inner {
+            // a list of numbers or vectors: each in a place of its own, sixteen bytes on
+            naga::TypeInner::Array { base, size: naga::ArraySize::Constant(count), stride } => (plain(&module.types[base].inner)?, count.get() as usize, stride as usize),
+            // a matrix: its columns, one after the other
+            naga::TypeInner::Matrix { columns, rows, .. } => (Kind::Float(rows as usize), columns as usize, 16),
+            ref inner => (plain(inner)?, 1, 0),
+        };
+        Some(Slot { name: name.trim_start_matches("funkin_b_").trim_start_matches("funkin_m_").to_owned(), kind, offset: member.offset as usize, count, stride })
     }).collect();
+    // (checked as the graphics card's side will check it, so that what is wrong is said here)
+    naga::valid::Validator::new(naga::valid::ValidationFlags::all(), naga::valid::Capabilities::empty()).validate(&module).map_err(|error| error.to_string())?;
     let pictures = defaults.iter().filter_map(|(name, _)| name.strip_prefix('\u{1}').map(str::to_owned)).collect();
     defaults.retain(|(name, _)| !name.starts_with('\u{1}'));
     let size = (*span as usize).next_multiple_of(16);
     Ok(Translated { module, slots, size, pictures, defaults })
 }
 
-/// Writes `numbers` where a uniform of `kind` lies in the uniforms' bytes (as many as it holds; the rest stay).
+/// Where the numbers of a uniform lie in the uniforms' bytes, in the order scripts give them (a list's or a matrix's
+/// one element after the other).
+fn places(slot: &Slot) -> impl Iterator<Item = usize> + '_ {
+    let each = match slot.kind { Kind::Float(each) | Kind::Int(each) => each, Kind::Bool => 1 };
+    (0..slot.count).flat_map(move |element| (0..each).map(move |part| slot.offset + element * slot.stride + part * 4))
+}
+
+/// Writes `numbers` where a uniform lies in the uniforms' bytes (as many as it holds; the rest stay).
 pub fn write(bytes: &mut [u8], slot: &Slot, numbers: &[f64]) {
-    let count = match slot.kind { Kind::Float(count) | Kind::Int(count) => count, Kind::Bool => 1 };
-    for (at, number) in numbers.iter().take(count).enumerate() {
+    for (at, number) in places(slot).zip(numbers) {
         let four = match slot.kind {
             Kind::Float(_) => (*number as f32).to_le_bytes(),
             Kind::Int(_) => (*number as i32).to_le_bytes(),
             Kind::Bool => ((*number != 0.0) as i32).to_le_bytes(),
         };
-        if let Some(place) = bytes.get_mut(slot.offset + at * 4..slot.offset + at * 4 + 4) {
+        if let Some(place) = bytes.get_mut(at..at + 4) {
             place.copy_from_slice(&four);
         }
     }
@@ -276,9 +306,8 @@ pub fn write(bytes: &mut [u8], slot: &Slot, numbers: &[f64]) {
 
 /// The numbers a uniform holds.
 pub fn read(bytes: &[u8], slot: &Slot) -> Vec<f64> {
-    let count = match slot.kind { Kind::Float(count) | Kind::Int(count) => count, Kind::Bool => 1 };
-    (0..count).filter_map(|at| {
-        let four: [u8; 4] = bytes.get(slot.offset + at * 4..slot.offset + at * 4 + 4)?.try_into().ok()?;
+    places(slot).filter_map(|at| {
+        let four: [u8; 4] = bytes.get(at..at + 4)?.try_into().ok()?;
         Some(match slot.kind { Kind::Float(_) => f32::from_le_bytes(four) as f64, _ => i32::from_le_bytes(four) as f64 })
     }).collect()
 }
@@ -332,8 +361,16 @@ mod tests {
         }
         assert!(translate("#pragma header\nvec2 uv = openfl_TextureCoordv;\nvoid other() {}").is_err_and(|error| error.contains("no `void main()`")));
         assert!(translate("varying vec2 mine;\nvoid main() {}").is_err_and(|error| error.contains("varying")));
+        // lists and matrices: every element in its own place
+        let lists = translate("#pragma header\n#define COUNT 3\nuniform float amounts[COUNT];\nuniform vec2 points[2];\nuniform mat2 turn;\nuniform mat3 warp;\nvoid main() { gl_FragColor = flixel_texture2D(bitmap, turn * openfl_TextureCoordv + points[1]) * amounts[2] * warp[2][2]; }").unwrap_or_else(|error| panic!("{error}"));
+        let slot = |name: &str| lists.slots.iter().find(|slot| slot.name == name).cloned().unwrap();
+        assert_eq!((slot("amounts").count, slot("amounts").stride, slot("points").kind, slot("turn").kind, slot("warp").count), (3, 16, Kind::Float(2), Kind::Float(4), 3));
+        let mut bytes = vec![0; lists.size];
+        write(&mut bytes, &slot("amounts"), &[1.0, 2.0, 3.0]);
+        write(&mut bytes, &slot("warp"), &[1.0, 0.0, 0.0, 0.0, 1.0, 0.0, 0.5, 0.25, 1.0]);
+        assert_eq!((super::read(&bytes, &slot("amounts")), super::read(&bytes, &slot("warp"))[6..].to_vec()), (vec![1.0, 2.0, 3.0], vec![0.5, 0.25, 1.0]));
         // what is not taken, or wrong, is said
-        assert!(translate("uniform float list[4];\nvoid main() {}").is_err_and(|error| error.contains("arrays")));
+        assert!(translate("uniform float list[SOME];\nvoid main() {}").is_err_and(|error| error.contains("how long")));
         assert!(translate("#pragma header\nvoid main() { gl_FragColor = nothing; }").is_err_and(|error| error.contains("nothing")));
     }
 }

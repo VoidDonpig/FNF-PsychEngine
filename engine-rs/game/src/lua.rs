@@ -163,6 +163,8 @@ pub struct Shared {
     shaders: HashMap<String, Option<Shader>>,
     pub shaders_on: bool,
     pub character_shaders: [Option<Shader>; 3],
+    /// And those the cameras are seen through: the game's, the HUD's, the one over everything.
+    pub camera_shaders: [Option<Shader>; 3],
 }
 
 struct Script {
@@ -180,6 +182,11 @@ pub struct Scripts {
 /// Which of the three characters a name of the Haxe engine's means: 0 the opponent, 1 the player, 2 the girlfriend.
 fn character_slot(name: &str) -> Option<usize> {
     ["dad", "boyfriend", "gf", "dadGroup", "boyfriendGroup", "gfGroup"].iter().position(|known| *known == name).map(|at| at % 3)
+}
+
+/// Which camera a name means: 0 the game's, 1 the HUD's, 2 the one over everything.
+fn camera_slot(name: &str) -> Option<usize> {
+    ["camGame", "camHUD", "camOther", "game", "hud", "other"].iter().position(|known| known.eq_ignore_ascii_case(name)).map(|at| at % 3)
 }
 
 /// The scripts to run for a song, in the Haxe engine's order: those of the `scripts/` folders, the song's own
@@ -678,9 +685,10 @@ impl Shared {
 
     /// The shader something is drawn through: a script's sprite by its tag, or a character by the Haxe engine's name.
     fn shader_of(&mut self, object: &str) -> Option<Shader> {
-        match character_slot(object) {
-            Some(slot) => self.character_shaders[slot].clone(),
-            None => self.sprite(object)?.shader.clone(),
+        match (character_slot(object), camera_slot(object)) {
+            (Some(slot), _) => self.character_shaders[slot].clone(),
+            (_, Some(slot)) => self.camera_shaders[slot].clone(),
+            _ => self.sprite(object)?.shader.clone(),
         }
     }
 
@@ -1021,6 +1029,12 @@ impl Scripts {
                 shared.printed.push((format!("setSpriteShader: Shader {} is missing!", args.1), crate::gfx::get_time()));
                 return Ok(false);
             };
+            // shortcut: a camera by its name ("camGame", "camHUD", "camOther") takes a shader here; the Haxe engine's
+            // scripts put one on a camera through HScript (camGame.setFilters), which cannot run here
+            if let Some(slot) = camera_slot(&args.0) {
+                shared.camera_shaders[slot] = Some(shader.fresh());
+                return Ok(true);
+            }
             match (character_slot(&args.0), shared.sprite(&args.0)) {
                 (Some(slot), _) => shared.character_shaders[slot] = Some(shader.fresh()),
                 (None, Some(sprite)) => sprite.shader = Some(shader.fresh()),
@@ -1030,6 +1044,9 @@ impl Scripts {
         });
         function!("removeSpriteShader", |_lua, shared, args: String| {
             let mut shared = shared.borrow_mut();
+            if let Some(slot) = camera_slot(&args) {
+                return Ok(shared.camera_shaders[slot].take().is_some());
+            }
             Ok(match (character_slot(&args), shared.sprite(&args)) {
                 (Some(slot), _) => shared.character_shaders[slot].take().is_some(),
                 (None, Some(sprite)) => sprite.shader.take().is_some(),

@@ -1483,11 +1483,15 @@ impl Playing {
             fade(hud_alpha * look(&format!("{name}.alpha")));
             shown(name)
         };
+        // the mods' shaders scripts put on the cameras: all a camera shows is a layer seen through its shader
+        let on_camera = self.lua.shared.borrow().camera_shaders.clone();
         let (hud_zoom, hud_shake) = self.scene.as_ref().map_or((1.0, Vec2::ZERO), |scene| {
             if game_shown {
+                on_camera[0].iter().for_each(|_| layer_begin());
                 fade(look("camGame.alpha"));
                 scene.draw(&|front, scroll| self.lua.draw(lua::Cam::Game, front, scroll));
                 fade(1.0);
+                on_camera[0].iter().for_each(layer_end);
             }
             (scene.hud_zoom, scene.hud_shake())
         });
@@ -1511,6 +1515,7 @@ impl Playing {
             draw_rectangle(WIDTH - 200.0, HEIGHT - 80.0, 120.0 * scene.skipping.min(1.0), 10.0, Color::new(1.0, 1.0, 1.0, scene.skipping.min(1.0)));
             return;
         }
+        on_camera[1].iter().for_each(|_| layer_begin());
         fade(hud_alpha);
         // a faster song does not make the notes travel faster: they are spread out to match
         let speed = self.speed / settings.playback_rate as f32;
@@ -1743,10 +1748,13 @@ impl Playing {
         // the scripts' sprites on the HUD's camera, then on the one over everything
         self.lua.draw(lua::Cam::Hud, false, Vec2::ZERO);
         flash(lua::Cam::Hud);
+        on_camera[1].iter().for_each(layer_end);
         set_camera(&Camera2D { target: vec2(WIDTH / 2.0, HEIGHT / 2.0), zoom: vec2(2.0 / WIDTH, 2.0 / HEIGHT), ..Default::default() });
         fade(1.0);
+        on_camera[2].iter().for_each(|_| layer_begin());
         self.lua.draw(lua::Cam::Other, false, Vec2::ZERO);
         flash(lua::Cam::Other);
+        on_camera[2].iter().for_each(layer_end);
         if let Some(video) = &self.video {
             video.draw();
         }
