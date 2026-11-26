@@ -333,8 +333,9 @@ mod output {
     /// One channel of a stereo track `at` a frame (between two frames: in between them). 0 past its end.
     pub(super) fn sample_at(samples: &[i16], at: f64, channel: usize) -> f32 {
         let (index, blend) = (at as usize, at.fract() as f32);
+        // (the last sample has none after it: it holds, so that a looped sound does not click where it starts again)
         match (samples.get(index * 2 + channel), samples.get(index * 2 + 2 + channel)) {
-            (Some(&a), Some(&b)) => a as f32 * (1.0 - blend) + b as f32 * blend,
+            (Some(&a), b) => a as f32 * (1.0 - blend) + *b.unwrap_or(&a) as f32 * blend,
             _ => 0.0,
         }
     }
@@ -518,9 +519,9 @@ mod output {
                             if voice.looped && frames > 0 {
                                 voice.cursor %= frames as f64;
                             }
-                            let index = voice.cursor as usize;
+                            // between two samples, as the song's tracks (the nearest one alone grates when the rates differ)
                             for (channel, out) in frame.iter_mut().take(2).enumerate() {
-                                *out += voice.samples.get(index * 2 + channel).map_or(0.0, |&sample| sample as f32 * volume);
+                                *out += sample_at(&voice.samples, voice.cursor, channel) * volume;
                             }
                             voice.cursor += step;
                         }
@@ -673,7 +674,8 @@ mod tests {
         // a 48 kHz voice under a 44.1 kHz instrumental: frame 441 of the song is frame 480 of the voice
         let ratio = 48000.0 / 44100.0;
         assert!((sample_at(&track, 44.1 * ratio, 0) - 480.0).abs() < 1e-2);
-        assert_eq!(sample_at(&track, 99.0, 0), 0.0);
+        // the last frame holds (a looped sound does not click where it starts again); past the end is silence
+        assert_eq!((sample_at(&track, 99.5, 0), sample_at(&track, 100.0, 0)), (990.0, 0.0));
     }
 
     #[test]
