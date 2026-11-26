@@ -1362,6 +1362,8 @@ impl Context {
             let monitor = self.window.current_monitor()?;
             monitor.video_modes().filter(|mode| mode.size() == monitor.size()).max_by_key(|mode| mode.refresh_rate_millihertz())
         };
+        // shortcut: with Vulkan a borderless window over the whole display may still be made exclusive by the driver: wgpu
+        // does not use VK_EXT_full_screen_exclusive to say no (the option's description says so)
         self.window.set_fullscreen(on.then(|| mode().filter(|_| exclusive).map_or(Fullscreen::Borderless(None), Fullscreen::Exclusive)));
     }
 

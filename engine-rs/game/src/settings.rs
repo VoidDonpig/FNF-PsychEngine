@@ -135,7 +135,7 @@ pub const OPTIONS: &[Opt] = &[
     Opt { page: 4, key: "framerate", name: "Framerate", about: "Pretty self explanatory, isn't it? Enter sets it to what the display shows.", kind: Kind::Number(|s| &mut s.framerate, 60.0, UNLIMITED_FPS, 1.0, "FPS") },
     Opt { page: 4, key: "graphics_api", name: "Graphics API", about: "What the game is drawn with: DirectX (12, Windows only), Vulkan or OpenGL. One this machine does not have is replaced by one it has. Restart the game to apply.", kind: Kind::Choice(|s| &mut s.graphics_api, || &GRAPHICS_APIS) },
     Opt { page: 4, key: "fullscreen", name: "Fullscreen", about: "The game takes the whole screen. F11 switches it at any time.", kind: Kind::Flag(|s| &mut s.fullscreen) },
-    Opt { page: 4, key: "exclusive_fullscreen", name: "Exclusive Fullscreen", about: "If checked, fullscreen takes the whole display for the game alone. If unchecked, fullscreen is a borderless window.", kind: Kind::Flag(|s| &mut s.exclusive_fullscreen) },
+    Opt { page: 4, key: "exclusive_fullscreen", name: "Exclusive Fullscreen", about: "If checked, fullscreen takes the whole display for the game alone. If unchecked, fullscreen is a borderless window.\nWith Vulkan the graphics driver may take the display anyway.", kind: Kind::Flag(|s| &mut s.exclusive_fullscreen) },
 ];
 
 /// How many pictures a second the display shows, where the system says.
