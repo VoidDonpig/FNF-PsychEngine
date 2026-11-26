@@ -788,6 +788,9 @@ struct Context {
     due: Instant,
     open: bool,
     window: Arc<winit::window::Window>,
+    /// Drawn with Vulkan; and where the window was, and its size, while a borderless window covers the display instead.
+    vulkan: bool,
+    windowed: Option<(winit::dpi::PhysicalPosition<i32>, winit::dpi::PhysicalSize<u32>)>,
     app: App,
     event_loop: Option<winit::event_loop::EventLoop<()>>,
 }
@@ -955,6 +958,7 @@ pub fn open(conf: Conf) -> Result<(String, Option<String>), String> {
         vertices: Vec::new(), calls: Vec::new(), module: shader, shader: None, shaders: 0, layers: Vec::new(), layer_open: None, piece: None, layer_stages: Vec::new(), cut: false, effect: None, rain: None, buffer: None, background: BLACK, camera: Mat4::IDENTITY, models: Vec::new(), shader_size: None, recolor: None, fade: 1.0, blocks: 0.0, add: false,
         down: HashSet::new(), pressed: HashSet::new(), released: HashSet::new(), last_pressed: None, typed: VecDeque::new(), alt_enter: false, focused: true, mouse: Mouse::default(),
         started: now, frame_began: now, frame_time: 1.0 / 60.0, shown: now, display_lag: 0.0, due: now, open: true,
+        vulkan: info.backend == wgpu::Backend::Vulkan, windowed: None,
     };
     context.white = Some(context.picture(1, 1, &[255; 4]));
     context.fullscreen(conf.fullscreen, false);
@@ -1355,15 +1359,33 @@ impl Context {
         Image { bytes, width: width as u16, height: height as u16 }
     }
 
-    fn fullscreen(&self, on: bool, exclusive: bool) {
+    fn fullscreen(&mut self, on: bool, exclusive: bool) {
         use winit::window::Fullscreen;
+        // not exclusive with Vulkan on Windows: a borderless window exactly over the display is taken by the driver as
+        // exclusive fullscreen (wgpu does not use VK_EXT_full_screen_exclusive to say no); one pixel taller than the display
+        // it is not, and stays a window the desktop shows
+        let cover = self.window.current_monitor().filter(|_| on && !exclusive && self.vulkan && cfg!(windows));
+        // the window as it was, back from such a covering window (unless it goes on covering)
+        let windowed = self.windowed.take();
+        if let (Some((at, size)), None) = (windowed, &cover) {
+            self.window.set_decorations(true);
+            self.window.set_outer_position(at);
+            let _ = self.window.request_inner_size(size);
+        }
+        if let Some(monitor) = cover {
+            // (out of a fullscreen first, so that what is kept is the window it came back to)
+            self.window.set_fullscreen(None);
+            self.windowed = windowed.or_else(|| Some((self.window.outer_position().unwrap_or_default(), self.window.inner_size())));
+            self.window.set_decorations(false);
+            self.window.set_outer_position(monitor.position());
+            let _ = self.window.request_inner_size(winit::dpi::PhysicalSize::new(monitor.size().width, monitor.size().height + 1));
+            return;
+        }
         // exclusive: the display in the mode it is in now, at the fastest refresh it offers, for the game alone
         let mode = || {
             let monitor = self.window.current_monitor()?;
             monitor.video_modes().filter(|mode| mode.size() == monitor.size()).max_by_key(|mode| mode.refresh_rate_millihertz())
         };
-        // shortcut: with Vulkan a borderless window over the whole display may still be made exclusive by the driver: wgpu
-        // does not use VK_EXT_full_screen_exclusive to say no (the option's description says so)
         self.window.set_fullscreen(on.then(|| mode().filter(|_| exclusive).map_or(Fullscreen::Borderless(None), Fullscreen::Exclusive)));
     }
 

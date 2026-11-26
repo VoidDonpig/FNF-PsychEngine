@@ -127,8 +127,8 @@ Done:
   (Windows, where it is the one chosen at first), Vulkan (chosen at first elsewhere) or OpenGL. One the
   machine does not have is replaced by one it has. Frames are shown as soon as they are done; the
   Framerate option limits them (up to 1000 FPS, or Unlimited: no waiting at all). Fullscreen is a window without borders over the screen, or, with the
-  Exclusive Fullscreen option, the display taken for the game alone. With Vulkan the graphics driver may take the display
-  for the game alone even with that option off (wgpu cannot ask it not to); with DirectX 12 it stays a borderless window.
+  Exclusive Fullscreen option, the display taken for the game alone. With Vulkan on Windows the borderless window is one
+  pixel taller than the display: one exactly over it the graphics driver would make exclusive anyway.
 - **Input**: on Windows key presses are timed by the raw input thread of `native/psych_input`; the Haxe
   fork's Display Lag Correction (presses judged against the picture on screen, the time frames take to be shown
   taken off).
@@ -358,5 +358,3 @@ Not there yet:
   once that they are not known here). A camera takes its shader by setSpriteShader with its name (the Haxe engine's
   scripts use HScript's setFilters for that). HScript is Haxe code run against the Haxe engine's own classes, so mods
   that use it cannot run here as they are.
-- **Graphics**: with Vulkan, Exclusive Fullscreen off may still give the display to the game alone (the graphics driver
-  decides; wgpu does not use VK_EXT_full_screen_exclusive to say no). DirectX 12 keeps a borderless window.
