@@ -332,7 +332,7 @@ impl OptionsMenu {
         } else if back {
             menus.sound("cancelMenu", 1.0);
         } else if (pressed(Ui::Up) || pressed(Ui::Down)) && !colors {
-            menus.sound("scrollMenu", 1.0);
+            menus.scroll();
         }
         // a centred list that does not move, the chosen row marked (the first list, and the languages)
         let fixed = |menus: &crate::menu::Menus, rows: &[String], chosen: usize, gap: f32, marked: bool| {
@@ -418,10 +418,10 @@ impl OptionsMenu {
         if steps != 0.0 || held != 0.0 {
             change(&selected.kind, settings, if steps != 0.0 { steps * fast } else { held * fast });
             if steps != 0.0 {
-                menus.sound("scrollMenu", 1.0);
+                menus.scroll();
             }
         } else if pressed(Ui::Accept) {
-            menus.sound("scrollMenu", 1.0);
+            menus.scroll();
             match (selected.key, &selected.kind) {
                 // the frame rate takes the display's own
                 ("framerate", &Kind::Number(get, low, high, ..)) => *get(settings) = refresh_rate().map_or(*get(settings), |rate| rate.round().clamp(low, high)),
@@ -594,7 +594,7 @@ impl OptionsMenu {
             self.binding = false;
             return true;
         } else if pressed(Ui::Accept) && matches!(option.kind, ModKind::Bool | ModKind::Key) {
-            menus.sound("scrollMenu", 1.0);
+            menus.scroll();
             if option.kind == ModKind::Key {
                 (self.binding, self.holding, self.flipped) = (true, 0.0, get_time());
             } else {
@@ -612,7 +612,7 @@ impl OptionsMenu {
                 let next = option.stepped(&value, steps as f64);
                 self.hold_value = next.as_f64().unwrap_or(0.0);
                 option.store(saved, next);
-                menus.sound("scrollMenu", 1.0);
+                menus.scroll();
             } else if !matches!(option.kind, ModKind::Text(_)) && self.held > 0.5 {
                 // held, it runs on at the mod's own pace
                 let way = if crate::controls::down(Ui::Right) { 1.0 } else { -1.0 };
@@ -639,7 +639,7 @@ impl OptionsMenu {
         let toggled = is_key_pressed(KeyCode::LeftControl) || is_key_pressed(KeyCode::RightControl) || (clicked && on(vec2(48.0, 24.0), vec2(68.0, 68.0)));
         if toggled {
             self.pixel ^= true;
-            menus.sound("scrollMenu", 0.6);
+            menus.scroll();
         }
         let made = self.made.get_or_insert_with(|| {
             let mut dot = Image::gen_image_color(16, 16, Color::new(1.0, 1.0, 1.0, 0.0));
@@ -684,7 +684,7 @@ impl OptionsMenu {
                 // past the last digit, the typing is done
                 self.typing = (moved <= 5).then_some(moved.max(0) as usize);
                 self.typed_at = get_time();
-                menus.sound("scrollMenu", 0.6);
+                menus.scroll();
             } else if is_key_pressed(KeyCode::Enter) {
                 self.typing = None;
             }
@@ -696,7 +696,7 @@ impl OptionsMenu {
                 } else {
                     self.part = (self.part + steps) % 3;
                 }
-                menus.sound("scrollMenu", 1.0);
+                menus.scroll();
             }
             if pressed(Ui::Up) || pressed(Ui::Down) {
                 self.on_lanes ^= true;
@@ -716,14 +716,14 @@ impl OptionsMenu {
                 (used, self.typing) = (true, None);
                 if index == 0 {
                     crate::clipboard::set(&code);
-                    menus.sound("scrollMenu", 0.6);
+                    menus.scroll();
                     continue;
                 }
                 let pasted = crate::clipboard::get().trim().to_uppercase().replace('#', "").replace("0X", "");
                 match u32::from_str_radix(&pasted, 16).ok().filter(|_| pasted.len() == 6) {
                     Some(color) => {
                         (colors[lane][part], self.stored) = (color, color);
-                        menus.sound("scrollMenu", 0.6);
+                        menus.scroll();
                     }
                     None => menus.sound("cancelMenu", 0.6),
                 }
@@ -736,12 +736,12 @@ impl OptionsMenu {
             if let Some(part) = part_at {
                 if part != self.part {
                     (self.part, self.on_lanes) = (part, false);
-                    menus.sound("scrollMenu", 0.6);
+                    menus.scroll();
                 }
             } else if let Some(lane) = lane_at {
                 if lane != self.lane {
                     (self.lane, self.on_lanes) = (lane, true);
-                    menus.sound("scrollMenu", 0.6);
+                    menus.scroll();
                 }
             } else if on(vec2(860.0, 200.0), vec2(360.0, 360.0)) {
                 (self.dragging, self.stored) = (Some(Drag::Wheel), colors[lane][part]);
@@ -753,7 +753,7 @@ impl OptionsMenu {
                     let (x, y) = ((mouse.x - 820.0) / 320.0 * palette.width as f32, (mouse.y - 580.0) / 80.0 * palette.height as f32);
                     let picked = palette.get_pixel((x as u32).min(palette.width as u32 - 1), (y as u32).min(palette.height as u32 - 1));
                     colors[lane][part] = [picked.r, picked.g, picked.b].iter().fold(0, |code, channel| code << 8 | (channel * 255.0).round() as u32);
-                    menus.sound("scrollMenu", 0.6);
+                    menus.scroll();
                 }
             } else if (20.0..82.0).contains(&mouse.y) && (mouse.x - 1000.0).abs() <= 84.0 {
                 // the cursor goes before the digit clicked on
@@ -766,7 +766,7 @@ impl OptionsMenu {
             if !is_mouse_down() {
                 self.dragging = None;
                 self.stored = colors[lane][part];
-                menus.sound("scrollMenu", 0.6);
+                menus.scroll();
             } else if mouse_moved() || clicked {
                 let (hue, saturation, brightness) = to_hsv(self.stored);
                 let grey = |light: f32| from_hsv(0.0, 0.0, light);
@@ -860,7 +860,7 @@ impl OptionsMenu {
         // Ctrl or a shoulder button: the keyboard's keys or the gamepad's buttons, as the Haxe engine
         if !self.binding && (is_key_pressed(KeyCode::LeftControl) || is_key_pressed(KeyCode::RightControl) || crate::pad::pressed(Button::LeftShoulder) || crate::pad::pressed(Button::RightShoulder)) {
             (self.pad_mode, self.row) = (!self.pad_mode, 0);
-            menus.sound("scrollMenu", 1.0);
+            menus.scroll();
         }
         if let Some(sign) = menus.picture("controllertype") {
             let source = Rect::new(if self.pad_mode { 82.0 } else { 0.0 }, 0.0, 82.0, 60.0);
@@ -925,7 +925,7 @@ impl OptionsMenu {
         if !self.binding {
             if pressed(Ui::Left) || pressed(Ui::Right) {
                 self.alt ^= true;
-                menus.sound("scrollMenu", 1.0);
+                menus.scroll();
             }
             if pressed(Ui::Accept) && bind == Bind::Defaults {
                 if self.pad_mode {
@@ -938,7 +938,7 @@ impl OptionsMenu {
                 menus.sound("cancelMenu", 1.0);
             } else if pressed(Ui::Accept) {
                 (self.binding, self.holding, self.flipped) = (true, 0.0, get_time());
-                menus.sound("scrollMenu", 1.0);
+                menus.scroll();
             } else if back {
                 (self.page, self.row) = (None, main_row(0));
                 return self.direct;

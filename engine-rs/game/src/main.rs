@@ -794,7 +794,7 @@ impl Playing {
             self.pause_scroll += (chosen - self.pause_scroll) * (1.0 - (-get_frame_time().min(0.1) * 9.6).exp());
             let step = |row: usize, count: usize| (row + controls::pressed(Ui::Down) as usize + (count - 1) * controls::pressed(Ui::Up) as usize) % count;
             if controls::pressed(Ui::Up) || controls::pressed(Ui::Down) {
-                self.sound("scrollMenu", 0.4, false);
+                self.sound("scrollMenu", menu::SCROLL_VOLUME, false);
             }
             if let Some(pick) = self.choosing {
                 // the difficulties, then a way back
@@ -817,7 +817,7 @@ impl Playing {
                 let tap = controls::pressed(Ui::Right) as i32 - controls::pressed(Ui::Left) as i32;
                 if tap != 0 {
                     (self.skip_time, self.skip_held) = (self.skip_time + 1000.0 * tap as f64, 0.0);
-                    self.sound("scrollMenu", 0.4, false);
+                    self.sound("scrollMenu", menu::SCROLL_VOLUME, false);
                 } else if way != 0 {
                     self.skip_held += get_frame_time();
                     if self.skip_held > 0.5 {

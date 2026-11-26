@@ -614,6 +614,9 @@ fn looped(frames: &[Frame]) -> Option<Frame> {
     frames.get((get_time() * 24.0) as usize % frames.len().max(1)).copied()
 }
 
+/// How loud the selection moving sounds, on every screen.
+pub const SCROLL_VOLUME: f32 = 0.4;
+
 impl Menus {
     pub fn new(base: &Path) -> Menus {
         let art = Art::new(base);
@@ -647,6 +650,12 @@ impl Menus {
         self.preview = false;
         self.chosen = None;
         self.rows.clear(); // a finished week may have unlocked songs
+    }
+
+    /// The sound of the selection moving, as loud on every screen as in freeplay (Haxe plays it at full volume in the main
+    /// menu, story mode and the options, and at 0.2-0.6 elsewhere).
+    pub fn scroll(&self) {
+        self.sound("scrollMenu", SCROLL_VOLUME);
     }
 
     pub fn sound(&self, name: &str, volume: f32) {
@@ -710,7 +719,7 @@ impl Menus {
         let (toggled, yes, since) = (pressed(&LEFT) || pressed(&RIGHT), *yes, *since);
         let (week, name, difficulty, shown) = (*week, name.clone(), difficulty.clone(), shown.clone());
         if toggled {
-            self.sound("scrollMenu", 1.0);
+            self.scroll();
         }
         draw_rectangle(0.0, 0.0, WIDTH, HEIGHT, Color::new(0.0, 0.0, 0.0, (since * 1.5).min(0.6)));
         let fade = (since * 2.5).min(1.0);
@@ -959,12 +968,12 @@ impl Menus {
             let step = pressed(&DOWN) as usize + pressed(&UP) as usize * (MIDDLE.len() - 1);
             if step != 0 && self.main_side == 0 {
                 self.main_row = (self.main_row + step) % MIDDLE.len();
-                self.sound("scrollMenu", 1.0);
+                self.scroll();
             }
             let side = (self.main_side + pressed(&RIGHT) as i8 - pressed(&LEFT) as i8).clamp(-1, 1);
             if side != self.main_side {
                 self.main_side = side;
-                self.sound("scrollMenu", 1.0);
+                self.scroll();
             }
             // the mouse picks the item it is on (of two overlapping, the one whose middle is nearer)
             if mouse_moved() || is_mouse_pressed() {
@@ -977,7 +986,7 @@ impl Menus {
                 if let Some(&(side, row, ..)) = pointed {
                     if (side, row) != (self.main_side, if self.main_side == 0 { self.main_row } else { 0 }) {
                         (self.main_side, self.main_row) = (side, if side == 0 { row } else { self.main_row });
-                        self.sound("scrollMenu", 1.0);
+                        self.scroll();
                     }
                 }
             }
@@ -1118,7 +1127,7 @@ impl Menus {
             let step = (pressed(&DOWN) as i64 - pressed(&UP) as i64 + wheel_steps() as i64).rem_euclid(shown.len() as i64) as usize;
             if step != 0 {
                 self.week += step;
-                self.sound("scrollMenu", 1.0);
+                self.scroll();
             }
         }
         self.week %= shown.len();
@@ -1302,7 +1311,7 @@ impl Menus {
         if (step != 0 || ends != 0) && !self.preview {
             let last = self.rows.len() as i32 - 1;
             self.song = if ends != 0 { (ends.max(0) * last) as usize } else { (self.song as i32 + step).rem_euclid(last + 1) as usize };
-            self.sound("scrollMenu", 0.4);
+            self.scroll();
         }
         let row = &self.rows[self.song];
         let names = || row.entries.iter().map(|entry| songs[*entry].difficulty.as_str());
@@ -1486,12 +1495,12 @@ impl Menus {
         let step = pressed(&DOWN) as i32 - pressed(&UP) as i32;
         if step != 0 {
             self.editor = (self.editor as i32 + step).rem_euclid(EDITORS.len() as i32) as usize;
-            self.sound("scrollMenu", 0.4);
+            self.scroll();
         }
         let side = pressed(&RIGHT) as i32 - pressed(&LEFT) as i32;
         if side != 0 {
             self.editor_folder = (self.editor_folder as i32 + side).rem_euclid(folders.len() as i32) as usize;
-            self.sound("scrollMenu", 0.4);
+            self.scroll();
         }
         self.editor_folder %= folders.len();
         if let Some(picture) = self.art.own("menuDesat") {
@@ -1547,7 +1556,7 @@ impl Menus {
         self.achievement = self.achievement.min(listed.len() - 1);
         if dx != 0 || dy != 0 {
             self.achievement = grid_step(self.achievement, listed.len(), dx, dy);
-            self.sound("scrollMenu", 1.0);
+            self.scroll();
         }
         // the list scrolls so that the first row sits near the top and the last one clear of the text below
         let (rows, height) = (listed.len() / 4, (listed.len().div_ceil(4) - 1) as f32 * 180.0 + 150.0);
@@ -1608,7 +1617,7 @@ impl Menus {
             while !self.credits[self.credit].person {
                 self.credit = (self.credit + step) % count;
             }
-            self.sound("scrollMenu", 0.4);
+            self.scroll();
         }
         self.backdrop(self.credits[self.credit].color, dt);
         self.credit_scroll += (self.credit as f32 - self.credit_scroll) * (1.0 - (-dt * 9.6).exp());
@@ -1662,7 +1671,7 @@ impl Menus {
         self.mods.insert(to, moved);
         (self.mod_row, self.mods_changed) = (to, true);
         self.mod_center = self.mod_center.clamp(to.saturating_sub(2), to + 2);
-        self.sound("scrollMenu", 0.6);
+        self.scroll();
     }
 
     fn mods_menu(&mut self, skin: &Skin) -> Go {
@@ -1716,7 +1725,7 @@ impl Menus {
         let mut press: Option<i32> = None;
         let select = |menus: &mut Menus, row: usize| {
             if row != menus.mod_row {
-                menus.sound("scrollMenu", 0.6);
+                menus.scroll();
             }
             (menus.mod_row, menus.mod_dragging) = (row, false);
             if menus.mod_row.abs_diff(menus.mod_center) > 2 {
@@ -1769,12 +1778,12 @@ impl Menus {
                 } else if steps.abs() == 1 && !(0..count as i64).contains(&wanted) && wheel_steps() == 0 {
                     // Up past the first goes to the buttons under the list, and Down past the last to its top one
                     self.mod_focus = Some(if steps < 0 { -1 } else { -2 });
-                    self.sound("scrollMenu", 0.6);
+                    self.scroll();
                 } else if steps != 0 {
                     select(self, wanted.clamp(0, count as i64 - 1) as usize);
                 } else if pressed(&RIGHT) {
                     self.mod_focus = Some(0);
-                    self.sound("scrollMenu", 0.6);
+                    self.scroll();
                 } else if pressed(&ACCEPT) {
                     press = Some(4);
                 }
@@ -1802,7 +1811,7 @@ impl Menus {
                 };
                 if pressed(&BACK) {
                     self.mod_focus = None;
-                    self.sound("scrollMenu", 0.6);
+                    self.scroll();
                 } else if pressed(&ACCEPT) {
                     press = Some(button);
                 } else if let Some(moved) = moved {
@@ -1810,7 +1819,7 @@ impl Menus {
                         select(self, 0);
                     }
                     self.mod_focus = moved;
-                    self.sound("scrollMenu", 0.6);
+                    self.scroll();
                 }
             }
         }
@@ -1827,14 +1836,14 @@ impl Menus {
                 (self.mods, self.mods_scan, self.mod_focus, self.mod_hover) = (Vec::new(), 0.0, None, None);
                 // a pack picture changed meanwhile is read again
                 self.art.images.retain(|key, _| !key.ends_with("/pack.png") && !key.ends_with("/pack-pixel.png"));
-                self.sound("scrollMenu", 0.6);
+                self.scroll();
                 return Go::Stay;
             }
             Some(-1) => {
                 self.restart |= self.mods.iter().any(|row| row.restart && row.on == all_on);
                 self.mods.iter_mut().for_each(|row| row.on = !all_on);
                 self.mods_changed = true;
-                self.sound("scrollMenu", 0.6);
+                self.scroll();
             }
             Some(button @ 0..=2) => {
                 let to = [0, self.mod_row as i64 - 1, self.mod_row as i64 + 1][button as usize];
@@ -1843,14 +1852,14 @@ impl Menus {
             }
             Some(3) => {
                 let row = &self.mods[self.mod_row];
-                self.sound("scrollMenu", 0.6);
+                self.scroll();
                 return Go::ModSettings(row.folder.clone(), row.settings.clone());
             }
             Some(4) => {
                 self.mods[self.mod_row].on ^= true;
                 self.restart |= self.mods[self.mod_row].restart;
                 self.mods_changed = true;
-                self.sound("scrollMenu", 0.6);
+                self.scroll();
             }
             _ => {}
         }
